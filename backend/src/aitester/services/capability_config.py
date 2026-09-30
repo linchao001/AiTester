@@ -173,3 +173,27 @@ class CapabilityConfigService:
             )
         state["default_uid"] = value
         self._repo.save(self._config)
+
+    def set_agent_tools(self, agent_id: str, tool_ids: list[str]) -> None:
+        state = self._agent_state(agent_id)
+        unique: list[str] = []
+        for tool_id in tool_ids:
+            self._tool(tool_id)
+            if tool_id not in unique:
+                unique.append(tool_id)
+        disabled = [t for t in unique if not self._enabled(t)]
+        if disabled:
+            raise CapabilityConfigError(
+                f"工具「{'、'.join(disabled)}」已禁用：请先在 设置 · 工具 中启用后再携带"
+            )
+        state["tool_ids"] = unique
+        self._repo.save(self._config)
+
+    def set_tool_enabled(self, tool_id: str, enabled: bool) -> None:
+        self._tool(tool_id)
+        self._config["tool_state"][tool_id] = enabled
+        if not enabled:
+            for state in self._config["agents"].values():
+                if tool_id in state["tool_ids"]:
+                    state["tool_ids"] = [t for t in state["tool_ids"] if t != tool_id]
+        self._repo.save(self._config)

@@ -168,3 +168,74 @@ def test_set_agent_default_model_unknown_agent_raises_404_error(tmp_path: Path) 
     capability, _ = _svc(tmp_path)
     with pytest.raises(ConfigNotFoundError):
         capability.set_agent_default_model("a9", "")
+
+
+def test_set_agent_tools_keeps_order_and_dedups(tmp_path: Path) -> None:
+    capability, _ = _svc(tmp_path)
+    capability.set_agent_tools("a1", ["edit", "read", "read", "pwsh"])
+    assert _stored(tmp_path)["agents"]["a1"]["tool_ids"] == ["edit", "read", "pwsh"]
+    view = capability.get_view()
+    assert view["agents"][0]["tool_ids"] == ["edit", "read", "pwsh"]
+    assert next(t for t in view["tools"] if t["id"] == "pwsh")["carried_by"] == ["a1"]
+
+
+def test_set_agent_tools_empty_list_is_allowed(tmp_path: Path) -> None:
+    capability, _ = _svc(tmp_path)
+    capability.set_agent_tools("a1", [])
+    assert _stored(tmp_path)["agents"]["a1"]["tool_ids"] == []
+    assert all(t["carried_by"] == [] for t in capability.get_view()["tools"])
+
+
+def test_set_agent_tools_rejects_disabled_tool(tmp_path: Path) -> None:
+    capability, _ = _svc(tmp_path)
+    with pytest.raises(CapabilityConfigError) as exc_info:
+        capability.set_agent_tools("a1", ["read", "bash"])
+    assert "bash" in exc_info.value.detail
+    assert "工具" in exc_info.value.detail
+    assert _stored(tmp_path)["agents"]["a1"]["tool_ids"] == [
+        "read",
+        "write",
+        "edit",
+        "web_search",
+    ]
+
+
+def test_set_agent_tools_unknown_ids_raise_404_error(tmp_path: Path) -> None:
+    capability, _ = _svc(tmp_path)
+    with pytest.raises(ConfigNotFoundError):
+        capability.set_agent_tools("a1", ["nope"])
+    with pytest.raises(ConfigNotFoundError):
+        capability.set_agent_tools("a9", ["read"])
+
+
+def test_disable_tool_strips_every_agent(tmp_path: Path) -> None:
+    capability, _ = _svc(tmp_path)
+    capability.set_tool_enabled("read", False)
+    view = capability.get_view()
+    read = next(t for t in view["tools"] if t["id"] == "read")
+    assert read["enabled"] is False
+    assert read["carried_by"] == []
+    assert "read" not in view["agents"][0]["tool_ids"]
+    stored = _stored(tmp_path)
+    assert stored["tool_state"]["read"] is False
+    assert stored["agents"]["a1"]["tool_ids"] == ["write", "edit", "web_search"]
+
+
+def test_reenable_tool_does_not_restore_carriers(tmp_path: Path) -> None:
+    capability, _ = _svc(tmp_path)
+    capability.set_tool_enabled("read", False)
+    capability.set_tool_enabled("read", True)
+    stored = _stored(tmp_path)
+    assert stored["tool_state"]["read"] is True
+    assert "read" not in stored["agents"]["a1"]["tool_ids"]
+    read = next(t for t in capability.get_view()["tools"] if t["id"] == "read")
+    assert read["enabled"] is True and read["carried_by"] == []
+
+
+def test_set_tool_enabled_unknown_tool_raises_404_error(tmp_path: Path) -> None:
+    capability, _ = _svc(tmp_path)
+    with pytest.raises(ConfigNotFoundError):
+        capability.set_tool_enabled("nope", False)
+    with pytest.raises(ConfigNotFoundError):
+        capability.set_agent_tools("a1", ["nope"])
+    assert capability.set_tool_enabled("bash", True) is None
