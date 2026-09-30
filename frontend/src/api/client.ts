@@ -25,6 +25,33 @@ export interface ModelsResponse {
   providers: ProviderInfo[];
 }
 
+export interface ToolInfo {
+  id: string;
+  group: string;
+  icon: string;
+  label: string;
+  os: string;
+  desc: string;
+  enabled: boolean;
+  carried_by: string[];
+}
+
+export interface AgentInfo {
+  id: string;
+  icon: string;
+  name: string;
+  desc: string;
+  prompt: string;
+  default_uid: string;
+  effective_uid: string;
+  tool_ids: string[];
+}
+
+export interface CapabilityResponse {
+  tools: ToolInfo[];
+  agents: AgentInfo[];
+}
+
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, init);
   if (!resp.ok) {
@@ -78,5 +105,42 @@ export function putDefault(uid: string): Promise<ModelsResponse> {
     method: "PUT",
     headers: JSON_HEADERS,
     body: JSON.stringify({ uid }),
+  });
+}
+
+export function getCapabilities(): Promise<CapabilityResponse> {
+  return apiFetch<CapabilityResponse>("/api/capabilities");
+}
+
+export function putAgentDefaultModel(
+  agentId: string,
+  uid: string,
+): Promise<CapabilityResponse> {
+  return apiFetch<CapabilityResponse>(`/api/capabilities/agents/${agentId}/default-model`, {
+    method: "PUT",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ uid }),
+  });
+}
+
+export function putAgentTools(
+  agentId: string,
+  toolIds: string[],
+): Promise<CapabilityResponse> {
+  return apiFetch<CapabilityResponse>(`/api/capabilities/agents/${agentId}/tools`, {
+    method: "PUT",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ tool_ids: toolIds }),
+  });
+}
+
+export function putToolEnabled(
+  toolId: string,
+  enabled: boolean,
+): Promise<CapabilityResponse> {
+  return apiFetch<CapabilityResponse>(`/api/capabilities/tools/${toolId}/enabled`, {
+    method: "PUT",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ enabled }),
   });
 }
