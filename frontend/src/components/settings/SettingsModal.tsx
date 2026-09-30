@@ -5,6 +5,7 @@ import {
   type CapabilityResponse,
   type ModelsResponse,
 } from "../../api/client";
+import AgentPane from "./AgentPane";
 import ModelPane from "./ModelPane";
 
 type SettingsTab = "model" | "agent" | "tool";
@@ -55,6 +56,23 @@ export default function SettingsModal({ onClose, onChanged }: SettingsModalProps
     [saving, onChanged],
   );
 
+  const runCaps = useCallback(
+    async (action: () => Promise<CapabilityResponse>): Promise<void> => {
+      if (saving) return;
+      setSaving(true);
+      setError(null);
+      try {
+        setCaps(await action());
+        onChanged();
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setSaving(false);
+      }
+    },
+    [saving, onChanged],
+  );
+
   return (
     <div className="modal-mask" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -81,7 +99,9 @@ export default function SettingsModal({ onClose, onChanged }: SettingsModalProps
             <div className="modal-body" hidden={tab !== "model"}>
               <ModelPane models={models} saving={saving} onAction={runModels} />
             </div>
-            <div className="modal-body" hidden={tab !== "agent"} />
+            <div className="modal-body" hidden={tab !== "agent"}>
+              <AgentPane models={models} caps={caps} saving={saving} onAction={runCaps} />
+            </div>
             <div className="modal-body" hidden={tab !== "tool"} />
           </>
         )}
