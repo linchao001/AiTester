@@ -26,12 +26,16 @@ uv run uvicorn aitester.main:app --host 127.0.0.1 --port 8000 --reload
 uv run python -m aitester.main
 ```
 
-- `GET /api/health`：联通检查
+- `GET /api/health`：联通检查（含当前 `llm_provider`）
 - `POST /api/chat/echo`：窄链路演示，响应 trace 穿透七层
-  （interaction → services → context → orchestration → adapters → memory → storage）
+  （interaction → services → context → orchestration → adapters → memory → storage），恒走 mock
+- `POST /api/chat/send`：真实 LLM 链路，按配置构建 provider，响应含 `model`
+  （未配 Key → 400 指引；上游失败 → 502）
 - 测试：`uv run pytest`
-- 配置：复制 `.env.example` 为 `.env`（当前仅 mock provider，无需 Key）；
-  `.env` 的 HOST/PORT 经 `python -m aitester.main` 生效；LLM_PROVIDER 等其余项当前未被消费（占位）
+- 配置：复制 `.env.example` 为 `.env`。默认 `LLM_PROVIDER=mock` 无需 Key；
+  真实调用填 `DEEPSEEK_API_KEY` 或 `DASHSCOPE_API_KEY` 并把 `LLM_PROVIDER` 改为对应值。
+  **Key 仅保留在本机 `.env`（已 gitignore），不会入库或出现在日志/错误信息中**；
+  `.env` 的 HOST/PORT 经 `python -m aitester.main` 生效
 
 ## 前端（frontend/）
 

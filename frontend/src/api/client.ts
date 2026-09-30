@@ -1,6 +1,7 @@
 export interface HealthResponse {
   ok: boolean;
   service: string;
+  llm_provider: string;
 }
 
 export async function getHealth(): Promise<HealthResponse> {

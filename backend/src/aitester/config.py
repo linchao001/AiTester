@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     port: int = 8000
     llm_provider: str = "mock"
 
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-flash"
+
+    dashscope_api_key: str = ""
+    dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    dashscope_model: str = "qwen3.7-max"
+
 
 @lru_cache
 def get_settings() -> Settings:
