@@ -1,1 +1,4 @@
-"""服务层：业务服务与用例/缺陷等领域逻辑。"""
+"""服务层：业务门面。"""
+from aitester.services.chat import ChatService
+
+__all__ = ["ChatService"]
