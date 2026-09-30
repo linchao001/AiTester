@@ -55,24 +55,6 @@ export default function SettingsModal({ onClose, onChanged }: SettingsModalProps
     [saving, onChanged],
   );
 
-  // @ts-expect-error Task 7 起被 <AgentPane onAction={runCaps}/> 消费；接线后请删除本行指令
-  const runCaps = useCallback(
-    async (action: () => Promise<CapabilityResponse>): Promise<void> => {
-      if (saving) return;
-      setSaving(true);
-      setError(null);
-      try {
-        setCaps(await action());
-        onChanged();
-      } catch (e) {
-        setError((e as Error).message);
-      } finally {
-        setSaving(false);
-      }
-    },
-    [saving, onChanged],
-  );
-
   return (
     <div className="modal-mask" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
