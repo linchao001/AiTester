@@ -1,0 +1,10 @@
+.app { font-family: system-ui, sans-serif; color: #3b332a; background: #faf6ef; min-height: 100vh; }
+.topbar { display: flex; align-items: center; gap: 24px; padding: 10px 20px; border-bottom: 1px solid #e8ddcc; background: #fffdf8; }
+.brand { font-weight: 600; }
+nav { display: flex; gap: 8px; }
+.tab { padding: 6px 14px; border-radius: 8px; text-decoration: none; color: #6b5d4f; }
+.tab.active { background: #f4e3cf; color: #b35a1b; }
+main { padding: 24px; }
+.placeholder { padding: 40px; border: 1px dashed #d8c9b4; border-radius: 12px; text-align: center; color: #8a7a66; }
+.status-ok { color: #1b7a3c; }
+.status-bad { color: #b3261e; }
