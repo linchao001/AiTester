@@ -26,7 +26,7 @@
 - 种子值的唯一权威定义在 Task 2 的 `TOOL_CATALOG` / `AGENT_CATALOG` / `DEFAULT_AGENT_STATE`，后续任务逐字引用，不得改写文案。
 - 每任务结尾单独 git 提交，中文 conventional 风格；提交前 `git status` 确认无 `.env`、无 `backend/data/`。
 
-当前基线：HEAD=`d2b25dd`，后端 45 项测试全绿，前端 build 绿。测试数预期 T1→45（纯迁移）、T2→56、T3→62、T4→69，T5–T9 不再增加后端测试；±2 以内以实际为准，但禁止失败。
+当前基线：HEAD=`d2b25dd`，后端 45 项测试全绿，前端 build 绿。测试数预期 T1→45（纯迁移）、T2→58、T3→65、T4→70，T5–T9 不再增加后端测试；±2 以内以实际为准，但禁止失败。
 
 ---
 
@@ -591,7 +591,7 @@ __all__ = ["CapabilityConfigService", "ChatService", "ModelConfigService"]
 uv run pytest -q
 ```
 
-预期：56 passed。
+预期：58 passed。
 
 - [ ] **Step 6: 提交**
 
@@ -732,7 +732,7 @@ uv run pytest tests/test_capability_config.py -q
 uv run pytest -q
 ```
 
-预期：62 passed。
+预期：65 passed。
 
 - [ ] **Step 5: 提交**
 
@@ -1039,7 +1039,7 @@ uv run pytest -q
 git status --short
 ```
 
-预期：69 passed；`git status --short` 不出现 `backend/data/` 内任何文件。
+预期：70 passed；`git status --short` 不出现 `backend/data/` 内任何文件。
 
 - [ ] **Step 7: 提交**
 
@@ -1719,7 +1719,7 @@ cd ../frontend && npm run build
 git status --short
 ```
 
-预期：后端 69 passed；前端 build 通过；`git status --short` 只剩本次源码/文档改动，**绝无** `.env`、`backend/data/*`、`node_modules`、`dist`。
+预期：后端 70 passed；前端 build 通过；`git status --short` 只剩本次源码/文档改动，**绝无** `.env`、`backend/data/*`、`node_modules`、`dist`。
 
 - [ ] **Step 3: 人工验收（给用户 localhost 地址，逐条走查）**
 
