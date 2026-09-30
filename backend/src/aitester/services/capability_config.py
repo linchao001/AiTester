@@ -99,6 +99,38 @@ def _default_config() -> dict[str, Any]:
     }
 
 
+def _normalized(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """按目录重建配置形状，返回 (归一结果, 是否与磁盘现状不同)。"""
+    seed = _default_config()
+    raw_tools = config.get("tool_state")
+    raw_tools = raw_tools if isinstance(raw_tools, dict) else {}
+    tool_state = {
+        t["id"]: bool(raw_tools[t["id"]]) if t["id"] in raw_tools else seed["tool_state"][t["id"]]
+        for t in TOOL_CATALOG
+    }
+
+    raw_agents = config.get("agents")
+    raw_agents = raw_agents if isinstance(raw_agents, dict) else {}
+    agents: dict[str, dict[str, Any]] = {}
+    # 注意：seed["agents"] 是 DEFAULT_AGENT_STATE 形态——aid -> {"default_uid","tool_ids"}，条目内没有 "id" 键
+    for agent_id, seed_state in seed["agents"].items():
+        raw = raw_agents.get(agent_id)
+        raw = raw if isinstance(raw, dict) else {}
+        raw_ids = raw.get("tool_ids", seed_state["tool_ids"])
+        raw_ids = raw_ids if isinstance(raw_ids, list) else []
+        unique: list[str] = []
+        for tool_id in raw_ids:
+            if tool_id in tool_state and tool_id not in unique:
+                unique.append(tool_id)
+        agents[agent_id] = {
+            "default_uid": str(raw.get("default_uid", seed_state["default_uid"])),
+            "tool_ids": unique,
+        }
+
+    normalized = {"version": seed["version"], "tool_state": tool_state, "agents": agents}
+    return normalized, normalized != config
+
+
 class CapabilityConfigService:
     """能力配置真相：构造时 load（缺则种子并落盘），每次变更立即 save。"""
 
@@ -109,6 +141,10 @@ class CapabilityConfigService:
         if config is None:
             config = _default_config()
             repo.save(config)
+        else:
+            config, drifted = _normalized(config)
+            if drifted:
+                repo.save(config)
         self._config = config
 
     def _tool(self, tool_id: str) -> dict[str, Any]:

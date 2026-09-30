@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -53,6 +54,28 @@ def test_agent_default_model_endpoints(tmp_path: Path) -> None:
     )
     assert c.put("/api/capabilities/agents/a1/default-model", json={"uid": ""}).status_code == 200
     assert c.put("/api/capabilities/agents/a9/default-model", json={"uid": ""}).status_code == 404
+
+
+def test_disabled_model_falls_back_in_view_without_touching_storage(tmp_path: Path) -> None:
+    c = _client(tmp_path, deepseek_api_key="sk-x123456789", dashscope_api_key="sk-d123456789")
+    assert c.get("/api/models").json()["default_uid"] == "deepseek/deepseek-flash"
+    uid = "dashscope/qwen3.7-max"
+    ok = c.put("/api/capabilities/agents/a1/default-model", json={"uid": uid})
+    assert ok.status_code == 200
+    before = c.get("/api/capabilities").json()["agents"][0]
+    assert before["default_uid"] == uid
+    assert before["effective_uid"] == uid
+    off = c.put(
+        "/api/models/providers/dashscope/models/qwen3.7-max/enabled", json={"enabled": False}
+    )
+    assert off.status_code == 200
+    assert off.json()["default_uid"] == "deepseek/deepseek-flash"
+    after = c.get("/api/capabilities").json()["agents"][0]
+    assert after["default_uid"] == uid  # 写入期不清理：存储的默认模型原封不动
+    assert after["effective_uid"] == "deepseek/deepseek-flash"  # 读取期回落全局默认
+    stored = json.loads((tmp_path / "capability_config.json").read_text(encoding="utf-8"))
+    assert stored["agents"]["a1"]["default_uid"] == uid
+    assert stored["agents"]["a1"]["tool_ids"] == ["read", "write", "edit", "web_search"]
 
 
 def test_agent_tools_endpoint(tmp_path: Path) -> None:

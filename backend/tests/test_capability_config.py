@@ -1,10 +1,14 @@
+import copy
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from aitester.config import Settings
 from aitester.services.capability_config import (
     AGENT_CATALOG,
+    DEFAULT_AGENT_STATE,
+    DEFAULT_TOOL_STATE,
     TOOL_CATALOG,
     CapabilityConfigError,
     CapabilityConfigService,
@@ -30,6 +34,28 @@ def _stored(tmp_path: Path) -> dict[str, object]:
     loaded = FileJsonConfigRepository(tmp_path / "capability_config.json").load()
     assert loaded is not None
     return loaded
+
+
+class _CountingRepo:
+    """假仓储：只记录 save 次数，用来证明「形状没漂移就不重写磁盘」。"""
+
+    def __init__(self, config: dict[str, Any] | None) -> None:
+        self._config = config
+        self.save_calls = 0
+
+    def load(self) -> dict[str, Any] | None:
+        return self._config
+
+    def save(self, config: dict[str, Any]) -> None:
+        self.save_calls += 1
+        self._config = config
+
+
+def _model_config(tmp_path: Path) -> ModelConfigService:
+    return ModelConfigService(
+        FileJsonConfigRepository(tmp_path / "model_config.json"),
+        Settings(_env_file=None),
+    )
 
 
 def test_first_start_seeds_and_persists(tmp_path: Path) -> None:
@@ -70,6 +96,55 @@ def test_existing_file_is_not_reseeded(tmp_path: Path) -> None:
     agent = capability.get_view()["agents"][0]
     assert agent["default_uid"] == "deepseek/deepseek-flash"
     assert agent["tool_ids"] == ["write"]
+
+
+def test_hand_edited_drift_is_normalized_and_persisted(tmp_path: Path) -> None:
+    FileJsonConfigRepository(tmp_path / "capability_config.json").save(
+        {
+            "version": 9,
+            "tool_state": {"read": "yes", "qw": True},
+            "agents": {
+                "a1": {"tool_ids": ["qw", "pwsh", "read", "read"]},
+                "ghost": {},
+            },
+        }
+    )
+    capability, _ = _svc(tmp_path)  # 构造与读取都不抛 KeyError
+    view = capability.get_view()
+    assert [t["id"] for t in view["tools"]] == [t["id"] for t in TOOL_CATALOG]
+    assert [t["enabled"] for t in view["tools"]] == [True, True, True, True, False, True]
+    assert [a["id"] for a in view["agents"]] == ["a1"]
+    assert view["agents"][0]["tool_ids"] == ["pwsh", "read"]
+    stored = _stored(tmp_path)
+    assert stored["version"] == 1  # version 归一到目录种子并被真正使用
+    assert stored["tool_state"] == {
+        "read": True,  # bool("yes")：非空字符串收敛为 True，既定语义
+        "write": True,
+        "edit": True,
+        "pwsh": True,
+        "bash": False,
+        "web_search": True,
+    }
+    assert stored["agents"] == {
+        "a1": {"default_uid": "", "tool_ids": ["pwsh", "read"]}  # 未知 id 丢弃、去重保序、缺字段回落种子
+    }
+
+
+def test_seed_identical_config_is_not_rewritten(tmp_path: Path) -> None:
+    model_config = _model_config(tmp_path)
+    repo = _CountingRepo(
+        {
+            "version": 1,
+            "tool_state": dict(DEFAULT_TOOL_STATE),
+            "agents": copy.deepcopy(DEFAULT_AGENT_STATE),
+        }
+    )
+    CapabilityConfigService(repo, model_config)
+    assert repo.save_calls == 0  # 与磁盘现状相同就不重写
+    # 对照组：文件缺失仍按既有语义种子并落盘一次，同时证明计数器不是恒零的假件
+    missing = _CountingRepo(None)
+    CapabilityConfigService(missing, model_config)
+    assert missing.save_calls == 1
 
 
 def test_catalog_seeds_exactly_one_agent_and_six_tools() -> None:
