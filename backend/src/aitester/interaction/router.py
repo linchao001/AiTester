@@ -2,6 +2,9 @@ from fastapi import APIRouter, HTTPException, Request
 
 from aitester.adapters.llm import ProviderConfigError, ProviderError
 from aitester.interaction.schemas import (
+    AgentDefaultUpdate,
+    AgentToolsUpdate,
+    CapabilityResponse,
     DefaultUpdate,
     EchoRequest,
     EchoResponse,
@@ -10,8 +13,10 @@ from aitester.interaction.schemas import (
     ModelsResponse,
     SendRequest,
     SendResponse,
+    ToolEnabledUpdate,
 )
 from aitester.services import ChatService
+from aitester.services.capability_config import CapabilityConfigError, CapabilityConfigService
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
 
 router = APIRouter(prefix="/api")
@@ -92,3 +97,53 @@ def models_update_default(req: DefaultUpdate, request: Request) -> ModelsRespons
     except ConfigNotFoundError as exc:
         raise HTTPException(status_code=404, detail=exc.detail) from exc
     return _view(request)
+
+
+def _cap_view(request: Request) -> CapabilityResponse:
+    capability: CapabilityConfigService = request.app.state.capability_config
+    return CapabilityResponse(**capability.get_view())
+
+
+@router.get("/capabilities", response_model=CapabilityResponse)
+def capabilities(request: Request) -> CapabilityResponse:
+    return _cap_view(request)
+
+
+@router.put("/capabilities/agents/{aid}/default-model", response_model=CapabilityResponse)
+def capabilities_agent_default_model(
+    aid: str, req: AgentDefaultUpdate, request: Request
+) -> CapabilityResponse:
+    capability: CapabilityConfigService = request.app.state.capability_config
+    try:
+        capability.set_agent_default_model(aid, req.uid)
+    except ConfigNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
+    except CapabilityConfigError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+    return _cap_view(request)
+
+
+@router.put("/capabilities/agents/{aid}/tools", response_model=CapabilityResponse)
+def capabilities_agent_tools(
+    aid: str, req: AgentToolsUpdate, request: Request
+) -> CapabilityResponse:
+    capability: CapabilityConfigService = request.app.state.capability_config
+    try:
+        capability.set_agent_tools(aid, req.tool_ids)
+    except ConfigNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
+    except CapabilityConfigError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+    return _cap_view(request)
+
+
+@router.put("/capabilities/tools/{tid}/enabled", response_model=CapabilityResponse)
+def capabilities_tool_enabled(
+    tid: str, req: ToolEnabledUpdate, request: Request
+) -> CapabilityResponse:
+    capability: CapabilityConfigService = request.app.state.capability_config
+    try:
+        capability.set_tool_enabled(tid, req.enabled)
+    except ConfigNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
+    return _cap_view(request)

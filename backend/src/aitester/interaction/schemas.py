@@ -53,3 +53,42 @@ class EnabledUpdate(BaseModel):
 
 class DefaultUpdate(BaseModel):
     uid: str
+
+
+class ToolInfo(BaseModel):
+    id: str
+    group: str
+    icon: str
+    label: str
+    os: str
+    desc: str
+    enabled: bool
+    carried_by: list[str]
+
+
+class AgentInfo(BaseModel):
+    id: str
+    icon: str
+    name: str
+    desc: str
+    prompt: str
+    default_uid: str
+    effective_uid: str
+    tool_ids: list[str]
+
+
+class CapabilityResponse(BaseModel):
+    tools: list[ToolInfo]
+    agents: list[AgentInfo]
+
+
+class AgentDefaultUpdate(BaseModel):
+    uid: str
+
+
+class AgentToolsUpdate(BaseModel):
+    tool_ids: list[str] = []
+
+
+class ToolEnabledUpdate(BaseModel):
+    enabled: bool

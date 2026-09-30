@@ -21,9 +21,14 @@ ALL_LAYERS = [
 ]
 
 
-def _isolated_client(tmp_path: Path, name: str = "model_config.json") -> TestClient:
+def _isolated_client(
+    tmp_path: Path,
+    name: str = "model_config.json",
+    cap_name: str = "capability_config.json",
+) -> TestClient:
     application = create_app(
         model_config_path=tmp_path / name,
+        capability_config_path=tmp_path / cap_name,
         settings=Settings(_env_file=None),
     )
     return TestClient(application)
@@ -57,7 +62,9 @@ def test_chat_echo_rejects_empty_message() -> None:
 
 def test_send_uses_injected_provider_and_reports_model(tmp_path: Path) -> None:
     application = create_app(
-        model_config_path=tmp_path / "m.json", settings=Settings(_env_file=None)
+        model_config_path=tmp_path / "m.json",
+        capability_config_path=tmp_path / "c.cap.json",
+        settings=Settings(_env_file=None),
     )
     application.state.chat_service = ChatService(provider=MockProvider())
     resp = TestClient(application).post(
@@ -85,7 +92,9 @@ def test_send_upstream_failure_returns_502(tmp_path: Path) -> None:
             raise ProviderError("调用 fake/model-x 失败: HTTP 401")
 
     application = create_app(
-        model_config_path=tmp_path / "m.json", settings=Settings(_env_file=None)
+        model_config_path=tmp_path / "m.json",
+        capability_config_path=tmp_path / "c.cap.json",
+        settings=Settings(_env_file=None),
     )
     application.state.chat_service = ChatService(provider=FailingProvider())
     resp = TestClient(application).post("/api/chat/send", json={"message": "hi"})
@@ -94,8 +103,16 @@ def test_send_upstream_failure_returns_502(tmp_path: Path) -> None:
 
 
 def test_chat_service_is_per_app_instance(tmp_path: Path) -> None:
-    app_a = create_app(model_config_path=tmp_path / "a.json", settings=Settings(_env_file=None))
-    app_b = create_app(model_config_path=tmp_path / "b.json", settings=Settings(_env_file=None))
+    app_a = create_app(
+        model_config_path=tmp_path / "a.json",
+        capability_config_path=tmp_path / "a.cap.json",
+        settings=Settings(_env_file=None),
+    )
+    app_b = create_app(
+        model_config_path=tmp_path / "b.json",
+        capability_config_path=tmp_path / "b.cap.json",
+        settings=Settings(_env_file=None),
+    )
     client_a, client_b = TestClient(app_a), TestClient(app_b)
     resp = client_a.post("/api/chat/echo", json={"session_id": "iso", "message": "hello"})
     assert resp.status_code == 200
