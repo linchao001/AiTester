@@ -146,3 +146,13 @@ def test_build_default_provider_without_default(tmp_path: Path) -> None:
     with pytest.raises(ProviderConfigError) as exc_info:
         _svc(tmp_path).build_default_provider()
     assert "设置 · 模型设置" in exc_info.value.detail
+
+
+def test_is_usable_uid_rules(tmp_path: Path) -> None:
+    svc = _svc(tmp_path, deepseek_api_key="sk-x123456789")
+    assert svc.is_usable_uid("deepseek/deepseek-flash") is True
+    svc.set_model_enabled("deepseek", "deepseek-flash", False)
+    assert svc.is_usable_uid("deepseek/deepseek-flash") is False
+    assert svc.is_usable_uid("dashscope/qwen3.7-max") is False  # 未配 Key
+    assert svc.is_usable_uid("deepseek/nope") is False
+    assert svc.is_usable_uid("garbage") is False

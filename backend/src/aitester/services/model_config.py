@@ -116,6 +116,10 @@ class ModelConfigService:
                         return bool(m["enabled"] and p["api_key"])
         return False
 
+    def is_usable_uid(self, uid: str) -> bool:
+        """供能力配置读取：该 uid 是否「模型已启用 + 提供商已配 Key」。"""
+        return self._uid_usable(uid)
+
     def _first_available_uid(self) -> str:
         for p in self._config["providers"]:
             if not p["api_key"]:

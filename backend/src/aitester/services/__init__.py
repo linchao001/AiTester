@@ -1,5 +1,6 @@
 """服务层：业务门面。"""
+from aitester.services.capability_config import CapabilityConfigService
 from aitester.services.chat import ChatService
 from aitester.services.model_config import ModelConfigService
 
-__all__ = ["ChatService", "ModelConfigService"]
+__all__ = ["CapabilityConfigService", "ChatService", "ModelConfigService"]
