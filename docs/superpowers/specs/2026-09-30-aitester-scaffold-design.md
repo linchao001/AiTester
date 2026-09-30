@@ -91,3 +91,9 @@ trace 机制：服务层依次标注经过的层，echo 响应返回如 `["inter
 - 占位深度 = 窄链路打通（用户确认）。
 - 接入层 = 外部集成适配（模型提供商/工具/知识库），交互层 = 前端 API 端点（用户确认）。
 - 不初始化 git；prototype/ 保留原位（用户确认）。
+
+## 9. 修订记录（2026-09-30 执行期勘误）
+
+- 原「本次不做任何 git 操作」已被用户当日撤销：已 git init，prototype 与本文档均入库（基线 7e0198b）。
+- §4 依赖方向澄清（与实现一致）：services 层为组合根，可直接 import context/memory/adapters/storage/orchestration；orchestration 可 import adapters；interaction 仅 import services。禁止任何反向依赖（下层 import 上层）。原图示「纵向单链」表达的是调用流，不是 import 白名单。
+- 终审整改（9151c1a）：Settings 经 `python -m aitester.main` 生效（env_file 锚定 backend/）；ChatService 按 app 实例注入（app.state）；vite strictPort=true。
