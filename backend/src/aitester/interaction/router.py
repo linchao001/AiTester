@@ -1,10 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from aitester.interaction.schemas import EchoRequest, EchoResponse
 from aitester.services import ChatService
 
 router = APIRouter(prefix="/api")
-_chat_service = ChatService()
 
 
 @router.get("/health")
@@ -13,6 +12,7 @@ def health() -> dict[str, object]:
 
 
 @router.post("/chat/echo", response_model=EchoResponse)
-def chat_echo(req: EchoRequest) -> EchoResponse:
-    result = _chat_service.echo(req.session_id, req.message)
+def chat_echo(req: EchoRequest, request: Request) -> EchoResponse:
+    service: ChatService = request.app.state.chat_service
+    result = service.echo(req.session_id, req.message)
     return EchoResponse(reply=result["reply"], trace=["interaction"] + result["trace"])

@@ -10,13 +10,16 @@
 cd backend
 uv sync
 uv run uvicorn aitester.main:app --host 127.0.0.1 --port 8000 --reload
+# 或按配置启动（读取 backend/.env 的 HOST/PORT，任意目录均可）：
+uv run python -m aitester.main
 ```
 
 - `GET /api/health`：联通检查
 - `POST /api/chat/echo`：窄链路演示，响应 trace 穿透七层
   （interaction → services → context → orchestration → adapters → memory → storage）
 - 测试：`uv run pytest`
-- 配置：复制 `.env.example` 为 `.env`（当前仅 mock provider，无需 Key）
+- 配置：复制 `.env.example` 为 `.env`（当前仅 mock provider，无需 Key）；
+  `.env` 的 HOST/PORT 经 `python -m aitester.main` 生效；LLM_PROVIDER 等其余项当前未被消费（占位）
 
 ## 前端（frontend/）
 

@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from aitester.main import app
+from aitester.main import app, create_app
 
 client = TestClient(app)
 
@@ -32,3 +32,13 @@ def test_chat_echo_traverses_all_seven_layers() -> None:
 def test_chat_echo_rejects_empty_message() -> None:
     resp = client.post("/api/chat/echo", json={"message": ""})
     assert resp.status_code == 422
+
+
+def test_chat_service_is_per_app_instance() -> None:
+    app_a, app_b = create_app(), create_app()
+    client_a, client_b = TestClient(app_a), TestClient(app_b)
+    resp = client_a.post("/api/chat/echo", json={"session_id": "iso", "message": "hello"})
+    assert resp.status_code == 200
+    assert client_b.post("/api/chat/echo", json={"session_id": "other", "message": "hi"})
+    assert app_a.state.chat_service.memory.recall("iso")
+    assert app_b.state.chat_service.memory.recall("iso") == []
