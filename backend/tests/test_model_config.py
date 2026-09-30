@@ -6,19 +6,19 @@ from aitester.adapters.llm import ProviderConfigError
 from aitester.adapters.llm import openai_compat
 from aitester.config import Settings
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService, mask_key
-from aitester.storage import FileModelConfigRepository
+from aitester.storage import FileJsonConfigRepository
 
 
 def _svc(tmp_path: Path, **settings_kwargs: object) -> ModelConfigService:
     return ModelConfigService(
-        FileModelConfigRepository(tmp_path / "model_config.json"),
+        FileJsonConfigRepository(tmp_path / "model_config.json"),
         Settings(_env_file=None, **settings_kwargs),  # type: ignore[arg-type]
     )
 
 
 def test_first_start_seeds_from_settings_and_persists(tmp_path: Path) -> None:
     svc = _svc(tmp_path, deepseek_api_key="  sk-seed-abcdef123456  ")
-    stored = FileModelConfigRepository(tmp_path / "model_config.json").load()
+    stored = FileJsonConfigRepository(tmp_path / "model_config.json").load()
     assert stored is not None
     assert stored["version"] == 1
     assert stored["providers"][0]["api_key"] == "sk-seed-abcdef123456"
@@ -48,13 +48,13 @@ def test_existing_file_is_not_reseeded(tmp_path: Path) -> None:
             }
         ],
     }
-    repo = FileModelConfigRepository(tmp_path / "model_config.json")
+    repo = FileJsonConfigRepository(tmp_path / "model_config.json")
     repo.save(saved)
     svc = ModelConfigService(
         repo, Settings(_env_file=None, deepseek_api_key="sk-should-not-appear")
     )
     assert svc.default_uid == "custom/x"
-    assert FileModelConfigRepository(tmp_path / "model_config.json").load() == saved
+    assert FileJsonConfigRepository(tmp_path / "model_config.json").load() == saved
 
 
 def test_get_view_shape_and_masking(tmp_path: Path) -> None:

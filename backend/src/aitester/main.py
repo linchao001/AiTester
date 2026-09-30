@@ -6,7 +6,7 @@ from aitester.config import Settings, get_settings
 from aitester.interaction.router import router
 from aitester.services import ChatService
 from aitester.services.model_config import ModelConfigService
-from aitester.storage import FileModelConfigRepository
+from aitester.storage import FileJsonConfigRepository
 
 DEFAULT_MODEL_CONFIG_PATH = Path(__file__).resolve().parents[2] / "data" / "model_config.json"
 
@@ -16,7 +16,7 @@ def create_app(
 ) -> FastAPI:
     s = settings or get_settings()
     path = model_config_path or DEFAULT_MODEL_CONFIG_PATH
-    model_config = ModelConfigService(FileModelConfigRepository(path), s)
+    model_config = ModelConfigService(FileJsonConfigRepository(path), s)
     application = FastAPI(title="AiTester backend")
     application.state.model_config = model_config
     application.state.chat_service = ChatService(model_config=model_config)

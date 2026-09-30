@@ -4,7 +4,7 @@ from typing import Any
 
 from aitester.adapters.llm import LlmProvider, OpenAICompatProvider, ProviderConfigError
 from aitester.config import Settings
-from aitester.storage import ModelConfigRepository
+from aitester.storage import JsonConfigRepository
 
 CATALOG: list[dict[str, Any]] = [
     {
@@ -65,7 +65,7 @@ def _default_config(settings: Settings) -> dict[str, Any]:
 class ModelConfigService:
     """配置真相：构造时 load（缺则种子并落盘），每次变更立即 save。"""
 
-    def __init__(self, repo: ModelConfigRepository, settings: Settings) -> None:
+    def __init__(self, repo: JsonConfigRepository, settings: Settings) -> None:
         self._repo = repo
         config = repo.load()
         if config is None:

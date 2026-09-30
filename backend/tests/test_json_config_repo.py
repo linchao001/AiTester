@@ -2,11 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from aitester.storage import ConfigStorageError, FileModelConfigRepository
+from aitester.storage import ConfigStorageError, FileJsonConfigRepository
 
 
-def _repo(tmp_path: Path) -> FileModelConfigRepository:
-    return FileModelConfigRepository(tmp_path / "model_config.json")
+def _repo(tmp_path: Path) -> FileJsonConfigRepository:
+    return FileJsonConfigRepository(tmp_path / "model_config.json")
 
 
 def test_load_returns_none_when_missing(tmp_path: Path) -> None:

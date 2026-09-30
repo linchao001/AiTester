@@ -5,12 +5,12 @@ from aitester.adapters.llm import openai_compat
 from aitester.config import Settings
 from aitester.services import ChatService
 from aitester.services.model_config import ModelConfigService
-from aitester.storage import FileModelConfigRepository
+from aitester.storage import FileJsonConfigRepository
 
 
 def _model_config(tmp_path, **settings_kwargs: object) -> ModelConfigService:
     return ModelConfigService(
-        FileModelConfigRepository(tmp_path / "model_config.json"),
+        FileJsonConfigRepository(tmp_path / "model_config.json"),
         Settings(_env_file=None, **settings_kwargs),  # type: ignore[arg-type]
     )
 

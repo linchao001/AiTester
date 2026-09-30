@@ -5,22 +5,22 @@ from typing import Any, Protocol
 
 
 class ConfigStorageError(RuntimeError):
-    """配置文件读写失败，detail 面向用户且含文件路径。"""
+    """配置 JSON 文件读写失败，detail 面向用户且含文件路径。"""
 
     def __init__(self, detail: str) -> None:
         super().__init__(detail)
         self.detail = detail
 
 
-class ModelConfigRepository(Protocol):
-    """模型配置持久化抽象。"""
+class JsonConfigRepository(Protocol):
+    """运行期配置 JSON 持久化抽象。"""
 
     def load(self) -> dict[str, Any] | None: ...
 
     def save(self, config: dict[str, Any]) -> None: ...
 
 
-class FileModelConfigRepository:
+class FileJsonConfigRepository:
     """单 JSON 文件实现：同目录临时文件 + os.replace 原子替换。"""
 
     def __init__(self, path: Path) -> None:
@@ -32,7 +32,7 @@ class FileModelConfigRepository:
         try:
             return json.loads(self._path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            raise ConfigStorageError(f"模型配置文件已损坏：{self._path}（{exc}）") from exc
+            raise ConfigStorageError(f"配置文件已损坏：{self._path}（{exc}）") from exc
 
     def save(self, config: dict[str, Any]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
