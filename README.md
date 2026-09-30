@@ -4,6 +4,18 @@
 前端 TypeScript + React + Vite。`prototype/` 为已验证的 MVP 原型（静态页 + serve.js），
 仅作参考，不参与构建。
 
+## 一键启动（Windows PowerShell）
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1
+# 5173 被占用（如 QwenPaw 常驻）时换端口：
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 -FrontendPort 5175
+```
+
+自动检查 8000/前端端口占用、安装依赖、同时拉起前后端；就绪后打开提示的地址（默认 http://localhost:5173 ），
+Ctrl+C 或按任意键停止，退出时清理整棵进程树（不会残留 uvicorn/node 孤儿进程）。
+也可按下方说明分别手动启动。
+
 ## 后端（backend/）
 
 ```bash
