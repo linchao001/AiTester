@@ -2,6 +2,7 @@
 import copy
 from typing import Any
 
+from aitester.adapters.llm import LlmProvider, OpenAICompatProvider, ProviderConfigError
 from aitester.config import Settings
 from aitester.storage import ModelConfigRepository
 
@@ -35,6 +36,14 @@ def mask_key(key: str) -> str:
     if len(key) <= 8:
         return "***"
     return f"{key[:4]}…{key[-4:]}"
+
+
+class ConfigNotFoundError(KeyError):
+    """未知提供商/模型，交互层映射 404。"""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
 
 
 def _default_config(settings: Settings) -> dict[str, Any]:
@@ -83,3 +92,93 @@ class ModelConfigService:
                 for p in self._config["providers"]
             ],
         }
+
+    def _provider(self, provider_id: str) -> dict[str, Any]:
+        for p in self._config["providers"]:
+            if p["id"] == provider_id:
+                return p
+        raise ConfigNotFoundError(f"未知提供商「{provider_id}」")
+
+    def _model(self, provider: dict[str, Any], model_id: str) -> dict[str, Any]:
+        for m in provider["models"]:
+            if m["id"] == model_id:
+                return m
+        raise ConfigNotFoundError(f"提供商「{provider['id']}」没有模型「{model_id}」")
+
+    def _uid_usable(self, uid: str) -> bool:
+        pid, sep, mid = uid.partition("/")
+        if not sep or not mid:
+            return False
+        for p in self._config["providers"]:
+            if p["id"] == pid:
+                for m in p["models"]:
+                    if m["id"] == mid:
+                        return bool(m["enabled"] and p["api_key"])
+        return False
+
+    def _first_available_uid(self) -> str:
+        for p in self._config["providers"]:
+            if not p["api_key"]:
+                continue
+            for m in p["models"]:
+                if m["enabled"]:
+                    return f"{p['id']}/{m['id']}"
+        return ""
+
+    def _cascade_default(self) -> None:
+        current = self._config["default_uid"]
+        if current and not self._uid_usable(current):
+            self._config["default_uid"] = self._first_available_uid()
+
+    def update_api_key(self, provider_id: str, api_key: str | None) -> None:
+        provider = self._provider(provider_id)
+        if api_key is not None:
+            provider["api_key"] = api_key.strip()
+        self._cascade_default()
+        self._repo.save(self._config)
+
+    def set_model_enabled(self, provider_id: str, model_id: str, enabled: bool) -> None:
+        provider = self._provider(provider_id)
+        model = self._model(provider, model_id)
+        model["enabled"] = enabled
+        self._cascade_default()
+        self._repo.save(self._config)
+
+    def set_default(self, uid: str) -> None:
+        pid, sep, mid = uid.partition("/")
+        if not sep or not mid:
+            raise ProviderConfigError(f"无效的模型标识「{uid}」，应为 提供商/模型 形式")
+        provider = self._provider(pid)
+        model = self._model(provider, mid)
+        if not model["enabled"]:
+            raise ProviderConfigError(f"模型「{uid}」已停用，请先在 设置 · 模型设置 中启用")
+        if not provider["api_key"]:
+            raise ProviderConfigError(
+                f"提供商「{provider['name']}」未配置 API Key，请在 设置 · 模型设置 中填写"
+            )
+        self._config["default_uid"] = uid
+        self._repo.save(self._config)
+
+    def build_default_provider(self) -> LlmProvider:
+        uid = self._config["default_uid"]
+        if not uid:
+            raise ProviderConfigError(
+                "尚未配置默认模型：请在 设置 · 模型设置 中填写 API Key 并选择默认 LLM"
+            )
+        pid, _, mid = uid.partition("/")
+        provider = self._provider(pid)
+        model = self._model(provider, mid)
+        if not provider["api_key"]:
+            raise ProviderConfigError(
+                f"默认模型「{uid}」的提供商未配置 API Key：请在 设置 · 模型设置 中填写"
+            )
+        if not model["enabled"]:
+            raise ProviderConfigError(
+                f"默认模型「{uid}」已停用：请在 设置 · 模型设置 中启用或改选默认模型"
+            )
+        return OpenAICompatProvider(
+            name=pid,
+            api_key=provider["api_key"],
+            base_url=provider["base_url"],
+            model=mid,
+        )

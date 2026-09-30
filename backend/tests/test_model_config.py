@@ -1,7 +1,11 @@
 from pathlib import Path
 
+import pytest
+
+from aitester.adapters.llm import ProviderConfigError
+from aitester.adapters.llm import openai_compat
 from aitester.config import Settings
-from aitester.services.model_config import ModelConfigService, mask_key
+from aitester.services.model_config import ConfigNotFoundError, ModelConfigService, mask_key
 from aitester.storage import FileModelConfigRepository
 
 
@@ -70,3 +74,75 @@ def test_mask_key_rules() -> None:
     assert mask_key("") == ""
     assert mask_key("12345678") == "***"
     assert mask_key("123456789") == "1234…6789"
+
+
+def test_update_api_key_none_keeps_string_sets(tmp_path: Path) -> None:
+    svc = _svc(tmp_path)
+    svc.update_api_key("deepseek", None)
+    assert svc.get_view()["providers"][0]["has_key"] is False
+    svc.update_api_key("deepseek", "  sk-x123456789  ")
+    assert svc.get_view()["providers"][0]["has_key"] is True
+
+
+def test_update_unknown_provider_raises_404_error(tmp_path: Path) -> None:
+    with pytest.raises(ConfigNotFoundError):
+        _svc(tmp_path).update_api_key("glm", "k")
+
+
+def test_set_default_validations(tmp_path: Path) -> None:
+    svc = _svc(tmp_path)
+    with pytest.raises(ProviderConfigError) as exc_info:
+        svc.set_default("deepseek/deepseek-flash")
+    assert "设置 · 模型设置" in exc_info.value.detail
+    svc.update_api_key("deepseek", "sk-x123456789")
+    svc.set_model_enabled("deepseek", "deepseek-flash", False)
+    with pytest.raises(ProviderConfigError) as exc_info2:
+        svc.set_default("deepseek/deepseek-flash")
+    assert "启用" in exc_info2.value.detail
+    with pytest.raises(ConfigNotFoundError):
+        svc.set_default("deepseek/nope")
+    with pytest.raises(ProviderConfigError):
+        svc.set_default("garbage")
+
+
+def test_cascade_on_disable_default_persisted(tmp_path: Path) -> None:
+    svc = _svc(tmp_path, deepseek_api_key="sk-x123456789")
+    assert svc.default_uid == "deepseek/deepseek-flash"
+    svc.set_model_enabled("deepseek", "deepseek-flash", False)
+    assert svc.default_uid == "deepseek/deepseek-v4-pro"
+    svc.set_model_enabled("deepseek", "deepseek-v4-pro", False)
+    assert svc.default_uid == ""
+    assert _svc(tmp_path).default_uid == ""
+
+
+def test_cascade_on_clear_key_falls_back_to_next_provider(tmp_path: Path) -> None:
+    svc = _svc(tmp_path, deepseek_api_key="sk-x123456789", dashscope_api_key="sk-d123456789")
+    svc.update_api_key("deepseek", "")
+    assert svc.default_uid == "dashscope/qwen3.7-max"
+
+
+def test_build_default_provider_passes_expected_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorded: dict[str, object] = {}
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            recorded.update(kwargs)
+
+    monkeypatch.setattr(openai_compat, "ChatOpenAI", FakeChatOpenAI)
+    svc = _svc(tmp_path, deepseek_api_key="sk-x123456789")
+    provider = svc.build_default_provider()
+    assert provider.model_ref == "deepseek/deepseek-flash"
+    assert recorded == {
+        "model": "deepseek-flash",
+        "api_key": "sk-x123456789",
+        "base_url": "https://api.deepseek.com",
+        "timeout": 60,
+    }
+
+
+def test_build_default_provider_without_default(tmp_path: Path) -> None:
+    with pytest.raises(ProviderConfigError) as exc_info:
+        _svc(tmp_path).build_default_provider()
+    assert "设置 · 模型设置" in exc_info.value.detail
