@@ -26,16 +26,18 @@ uv run uvicorn aitester.main:app --host 127.0.0.1 --port 8000 --reload
 uv run python -m aitester.main
 ```
 
-- `GET /api/health`：联通检查（含当前 `llm_provider`）
+- `GET /api/health`：联通检查（`llm_provider` 为运行期默认模型 uid，未配置时 `mock`）
 - `POST /api/chat/echo`：窄链路演示，响应 trace 穿透七层
   （interaction → services → context → orchestration → adapters → memory → storage），恒走 mock
-- `POST /api/chat/send`：真实 LLM 链路，按配置构建 provider，响应含 `model`
-  （未配 Key → 400 指引；上游失败 → 502）
+- `POST /api/chat/send`：真实 LLM 链路，按「设置 · 模型设置」的默认模型调用
+  （配置缺失 → 400 指引；上游失败 → 502）
+- `GET /api/models` + 三个 `PUT`：模型配置运行期读写（Key 掩码返回，明文永不出口），
+  对应前端顶栏「⚙ 设置」弹窗
 - 测试：`uv run pytest`
-- 配置：复制 `.env.example` 为 `.env`。默认 `LLM_PROVIDER=mock` 无需 Key；
-  真实调用填 `DEEPSEEK_API_KEY` 或 `DASHSCOPE_API_KEY` 并把 `LLM_PROVIDER` 改为对应值。
-  **Key 仅保留在本机 `.env`（已 gitignore），不会入库或出现在日志/错误信息中**；
-  `.env` 的 HOST/PORT 经 `python -m aitester.main` 生效
+- 配置：复制 `.env.example` 为 `.env`（仅 HOST/PORT + 两个可选种子 Key）；
+  运行期模型配置存 `backend/data/model_config.json`（gitignore，含密钥），
+  首次启动自动从 `.env` 种子导入，之后在前端「设置 · 模型设置」管理；
+  **Key 不入库、不出现在任何响应/日志/异常明文**
 
 ## 前端（frontend/）
 
