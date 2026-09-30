@@ -46,3 +46,4 @@ main { padding: 24px; }
 .tool-state.on { color: #1b7a3c; }
 .tool-state.off { color: #8a7a66; }
 .group-row td { background: #f7efe1; color: #6b5d4f; font-weight: 600; }
+.modal-body[hidden] { display: none; }
