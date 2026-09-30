@@ -1,6 +1,7 @@
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from aitester.adapters.llm import LlmProvider
 
@@ -10,7 +11,7 @@ class EchoState(TypedDict):
     reply: str
 
 
-def build_echo_graph(provider: LlmProvider):
+def build_echo_graph(provider: LlmProvider) -> CompiledStateGraph:
     """当前仅一个 mock_llm_node；后续多节点 loop 在此扩展。"""
 
     def mock_llm_node(state: EchoState) -> dict[str, str]:
