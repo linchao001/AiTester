@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import { getHealth, type HealthResponse } from "./api/client";
-import SettingsModal from "./components/SettingsModal";
+import SettingsModal from "./components/settings/SettingsModal";
 import ChatPage from "./pages/ChatPage";
 import KbPage from "./pages/KbPage";
 import ProjectsPage from "./pages/ProjectsPage";
