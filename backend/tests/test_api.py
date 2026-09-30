@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -102,3 +103,49 @@ def test_chat_service_is_per_app_instance(tmp_path: Path) -> None:
     assert resp_b.status_code == 200
     assert app_a.state.chat_service.memory.recall("iso")
     assert app_b.state.chat_service.memory.recall("iso") == []
+
+
+def test_models_view_masks_key(tmp_path: Path) -> None:
+    c = _isolated_client(tmp_path)
+    resp = c.put("/api/models/providers/deepseek/key", json={"api_key": "sk-SECRET123456"})
+    assert resp.status_code == 200
+    body = c.get("/api/models").json()
+    assert "sk-SECRET123456" not in json.dumps(body, ensure_ascii=False)
+    provider = body["providers"][0]
+    assert provider["has_key"] is True
+    assert provider["key_masked"] == "sk-S…3456"
+    assert body["default_uid"] == ""
+
+
+def test_set_default_flow_updates_health(tmp_path: Path) -> None:
+    c = _isolated_client(tmp_path)
+    resp = c.put("/api/models/default", json={"uid": "deepseek/deepseek-flash"})
+    assert resp.status_code == 400
+    assert "设置 · 模型设置" in resp.json()["detail"]
+    c.put("/api/models/providers/deepseek/key", json={"api_key": "sk-SECRET123456"})
+    assert c.put("/api/models/default", json={"uid": "nope/x"}).status_code == 404
+    assert c.put("/api/models/default", json={"uid": "garbage"}).status_code == 400
+    ok = c.put("/api/models/default", json={"uid": "deepseek/deepseek-flash"})
+    assert ok.status_code == 200
+    assert ok.json()["default_uid"] == "deepseek/deepseek-flash"
+    assert c.get("/api/health").json()["llm_provider"] == "deepseek/deepseek-flash"
+
+
+def test_disable_default_model_cascades(tmp_path: Path) -> None:
+    c = _isolated_client(tmp_path)
+    c.put("/api/models/providers/deepseek/key", json={"api_key": "sk-SECRET123456"})
+    c.put("/api/models/default", json={"uid": "deepseek/deepseek-flash"})
+    resp = c.put(
+        "/api/models/providers/deepseek/models/deepseek-flash/enabled",
+        json={"enabled": False},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["default_uid"] == "deepseek/deepseek-v4-pro"
+
+
+def test_models_endpoints_404_for_unknown_provider(tmp_path: Path) -> None:
+    c = _isolated_client(tmp_path)
+    assert c.put("/api/models/providers/glm/key", json={"api_key": "k"}).status_code == 404
+    assert (
+        c.put("/api/models/providers/deepseek/models/nope/enabled", json={"enabled": True})
+    ).status_code == 404

@@ -2,13 +2,17 @@ from fastapi import APIRouter, HTTPException, Request
 
 from aitester.adapters.llm import ProviderConfigError, ProviderError
 from aitester.interaction.schemas import (
+    DefaultUpdate,
     EchoRequest,
     EchoResponse,
+    EnabledUpdate,
+    KeyUpdate,
+    ModelsResponse,
     SendRequest,
     SendResponse,
 )
 from aitester.services import ChatService
-from aitester.services.model_config import ModelConfigService
+from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
 
 router = APIRouter(prefix="/api")
 
@@ -44,3 +48,47 @@ def chat_send(req: SendRequest, request: Request) -> SendResponse:
         trace=["interaction"] + result["trace"],
         model=result["model"],
     )
+
+
+def _view(request: Request) -> ModelsResponse:
+    model_config: ModelConfigService = request.app.state.model_config
+    return ModelsResponse(**model_config.get_view())
+
+
+@router.get("/models", response_model=ModelsResponse)
+def models(request: Request) -> ModelsResponse:
+    return _view(request)
+
+
+@router.put("/models/providers/{pid}/key", response_model=ModelsResponse)
+def models_update_key(pid: str, req: KeyUpdate, request: Request) -> ModelsResponse:
+    model_config: ModelConfigService = request.app.state.model_config
+    try:
+        model_config.update_api_key(pid, req.api_key)
+    except ConfigNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
+    return _view(request)
+
+
+@router.put("/models/providers/{pid}/models/{mid}/enabled", response_model=ModelsResponse)
+def models_update_enabled(
+    pid: str, mid: str, req: EnabledUpdate, request: Request
+) -> ModelsResponse:
+    model_config: ModelConfigService = request.app.state.model_config
+    try:
+        model_config.set_model_enabled(pid, mid, req.enabled)
+    except ConfigNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
+    return _view(request)
+
+
+@router.put("/models/default", response_model=ModelsResponse)
+def models_update_default(req: DefaultUpdate, request: Request) -> ModelsResponse:
+    model_config: ModelConfigService = request.app.state.model_config
+    try:
+        model_config.set_default(req.uid)
+    except ProviderConfigError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+    except ConfigNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
+    return _view(request)
