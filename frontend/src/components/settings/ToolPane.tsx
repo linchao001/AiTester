@@ -1,182 +1,111 @@
 import { Fragment, useState } from "react";
-import {
-  putToolEnabled,
-  type CapabilityResponse,
-  type ToolInfo,
-} from "../../api/client";
+import { putToolEnabled, type CapabilityResponse, type ToolInfo } from "../../api/client";
 
 interface ToolPaneProps {
-  tools: ToolInfo[];
   caps: CapabilityResponse;
   saving: boolean;
   onAction: (action: () => Promise<CapabilityResponse>) => void;
 }
 
-// caps 在 Props 上声明但本面板只消费 tools：启停级联真相在后端，
-// 前端无 agent 列表可交叉校验，保留入参以对齐外壳 runCaps 刷新回路。
-export default function ToolPane({ tools, saving, onAction }: ToolPaneProps) {
-  const [tip, setTip] = useState<string | null>(null);
-
-  // 按 group 归并且保持后端目录原始顺序：「自定义 → 智能体 → 系统」在本期
-  // 即「文件处理工具 → 命令执行工具 → 网页搜索工具」。不做字母/状态排序——
-  // 重排会把分组打散。
-  const groups = tools.reduce<Record<string, { label: string; tools: ToolInfo[] }>>(
-    (acc, t, idx) => {
-      const isGroupFirst = idx === 0 || tools[idx - 1].group !== t.group;
-      if (isGroupFirst) acc[t.group] = { label: t.group, tools: [] };
-      acc[t.group].tools.push(t);
-      return acc;
-    },
-    {},
+function ToolRow({
+  tool,
+  caps,
+  saving,
+  onToggle,
+}: {
+  tool: ToolInfo;
+  caps: CapabilityResponse;
+  saving: boolean;
+  onToggle: (tool: ToolInfo) => void;
+}) {
+  const holders = caps.agents
+    .filter((a) => a.tool_ids.includes(tool.id))
+    .map((a) => a.name.replace("智能体", ""));
+  return (
+    <tr>
+      <td>
+        {tool.icon} {tool.label}
+      </td>
+      <td>
+        <div>{tool.desc}</div>
+        <div className="pane-item-sub">
+          {holders.length > 0 ? `被 ${holders.join("、")} 携带` : "未被任何智能体携带"}
+        </div>
+      </td>
+      <td>{tool.os}</td>
+      <td>
+        <span className={tool.enabled ? "tool-state on" : "tool-state off"}>
+          {tool.enabled ? "● 已启用" : "○ 已禁用"}
+        </span>
+      </td>
+      <td>
+        <button className="btn-secondary" disabled={saving} onClick={() => onToggle(tool)}>
+          {tool.enabled ? "禁用" : "启用"}
+        </button>
+      </td>
+    </tr>
   );
+}
 
-  // holders：按分组汇聚「携带该组工具的智能体」。非首行的能力列展示的是整组
-  // 并集——首行已代表本组，重复列示反而干扰。
-  const holders = new Map<string, string[]>();
-  tools.forEach((t) => {
-    if (t.enabled) {
-      const carriers = new Set(t.carried_by);
-      carriers.forEach((id) => {
-        const cur = holders.get(t.group) ?? [];
-        if (!cur.includes(id)) holders.set(t.group, [...cur, id]);
-      });
-    }
+export default function ToolPane({ caps, saving, onAction }: ToolPaneProps) {
+  const [tip, setTip] = useState("");
+  const enabledCount = caps.tools.filter((t) => t.enabled).length;
+
+  const groups: { name: string; tools: ToolInfo[] }[] = [];
+  caps.tools.forEach((t) => {
+    const last = groups[groups.length - 1];
+    if (last !== undefined && last.name === t.group) last.tools.push(t);
+    else groups.push({ name: t.group, tools: [t] });
   });
+
+  function toggle(tool: ToolInfo): void {
+    if (!tool.enabled) {
+      onAction(async () => {
+        const resp = await putToolEnabled(tool.id, true);
+        setTip(`已启用 ${tool.label}，可在「智能体配置」里勾选携带。`);
+        return resp;
+      });
+      return;
+    }
+    const holders = caps.agents.filter((a) => a.tool_ids.includes(tool.id)).map((a) => a.name);
+    const message = `禁用「${tool.label}」工具？\n\n将从 ${holders.length} 个智能体摘掉该工具：${holders.join("、") || "无"}`;
+    if (!window.confirm(message)) return;
+    onAction(async () => {
+      const resp = await putToolEnabled(tool.id, false);
+      setTip(`已禁用 ${tool.label}，相关智能体不再具备该能力。`);
+      return resp;
+    });
+  }
 
   return (
     <div className="provider-form">
+      <p className="field-hint">
+        内置工具 <strong>{enabledCount}/{caps.tools.length}</strong>　禁用后，所有智能体都不会再调用该工具
+      </p>
       <table className="model-table">
         <thead>
           <tr>
             <th>工具</th>
-            <th>能力</th>
+            <th>说明</th>
+            <th>平台</th>
             <th>状态</th>
-            <th>当前智能体</th>
             <th>操作</th>
           </tr>
         </thead>
         <tbody>
-          {Object.entries(groups).flatMap(([groupName, g]) =>
-            g.tools.length === 0 ? (
-              <tr className="group-row" key={groupName}>
-                <td className="group-cell">{g.label}（0 个）</td>
-                <td colSpan={4}>
-                  <span className="pane-item-sub">暂无工具</span>
-                </td>
+          {groups.map((g) => (
+            <Fragment key={g.name}>
+              <tr className="group-row">
+                <td colSpan={5}>🧩 {g.name}</td>
               </tr>
-            ) : (
-              g.tools.map((t, idx) => {
-                const on = t.enabled;
-                const isGroupFirst = idx === 0;
-                const disabledToolTip =
-                  "重新启用不会自动补回 —— 需回到「智能体配置」重新勾选";
-
-                return (
-                  <Fragment key={t.id}>
-                    {isGroupFirst && (
-                      <tr className="group-row">
-                        <td className="group-cell" colSpan={5}>
-                          <strong>{g.label}</strong>（{g.tools.length} 个）
-                        </td>
-                      </tr>
-                    )}
-                    <tr
-                      style={
-                        isGroupFirst
-                          ? undefined
-                          : { borderTop: "1px solid #eee2cf" }
-                      }
-                    >
-                      {/* 非首行的工具格保持空格（原稿在 td 内再嵌 td，
-                          会触发 validateDOMNesting 警告，故压平为单 td）。 */}
-                      <td
-                        className={isGroupFirst ? undefined : "pane-item-sub"}
-                        style={isGroupFirst ? undefined : { padding: 0 }}
-                      >
-                        {isGroupFirst ? (
-                          <span>
-                            {t.icon} {t.label}
-                          </span>
-                        ) : null}
-                      </td>
-                      {/* 整列缺 td 会让行只有 4 格：禁用首行工具时表格错位，
-                          故 td 始终渲染，仅内容按分支出现。 */}
-                      <td>
-                        {!isGroupFirst && on ? (
-                          <span className="pane-item-sub">
-                            通过 agent 定义 YAML 声明，组内只列一次；此处启停整组生效。
-                            {holders.get(t.group)!.map((id) => (
-                              <span key={id} className="check-opt on">{id} →</span>
-                            ))}
-                          </span>
-                        ) : isGroupFirst && (on || t.id === "bash") ? (
-                          <span className="pane-item-sub">
-                            {t.carried_by} →
-                          </span>
-                        ) : null}
-                      </td>
-                      {on ? (
-                        <td>
-                          <span className="tool-state on">● 已启用</span>
-                        </td>
-                      ) : (
-                        <td />
-                      )}
-                      <td style={on ? undefined : { padding: 0 }}>
-                        {on ? (
-                          <>
-                            {t.carried_by.length > 0 ? (
-                              <span className="check-opt on">
-                                {t.carried_by} →
-                              </span>
-                            ) : (
-                              <span className="pane-item-sub">—</span>
-                            )}
-                          </>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td>
-                        {on ? (
-                          <button
-                            className="btn-secondary"
-                            disabled={saving}
-                            onClick={() => {
-                              if (
-                                window.confirm(
-                                  `禁用「${t.icon} ${t.label}」将同时从所有智能体移除该工具，确认禁用？`,
-                                )
-                              ) {
-                                setTip(null);
-                                onAction(() => putToolEnabled(t.id, false));
-                              }
-                            }}
-                          >
-                            禁用
-                          </button>
-                        ) : (
-                          <button
-                            className="btn-secondary"
-                            disabled={saving}
-                            onClick={() => {
-                              setTip(disabledToolTip);
-                              onAction(() => putToolEnabled(t.id, true));
-                            }}
-                          >
-                            启用
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  </Fragment>
-                );
-              })
-            ),
-          )}
+              {g.tools.map((t) => (
+                <ToolRow key={t.id} tool={t} caps={caps} saving={saving} onToggle={toggle} />
+              ))}
+            </Fragment>
+          ))}
         </tbody>
       </table>
-      {tip !== null && <p className="field-hint">{tip}</p>}
+      {tip !== "" && <p className="field-hint">{tip}</p>}
     </div>
   );
 }

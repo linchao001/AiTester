@@ -104,7 +104,7 @@ export default function SettingsModal({ onClose, onChanged }: SettingsModalProps
               <AgentPane models={models} caps={caps} saving={saving} onAction={runCaps} />
             </div>
             <div className="modal-body" hidden={tab !== "tool"}>
-              <ToolPane tools={caps.tools} caps={caps} saving={saving} onAction={runCaps} />
+              <ToolPane caps={caps} saving={saving} onAction={runCaps} />
             </div>
           </>
         )}
