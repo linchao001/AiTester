@@ -4,16 +4,9 @@ from aitester.adapters.llm import (
     LlmProvider,
     MockProvider,
     OpenAICompatProvider,
-    ProviderConfigError,
     ProviderError,
-    build_provider,
 )
 from aitester.adapters.llm import openai_compat
-from aitester.config import Settings
-
-
-def _settings(**kwargs: object) -> Settings:
-    return Settings(_env_file=None, **kwargs)  # type: ignore[arg-type]
 
 
 def test_mock_provider_echoes_last_user_message() -> None:
@@ -36,52 +29,9 @@ def test_mock_provider_model_ref() -> None:
     assert MockProvider().model_ref == "mock/mock"
 
 
-def test_factory_mock_returns_mock_provider() -> None:
-    assert isinstance(build_provider(_settings(llm_provider="mock")), MockProvider)
-
-
-def test_factory_deepseek_without_key_raises_with_env_var_name() -> None:
-    with pytest.raises(ProviderConfigError) as exc_info:
-        build_provider(_settings(llm_provider="deepseek", deepseek_api_key=""))
-    assert "DEEPSEEK_API_KEY" in exc_info.value.detail
-
-
-def test_factory_dashscope_without_key_raises_with_env_var_name() -> None:
-    with pytest.raises(ProviderConfigError) as exc_info:
-        build_provider(_settings(llm_provider="dashscope", dashscope_api_key="  "))
-    assert "DASHSCOPE_API_KEY" in exc_info.value.detail
-
-
-def test_factory_unknown_provider_lists_choices() -> None:
-    with pytest.raises(ProviderConfigError) as exc_info:
-        build_provider(_settings(llm_provider="glm"))
-    detail = exc_info.value.detail
-    assert "glm" in detail
-    assert "mock" in detail and "deepseek" in detail and "dashscope" in detail
-
-
-def test_factory_deepseek_with_key_builds_openai_compat(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorded: dict[str, object] = {}
-
-    class FakeChatOpenAI:
-        def __init__(self, **kwargs: object) -> None:
-            recorded.update(kwargs)
-
-    monkeypatch.setattr(openai_compat, "ChatOpenAI", FakeChatOpenAI)
-    provider = build_provider(
-        _settings(llm_provider="DeepSeek", deepseek_api_key="sk-real", deepseek_model="deepseek-flash")
-    )
-    assert isinstance(provider, OpenAICompatProvider)
-    assert provider.model_ref == "deepseek/deepseek-flash"
-    assert recorded == {
-        "model": "deepseek-flash",
-        "api_key": "sk-real",
-        "base_url": "https://api.deepseek.com",
-        "timeout": 60,
-    }
-
-
-def test_openai_compat_complete_passes_messages_and_returns_content(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_openai_compat_complete_passes_messages_and_returns_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class FakeChatOpenAI:
         def __init__(self, **kwargs: object) -> None:
             self.received: list[dict[str, str]] | None = None
@@ -97,7 +47,9 @@ def test_openai_compat_complete_passes_messages_and_returns_content(monkeypatch:
     assert provider._client.received == messages  # type: ignore[union-attr]
 
 
-def test_openai_compat_wraps_upstream_error_and_redacts_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_openai_compat_wraps_upstream_error_and_redacts_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class FakeChatOpenAI:
         def __init__(self, **kwargs: object) -> None:
             pass
@@ -112,4 +64,3 @@ def test_openai_compat_wraps_upstream_error_and_redacts_key(monkeypatch: pytest.
     detail = exc_info.value.detail
     assert "dashscope/qwen3.7-max" in detail
     assert "sk-SECRET123" not in detail
-

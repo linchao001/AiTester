@@ -8,17 +8,18 @@ from aitester.interaction.schemas import (
     SendResponse,
 )
 from aitester.services import ChatService
-from aitester.services import chat as chat_module
+from aitester.services.model_config import ModelConfigService
 
 router = APIRouter(prefix="/api")
 
 
 @router.get("/health")
-def health() -> dict[str, object]:
+def health(request: Request) -> dict[str, object]:
+    model_config: ModelConfigService = request.app.state.model_config
     return {
         "ok": True,
         "service": "aitester-backend",
-        "llm_provider": chat_module.get_settings().llm_provider,
+        "llm_provider": model_config.default_uid or "mock",
     }
 
 

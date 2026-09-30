@@ -1,11 +1,18 @@
 import pytest
 
-import pytest
-
-from aitester.adapters.llm import MockProvider
+from aitester.adapters.llm import MockProvider, ProviderConfigError
+from aitester.adapters.llm import openai_compat
 from aitester.config import Settings
 from aitester.services import ChatService
-from aitester.services import chat as chat_module
+from aitester.services.model_config import ModelConfigService
+from aitester.storage import FileModelConfigRepository
+
+
+def _model_config(tmp_path, **settings_kwargs: object) -> ModelConfigService:
+    return ModelConfigService(
+        FileModelConfigRepository(tmp_path / "model_config.json"),
+        Settings(_env_file=None, **settings_kwargs),  # type: ignore[arg-type]
+    )
 
 
 def test_echo_full_chain_trace_and_reply() -> None:
@@ -46,17 +53,28 @@ def test_send_uses_injected_provider_and_reports_model() -> None:
     ]
 
 
-def test_send_builds_provider_at_call_time_from_settings(
-    monkeypatch: pytest.MonkeyPatch,
+def test_send_resolves_default_from_model_config(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    seen: list[Settings] = []
-    monkeypatch.setattr(chat_module, "get_settings", lambda: Settings(_env_file=None))
+    recorded: dict[str, object] = {}
 
-    def fake_build(settings: Settings) -> MockProvider:
-        seen.append(settings)
-        return MockProvider()
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            recorded.update(kwargs)
 
-    monkeypatch.setattr(chat_module, "build_provider", fake_build)
-    result = ChatService().send("s1", "hello")
-    assert result["reply"] == "[mock] hello"
-    assert len(seen) == 1
+        def invoke(self, messages: list[dict[str, str]]) -> object:
+            return type("R", (), {"content": "真实回复"})()
+
+    monkeypatch.setattr(openai_compat, "ChatOpenAI", FakeChatOpenAI)
+    svc = ChatService(model_config=_model_config(tmp_path, deepseek_api_key="sk-x123456789"))
+    result = svc.send("s1", "hi")
+    assert result["reply"] == "真实回复"
+    assert result["model"] == "deepseek/deepseek-flash"
+    assert recorded["model"] == "deepseek-flash"
+
+
+def test_send_without_usable_default_raises_actionable_config_error(tmp_path) -> None:
+    svc = ChatService(model_config=_model_config(tmp_path))
+    with pytest.raises(ProviderConfigError) as exc_info:
+        svc.send("s1", "hi")
+    assert "设置 · 模型设置" in exc_info.value.detail

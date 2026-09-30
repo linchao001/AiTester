@@ -1,10 +1,10 @@
 from typing import Any
 
-from aitester.adapters.llm import LlmProvider, MockProvider, build_provider
-from aitester.config import get_settings
+from aitester.adapters.llm import LlmProvider, MockProvider, ProviderConfigError
 from aitester.context import ContextBuilder, PassthroughContextBuilder
 from aitester.memory import InMemoryMemoryStore, MemoryStore
 from aitester.orchestration import run_echo
+from aitester.services.model_config import ModelConfigService
 from aitester.storage import InMemoryRepository, Repository
 
 SYSTEM_PROMPT = "你是 AiTester 测试智能体（骨架占位）。"
@@ -19,8 +19,10 @@ class ChatService:
         memory: MemoryStore | None = None,
         context: ContextBuilder | None = None,
         repo: Repository | None = None,
+        model_config: ModelConfigService | None = None,
     ) -> None:
         self.provider = provider
+        self.model_config = model_config
         self.memory = memory or InMemoryMemoryStore()
         self.context = context or PassthroughContextBuilder()
         self.repo = repo or InMemoryRepository()
@@ -52,6 +54,10 @@ class ChatService:
         return {"reply": result["reply"], "trace": result["trace"]}
 
     def send(self, session_id: str, message: str) -> dict[str, Any]:
-        """真实链路：使用注入的 provider，未注入时请求期按当前配置构建。"""
-        provider = self.provider or build_provider(get_settings())
+        """真实链路：注入 provider 优先，否则请求期按运行期配置的默认模型构建。"""
+        provider = self.provider
+        if provider is None:
+            if self.model_config is None:
+                raise ProviderConfigError("服务未装配模型配置，请通过 create_app 启动后端")
+            provider = self.model_config.build_default_provider()
         return self._complete(session_id, message, provider)

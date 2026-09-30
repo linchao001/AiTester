@@ -13,15 +13,10 @@ class Settings(BaseSettings):
 
     host: str = "127.0.0.1"
     port: int = 8000
-    llm_provider: str = "mock"
 
+    # 仅首次启动生成 backend/data/model_config.json 时作为种子读取
     deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-flash"
-
     dashscope_api_key: str = ""
-    dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    dashscope_model: str = "qwen3.7-max"
 
 
 @lru_cache

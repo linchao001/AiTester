@@ -5,7 +5,9 @@ def test_settings_defaults() -> None:
     s = Settings(_env_file=None)
     assert s.host == "127.0.0.1"
     assert s.port == 8000
-    assert s.llm_provider == "mock"
+    assert s.deepseek_api_key == ""
+    assert s.dashscope_api_key == ""
+    assert not hasattr(s, "llm_provider")
 
 
 def test_get_settings_returns_settings() -> None:

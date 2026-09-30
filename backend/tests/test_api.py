@@ -1,10 +1,10 @@
-import pytest
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
-from aitester.adapters.llm import LlmProvider, MockProvider, ProviderConfigError, ProviderError
+from aitester.adapters.llm import MockProvider, ProviderError
 from aitester.config import Settings
 from aitester.main import app, create_app
-from aitester.services import chat as chat_module
 from aitester.services.chat import ChatService
 
 client = TestClient(app)
@@ -20,6 +20,14 @@ ALL_LAYERS = [
 ]
 
 
+def _isolated_client(tmp_path: Path, name: str = "model_config.json") -> TestClient:
+    application = create_app(
+        model_config_path=tmp_path / name,
+        settings=Settings(_env_file=None),
+    )
+    return TestClient(application)
+
+
 def test_health() -> None:
     resp = client.get("/api/health")
     assert resp.status_code == 200
@@ -29,10 +37,8 @@ def test_health() -> None:
     assert isinstance(body["llm_provider"], str) and body["llm_provider"]
 
 
-def test_health_reports_current_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(chat_module, "get_settings", lambda: Settings(llm_provider="deepseek", _env_file=None))
-    body = client.get("/api/health").json()
-    assert body["llm_provider"] == "deepseek"
+def test_health_reports_mock_when_no_default_configured(tmp_path: Path) -> None:
+    assert _isolated_client(tmp_path).get("/api/health").json()["llm_provider"] == "mock"
 
 
 def test_chat_echo_traverses_all_seven_layers() -> None:
@@ -48,9 +54,14 @@ def test_chat_echo_rejects_empty_message() -> None:
     assert resp.status_code == 422
 
 
-def test_send_uses_configured_provider_and_reports_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(chat_module, "build_provider", lambda settings: MockProvider())
-    resp = client.post("/api/chat/send", json={"session_id": "s2", "message": "生成用例"})
+def test_send_uses_injected_provider_and_reports_model(tmp_path: Path) -> None:
+    application = create_app(
+        model_config_path=tmp_path / "m.json", settings=Settings(_env_file=None)
+    )
+    application.state.chat_service = ChatService(provider=MockProvider())
+    resp = TestClient(application).post(
+        "/api/chat/send", json={"session_id": "s2", "message": "生成用例"}
+    )
     assert resp.status_code == 200
     body = resp.json()
     assert body["reply"] == "[mock] 生成用例"
@@ -58,17 +69,13 @@ def test_send_uses_configured_provider_and_reports_model(monkeypatch: pytest.Mon
     assert body["model"] == "mock/mock"
 
 
-def test_send_config_error_returns_400_with_actionable_detail(monkeypatch: pytest.MonkeyPatch) -> None:
-    def raise_config(settings: Settings) -> LlmProvider:
-        raise ProviderConfigError("尚未配置 DeepSeek API Key：请在 backend/.env 中设置 DEEPSEEK_API_KEY")
-
-    monkeypatch.setattr(chat_module, "build_provider", raise_config)
-    resp = client.post("/api/chat/send", json={"message": "hi"})
+def test_send_without_configured_default_returns_400(tmp_path: Path) -> None:
+    resp = _isolated_client(tmp_path).post("/api/chat/send", json={"message": "hi"})
     assert resp.status_code == 400
-    assert "DEEPSEEK_API_KEY" in resp.json()["detail"]
+    assert "设置 · 模型设置" in resp.json()["detail"]
 
 
-def test_send_upstream_failure_returns_502() -> None:
+def test_send_upstream_failure_returns_502(tmp_path: Path) -> None:
     class FailingProvider:
         name = "fake"
         model_ref = "fake/model-x"
@@ -76,15 +83,18 @@ def test_send_upstream_failure_returns_502() -> None:
         def complete(self, messages: list[dict[str, str]]) -> str:
             raise ProviderError("调用 fake/model-x 失败: HTTP 401")
 
-    app2 = create_app()
-    app2.state.chat_service = ChatService(provider=FailingProvider())
-    resp = TestClient(app2).post("/api/chat/send", json={"message": "hi"})
+    application = create_app(
+        model_config_path=tmp_path / "m.json", settings=Settings(_env_file=None)
+    )
+    application.state.chat_service = ChatService(provider=FailingProvider())
+    resp = TestClient(application).post("/api/chat/send", json={"message": "hi"})
     assert resp.status_code == 502
     assert "fake/model-x" in resp.json()["detail"]
 
 
-def test_chat_service_is_per_app_instance() -> None:
-    app_a, app_b = create_app(), create_app()
+def test_chat_service_is_per_app_instance(tmp_path: Path) -> None:
+    app_a = create_app(model_config_path=tmp_path / "a.json", settings=Settings(_env_file=None))
+    app_b = create_app(model_config_path=tmp_path / "b.json", settings=Settings(_env_file=None))
     client_a, client_b = TestClient(app_a), TestClient(app_b)
     resp = client_a.post("/api/chat/echo", json={"session_id": "iso", "message": "hello"})
     assert resp.status_code == 200

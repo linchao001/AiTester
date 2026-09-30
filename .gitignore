@@ -13,5 +13,8 @@ __pycache__/
 # 本地配置（含密钥）
 .env
 
+# 运行期模型配置（含密钥，不入库）
+backend/data/
+
 # SDD 过程工件（ledger/brief/快照，不入库）
 .superpowers/
