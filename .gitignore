@@ -1,0 +1,17 @@
+# 依赖与虚拟环境
+.venv/
+node_modules/
+
+# 构建产物
+dist/
+
+# Python 运行产物
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 本地配置（含密钥）
+.env
+
+# SDD 过程工件（ledger/brief/快照，不入库）
+.superpowers/
