@@ -7,6 +7,7 @@ import {
 } from "../../api/client";
 import AgentPane from "./AgentPane";
 import ModelPane from "./ModelPane";
+import ToolPane from "./ToolPane";
 
 type SettingsTab = "model" | "agent" | "tool";
 
@@ -102,7 +103,9 @@ export default function SettingsModal({ onClose, onChanged }: SettingsModalProps
             <div className="modal-body" hidden={tab !== "agent"}>
               <AgentPane models={models} caps={caps} saving={saving} onAction={runCaps} />
             </div>
-            <div className="modal-body" hidden={tab !== "tool"} />
+            <div className="modal-body" hidden={tab !== "tool"}>
+              <ToolPane tools={caps.tools} caps={caps} saving={saving} onAction={runCaps} />
+            </div>
           </>
         )}
       </div>
