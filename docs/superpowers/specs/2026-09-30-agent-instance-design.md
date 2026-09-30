@@ -102,7 +102,7 @@ POST /api/chat/send {session_id, message, agent_id}
 ```
 
 - `ChatService.send` 要求已装配 `agent_runtime`（未装配 → `ProviderConfigError("服务未装配智能体运行时，请通过 create_app 启动后端")`，对齐现有「服务未装配模型配置」风格）；`provider` 注入仍优先（测试缝）。`echo` 一字不动（mock + 占位 prompt + 7 层 trace）。
-- 会话键 `agent_id:session_id`（memory.recall/save 与 repo.put 同步 scoped）：对齐域模型「会话绑定 智能体×项目」，多智能体时不串扰；API 形状不变。
+- 会话键 `agent_id:session_id`（memory.recall/save 与 repo.put 同步 scoped）：对齐域模型「会话绑定 智能体×项目」，多智能体时不串扰；API 形状不变。项目维度待项目专项：届时键扩展为含 `project_id`（如 `project_id:agent_id:session_id`），会话列表按 (当前项目, 当前智能体) 过滤。
 - trace 保持 `services / context / orchestration / adapters / (tool:x)* / memory / storage`，响应仍是 `["interaction"] + trace`（既有断言保持）。
 
 ## 5. API 与错误语义
@@ -142,3 +142,4 @@ POST /api/chat/send {session_id, message, agent_id}
 - 交付 = **仅后端装配**（用户选定），前端零改动。
 - 智能体 ID = `case_design`（用户要求可读化，替换 `a1`）；此后新智能体沿用同规则。
 - 多智能体「随时切换」的语义 = **A 会话级切换**（用户选定，2026-09-30）：会话列表按当前智能体过滤，切智能体即切到它的会话范围；会话强绑定单个（智能体×项目），本期会话键 `agent_id:session_id` 即其落地。**跨智能体自动接力**（显式调用/子智能体，QwenPaw 式）为后续独立特性，行为缝是其承载点，本期不做。
+- 项目维度同理 = **切项目即切会话范围**（用户确认，2026-09-30，原型语义）：同一智能体可在多个项目间切换，会话随之切换；会话绑定 (项目 × 智能体)。本期后端项目模块未实现（§1 不做项目目录接入），会话键只落智能体维度；项目专项落地时键扩展为含 `project_id`、会话列表按 (当前项目, 当前智能体) 过滤——与原型 `s.ws===ctx.ws && s.agent===ctx.agent` 一致。
