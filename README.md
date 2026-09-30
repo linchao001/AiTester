@@ -16,6 +16,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 -FrontendPor
 Ctrl+C 或按任意键停止，退出时清理整棵进程树（不会残留 uvicorn/node 孤儿进程）。
 也可按下方说明分别手动启动。
 
+「⚙ 设置」弹窗分三节：🧠 模型设置 / 🤖 智能体配置（本期仅「用例设计智能体」，系统提示词只读）/ 🛠 工具。
+
 ## 后端（backend/）
 
 ```bash
@@ -33,11 +35,16 @@ uv run python -m aitester.main
   （配置缺失 → 400 指引；上游失败 → 502）
 - `GET /api/models` + 三个 `PUT`：模型配置运行期读写（Key 掩码返回，明文永不出口），
   对应前端顶栏「⚙ 设置」弹窗
+- `GET /api/capabilities` + 三个 `PUT`：智能体默认模型 / 携带工具 / 工具启用停用的运行期读写
+  （对应前端「⚙ 设置 · 智能体配置 / 工具」；禁用工具会从所有智能体级联摘除，重新启用不自动补回；
+  本期只做配置入口，暂不参与实际执行逻辑）
 - 测试：`uv run pytest`
 - 配置：复制 `.env.example` 为 `.env`（仅 HOST/PORT + 两个可选种子 Key）；
   运行期模型配置存 `backend/data/model_config.json`（gitignore，含密钥），
   首次启动自动从 `.env` 种子导入，之后在前端「设置 · 模型设置」管理；
   **Key 不入库、不出现在任何响应/日志/异常明文**
+  能力配置（智能体默认模型、携带工具、工具启停）存 `backend/data/capability_config.json`
+  （同样 gitignore，不含密钥），首次启动自动生成种子
 
 ## 前端（frontend/）
 
