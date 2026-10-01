@@ -561,3 +561,7 @@
   /* 3) 正式后端有「读取时回落」语义（存过的默认模型失效时回落全局默认），原型无此状态，
         故补一条回落提示样式；配色沿用原型既有 token。 */
   .stale-warn{font-size:11.5px;line-height:1.6;color:var(--primary-deep);background:var(--primary-soft);border:1px solid #f3d9b8;border-radius:8px;padding:6px 9px;margin-top:6px}
+  /* 4) 知识库页首版（状态/检索/写入三区）沿用既有基元（.page/.sec-title/.case-card/.field/.kb-meta），
+        原型知识库页是完整目录树形态、没有「metadata 解析失败时降级看原始 JSON」的状态，
+        故补一个等宽 pre 块 .kb-raw；配色沿用 .ag-desc 同款浅底 token。 */
+  .kb-raw{margin-top:10px;background:#fbf7f0;border:1px solid var(--line);border-radius:10px;padding:9px 11px;font:11.5px/1.7 Consolas,monospace;color:#5c554b;white-space:pre-wrap;word-break:break-all;max-height:260px;overflow:auto}

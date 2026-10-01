@@ -173,3 +173,34 @@ export function putToolEnabled(
     body: JSON.stringify({ enabled }),
   });
 }
+
+/** /api/kb/* 统一响应壳（后端 KbResponse：answer 多为文本，metadata 形状随 job 而定）。 */
+export interface KbResponse {
+  success: boolean;
+  answer: unknown;
+  metadata: Record<string, unknown>;
+}
+
+export function getKbStatus(): Promise<KbResponse> {
+  return apiFetch<KbResponse>("/api/kb/status");
+}
+
+export function getKbBases(): Promise<KbResponse> {
+  return apiFetch<KbResponse>("/api/kb/bases");
+}
+
+export function kbSearch(query: string, limit: number, bucket: string): Promise<KbResponse> {
+  return apiFetch<KbResponse>("/api/kb/search", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ query, limit, bucket }),
+  });
+}
+
+export function kbSave(title: string, content: string, bucket: string): Promise<KbResponse> {
+  return apiFetch<KbResponse>("/api/kb/save", {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ title, content, bucket }),
+  });
+}
