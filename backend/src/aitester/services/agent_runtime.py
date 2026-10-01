@@ -35,10 +35,12 @@ class AgentRuntime:
         capability: CapabilityConfigService,
         model_config: ModelConfigService,
         observations: FileObservationStore | None = None,
+        kb=None,
     ) -> None:
         self._capability = capability
         self._model_config = model_config
         self._observations = observations if observations is not None else FileObservationStore()
+        self._kb = kb
 
     def build(
         self,
@@ -67,6 +69,8 @@ class AgentRuntime:
                 cwd=".",
                 session_id=f"{agent_id}:{session_id}",
                 observed=self._observations,
+                kb=self._kb,
+                agent_id=agent_id,
             )
             tools = registry.get_many(state["tool_ids"])
 

@@ -29,6 +29,8 @@ def test_capabilities_seed_view(tmp_path: Path) -> None:
         "pwsh",
         "bash",
         "web_search",
+        "knowledge_search",
+        "save_to_knowledge",
     ]
     assert [a["id"] for a in body["agents"]] == ["case_design"]
     agent = body["agents"][0]

@@ -9,6 +9,7 @@ from aitester.adapters.tools.file_tools import (
     ReadTool,
     WriteTool,
 )
+from aitester.adapters.tools.kb_tools import KbSaveTool, KbSearchTool
 from aitester.adapters.tools.registry import ToolRegistry
 from aitester.adapters.tools.web_tools import WebSearchTool
 
@@ -17,11 +18,14 @@ def build_default_registry(
     cwd: str = ".",
     session_id: str = "default",
     observed: FileObservationStore | None = None,
+    kb=None,
+    agent_id: str = "console",
 ) -> ToolRegistry:
     """构建预装全部内置工具的注册表。
 
     `observed` 为跨请求共享的会话级观察记录，用于「改前必读」守卫；
     不传则新建一个仅在本注册表生命周期内有效的记录。
+    `kb` 为 RemeKbManager（或其同签名替身）；不传则不注册知识库工具。
     """
     store = observed if observed is not None else FileObservationStore()
     registry = ToolRegistry()
@@ -32,6 +36,9 @@ def build_default_registry(
     for cls in COMMAND_TOOLS:
         registry.register(cls(cwd=cwd))
     registry.register(WebSearchTool())
+    if kb is not None:
+        registry.register(KbSearchTool(kb=kb, agent_id=agent_id))
+        registry.register(KbSaveTool(kb=kb, agent_id=agent_id))
     return registry
 
 
@@ -43,6 +50,8 @@ __all__ = [
     "FileObservationStore",
     "GlobSearchTool",
     "GrepSearchTool",
+    "KbSaveTool",
+    "KbSearchTool",
     "PwshTool",
     "ReadTool",
     "ToolRegistry",

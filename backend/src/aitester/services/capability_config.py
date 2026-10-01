@@ -77,6 +77,22 @@ TOOL_CATALOG: list[dict[str, Any]] = [
         "os": "全平台",
         "desc": "按关键词搜索公网，返回标题、链接与摘要，用于查官方文档、错误码与版本变更说明。",
     },
+    {
+        "id": "knowledge_search",
+        "group": "知识库工具",
+        "icon": "🔍",
+        "label": "knowledge_search",
+        "os": "全平台",
+        "desc": "检索全局共享知识库（发布桶范围），返回命中节点与出处；回答业务问题前先查证。",
+    },
+    {
+        "id": "save_to_knowledge",
+        "group": "知识库工具",
+        "icon": "📥",
+        "label": "save_to_knowledge",
+        "os": "全平台",
+        "desc": "把已确认的知识节点写入共享知识库发布桶，全项目共享可见；写入前必须经用户确认。",
+    },
 ]
 
 

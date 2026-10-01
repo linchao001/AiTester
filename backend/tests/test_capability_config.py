@@ -145,7 +145,7 @@ def test_seed_identical_config_is_not_rewritten(tmp_path: Path) -> None:
     assert missing.save_calls == 1
 
 
-def test_catalog_seeds_exactly_one_agent_and_eight_tools() -> None:
+def test_catalog_seeds_exactly_one_agent_and_ten_tools() -> None:
     assert [s.id for s in AGENT_CATALOG] == ["case_design"]
     assert AGENT_CATALOG[0].name == "用例设计智能体"
     assert [t["id"] for t in TOOL_CATALOG] == [
@@ -157,6 +157,8 @@ def test_catalog_seeds_exactly_one_agent_and_eight_tools() -> None:
         "pwsh",
         "bash",
         "web_search",
+        "knowledge_search",
+        "save_to_knowledge",
     ]
 
 

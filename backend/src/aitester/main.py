@@ -51,7 +51,7 @@ def create_app(
     application.state.capability_config = capability_config
     application.state.file_observations = FileObservationStore()
     application.state.agent_runtime = AgentRuntime(
-        capability_config, model_config, application.state.file_observations
+        capability_config, model_config, application.state.file_observations, kb=kb
     )
     application.state.chat_service = ChatService(agent_runtime=application.state.agent_runtime)
     application.include_router(router)

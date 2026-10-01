@@ -134,8 +134,16 @@ def test_registry_uses_dot_cwd_and_shared_observations(
         def get_many(self, tool_ids: list[str]) -> list[Any]:
             return []
 
-    def fake_registry(cwd: str = ".", session_id: str = "default", observed: Any = None) -> Any:
-        captured.update({"cwd": cwd, "session_id": session_id, "observed": observed})
+    def fake_registry(
+        cwd: str = ".",
+        session_id: str = "default",
+        observed: Any = None,
+        kb: Any = None,
+        agent_id: str = "console",
+    ) -> Any:
+        captured.update(
+            {"cwd": cwd, "session_id": session_id, "observed": observed, "kb": kb, "agent_id": agent_id}
+        )
         return _Registry()
 
     monkeypatch.setattr("aitester.services.agent_runtime.build_default_registry", fake_registry)
@@ -146,11 +154,14 @@ def test_registry_uses_dot_cwd_and_shared_observations(
         FileJsonConfigRepository(tmp_path / "capability_config.json"), model_config
     )
     store = FileObservationStore()
-    runtime = AgentRuntime(capability, model_config, store)
+    kb = object()  # 替身 manager：只验证透传形状，不调用
+    runtime = AgentRuntime(capability, model_config, store, kb=kb)
     runtime.build("case_design", "s9", provider_override=MockProvider())
     assert captured["cwd"] == "."  # 项目目录接入是留给项目专项的缝
     assert captured["session_id"] == "case_design:s9"  # 守卫键与 memory/storage 一样按智能体 scoped
     assert captured["observed"] is store
+    assert captured["kb"] is kb  # KB manager 透传给注册表
+    assert captured["agent_id"] == "case_design"  # KB 工具按智能体绑定实例池
 
 
 def test_instances_are_independent_objects(tmp_path: Path) -> None:
