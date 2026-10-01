@@ -3,6 +3,7 @@ import copy
 from typing import Any
 
 from aitester.adapters.llm import LlmProvider, OpenAICompatProvider, ProviderConfigError
+from aitester.adapters.llm.probe import ProbeError, probe_model
 from aitester.config import Settings
 from aitester.storage import JsonConfigRepository
 
@@ -293,3 +294,22 @@ class ModelConfigService:
 
     def build_default_provider(self) -> LlmProvider:
         return self.build_provider(self._config["default_uid"])
+
+    def probe_provider(
+        self, provider_id: str, api_key_draft: str | None = None
+    ) -> dict[str, Any]:
+        """连接探测：草稿 Key 优先于已存 Key，取第一个已启用模型发一次极小补全；只读不落盘。"""
+        provider = self._provider(provider_id)
+        api_key = (api_key_draft or "").strip() or provider["api_key"]
+        if not api_key:
+            return {"ok": False, "reason": "未配置 API Key，请先填写后再测试连接"}
+        enabled = [m for m in _ordered_models(provider) if m["enabled"]]
+        if not enabled:
+            return {"ok": False, "reason": "该提供商没有已启用模型，请先启用一个模型再测试"}
+        try:
+            latency_ms = probe_model(
+                model=enabled[0]["id"], api_key=api_key, base_url=provider["base_url"]
+            )
+        except ProbeError as exc:
+            return {"ok": False, "reason": exc.detail}
+        return {"ok": True, "latency_ms": latency_ms}

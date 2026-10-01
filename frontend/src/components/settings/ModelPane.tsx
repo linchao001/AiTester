@@ -3,6 +3,7 @@ import {
   putApiKey,
   putDefault,
   putModelEnabled,
+  testProvider,
   type ModelsResponse,
   type ProviderInfo,
 } from "../../api/client";
@@ -14,11 +15,14 @@ interface ModelPaneProps {
   onAction: (action: () => Promise<ModelsResponse>) => void;
 }
 
+type TestState = "" | "run" | "ok" | "fail";
+
 export default function ModelPane({ models, saving, onAction }: ModelPaneProps) {
   const [selectedId, setSelectedId] = useState(models.providers[0].id);
   const [keyInput, setKeyInput] = useState("");
   const [keyVisible, setKeyVisible] = useState(false);
   const [tip, setTip] = useState("");
+  const [test, setTest] = useState<{ state: TestState; text: string }>({ state: "", text: "" });
   const provider =
     models.providers.find((p) => p.id === selectedId) ?? models.providers[0];
   const lock = !!provider.freeze_url || (provider.base_options?.length ?? 0) > 0;
@@ -28,6 +32,20 @@ export default function ModelPane({ models, saving, onAction }: ModelPaneProps) 
     setKeyInput("");
     setKeyVisible(false);
     setTip("");
+    setTest({ state: "", text: "" });
+  }
+
+  function runTest(): void {
+    setTest({ state: "run", text: "⏳ 测试中…" });
+    testProvider(provider.id, keyInput)
+      .then((r) =>
+        setTest(
+          r.ok
+            ? { state: "ok", text: `✓ 连接成功 · ${r.latency_ms}ms` }
+            : { state: "fail", text: `✗ 连接失败：${r.reason}` },
+        ),
+      )
+      .catch((e: Error) => setTest({ state: "fail", text: `✗ 连接失败：${e.message}` }));
   }
 
   return (
@@ -130,8 +148,10 @@ export default function ModelPane({ models, saving, onAction }: ModelPaneProps) 
           </div>
         </div>
         <div className="set-acts">
-          <button className="mini-btn" disabled title={NOT_OPEN}>🔌 测试连接</button>
-          <span className="test-state"></span>
+          <button className="mini-btn" disabled={saving || test.state === "run"} onClick={runTest}>
+            🔌 测试连接
+          </button>
+          <span className={test.state ? `test-state ${test.state}` : "test-state"}>{test.text}</span>
           <div className="spacer"></div>
           <button
             className="mini-btn"

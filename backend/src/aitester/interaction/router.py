@@ -11,6 +11,8 @@ from aitester.interaction.schemas import (
     EnabledUpdate,
     KeyUpdate,
     ModelsResponse,
+    ProviderTestRequest,
+    ProviderTestResponse,
     SendRequest,
     SendResponse,
     ToolEnabledUpdate,
@@ -75,6 +77,18 @@ def models_update_key(pid: str, req: KeyUpdate, request: Request) -> ModelsRespo
     except ConfigNotFoundError as exc:
         raise HTTPException(status_code=404, detail=exc.detail) from exc
     return _view(request)
+
+
+@router.post("/models/providers/{pid}/test", response_model=ProviderTestResponse)
+def models_test_provider(
+    pid: str, req: ProviderTestRequest, request: Request
+) -> ProviderTestResponse:
+    model_config: ModelConfigService = request.app.state.model_config
+    try:
+        result = model_config.probe_provider(pid, req.api_key)
+    except ConfigNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
+    return ProviderTestResponse(**result)
 
 
 @router.put("/models/providers/{pid}/models/{mid}/enabled", response_model=ModelsResponse)

@@ -65,6 +65,16 @@ class EnabledUpdate(BaseModel):
     enabled: bool
 
 
+class ProviderTestRequest(BaseModel):
+    api_key: str | None = None
+
+
+class ProviderTestResponse(BaseModel):
+    ok: bool
+    latency_ms: int | None = None
+    reason: str | None = None
+
+
 class DefaultUpdate(BaseModel):
     uid: str
 

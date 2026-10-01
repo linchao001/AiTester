@@ -38,6 +38,12 @@ export interface ModelsResponse {
   providers: ProviderInfo[];
 }
 
+export interface ProviderTestResponse {
+  ok: boolean;
+  latency_ms?: number | null;
+  reason?: string | null;
+}
+
 export interface ToolInfo {
   id: string;
   group: string;
@@ -97,6 +103,14 @@ export function putApiKey(providerId: string, apiKey: string): Promise<ModelsRes
     method: "PUT",
     headers: JSON_HEADERS,
     body: JSON.stringify({ api_key: apiKey }),
+  });
+}
+
+export function testProvider(providerId: string, apiKeyDraft: string): Promise<ProviderTestResponse> {
+  return apiFetch<ProviderTestResponse>(`/api/models/providers/${providerId}/test`, {
+    method: "POST",
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ api_key: apiKeyDraft }),
   });
 }
 

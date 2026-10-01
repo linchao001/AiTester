@@ -5,8 +5,10 @@ from fastapi.testclient import TestClient
 
 from aitester.agents import find_agent
 from aitester.adapters.llm import MockProvider, ProviderError
+from aitester.adapters.llm.probe import ProbeError
 from aitester.config import Settings
 from aitester.main import app, create_app
+from aitester.services import model_config
 from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.chat import ChatService
 from langchain_core.messages import AIMessage
@@ -246,3 +248,69 @@ def test_models_endpoints_404_for_unknown_provider(tmp_path: Path) -> None:
     assert (
         c.put("/api/models/providers/deepseek/models/nope/enabled", json={"enabled": True})
     ).status_code == 404
+
+
+def _stub_probe(monkeypatch, *, latency: int = 42, error: str | None = None) -> list:
+    calls: list[dict] = []
+
+    def fake_probe_model(**kwargs: object) -> int:
+        calls.append(kwargs)
+        if error is not None:
+            raise ProbeError(error)
+        return latency
+
+    monkeypatch.setattr(model_config, "probe_model", fake_probe_model)
+    return calls
+
+
+def test_provider_test_endpoint_reports_success_latency(tmp_path: Path, monkeypatch) -> None:
+    calls = _stub_probe(monkeypatch, latency=42)
+    c = _isolated_client(tmp_path)
+    c.put("/api/models/providers/deepseek/key", json={"api_key": "sk-SECRET123456"})
+    resp = c.post("/api/models/providers/deepseek/test", json={})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert resp.json()["latency_ms"] == 42
+    assert calls[0]["model"] == "deepseek-flash"
+
+
+def test_provider_test_endpoint_draft_key_is_not_persisted(tmp_path: Path, monkeypatch) -> None:
+    calls = _stub_probe(monkeypatch)
+    c = _isolated_client(tmp_path)
+    resp = c.post("/api/models/providers/deepseek/test", json={"api_key": "sk-DRAFT123456"})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert calls[0]["api_key"] == "sk-DRAFT123456"
+    body = c.get("/api/models").json()
+    assert body["providers"][0]["has_key"] is False
+    assert "sk-DRAFT123456" not in json.dumps(body, ensure_ascii=False)
+
+
+def test_provider_test_endpoint_returns_200_with_failure_copy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _stub_probe(monkeypatch, error="地址不可达，请检查 Base URL 与网络")
+    c = _isolated_client(tmp_path)
+    c.put("/api/models/providers/deepseek/key", json={"api_key": "sk-SECRET123456"})
+    resp = c.post("/api/models/providers/deepseek/test", json={})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is False
+    assert "地址不可达" in resp.json()["reason"]
+
+
+def test_provider_test_endpoint_without_key_fails_without_requesting(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = _stub_probe(monkeypatch)
+    c = _isolated_client(tmp_path)
+    resp = c.post("/api/models/providers/deepseek/test", json={})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is False
+    assert "未配置 API Key" in resp.json()["reason"]
+    assert calls == []
+
+
+def test_provider_test_endpoint_404_for_unknown_provider(tmp_path: Path, monkeypatch) -> None:
+    _stub_probe(monkeypatch)
+    c = _isolated_client(tmp_path)
+    assert c.post("/api/models/providers/glm/test", json={}).status_code == 404

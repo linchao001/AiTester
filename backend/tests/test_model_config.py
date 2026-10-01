@@ -4,7 +4,9 @@ import pytest
 
 from aitester.adapters.llm import ProviderConfigError
 from aitester.adapters.llm import openai_compat
+from aitester.adapters.llm.probe import ProbeError
 from aitester.config import Settings
+from aitester.services import model_config
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService, mask_key
 from aitester.storage import FileJsonConfigRepository
 
@@ -267,3 +269,123 @@ def test_build_default_provider_delegates_to_build_provider(
     assert svc.build_default_provider().model_ref == "deepseek/deepseek-flash"
     assert svc.build_provider("deepseek/deepseek-flash").model_ref == "deepseek/deepseek-flash"
     assert recorded == ["deepseek-flash", "deepseek-flash"]
+
+
+def _fake_probe(monkeypatch, *, latency: int = 123, error: Exception | None = None) -> list:
+    calls: list[dict] = []
+
+    def fake_probe_model(**kwargs: object) -> int:
+        calls.append(kwargs)
+        if error is not None:
+            raise error
+        return latency
+
+    monkeypatch.setattr(model_config, "probe_model", fake_probe_model)
+    return calls
+
+
+def test_probe_success_reports_latency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _fake_probe(monkeypatch, latency=87)
+    svc = _svc(tmp_path, deepseek_api_key="sk-x123456789")
+    assert svc.probe_provider("deepseek") == {"ok": True, "latency_ms": 87}
+    assert calls == [
+        {
+            "model": "deepseek-flash",
+            "api_key": "sk-x123456789",
+            "base_url": "https://api.deepseek.com",
+        }
+    ]
+
+
+def test_probe_draft_key_beats_missing_stored_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_probe(monkeypatch)
+    svc = _svc(tmp_path)
+    assert svc.probe_provider("deepseek", "  sk-draft-123456  ")["ok"] is True
+    assert calls[0]["api_key"] == "sk-draft-123456"
+
+
+def test_probe_draft_key_beats_stored_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _fake_probe(monkeypatch)
+    svc = _svc(tmp_path, deepseek_api_key="sk-stored-123456")
+    svc.probe_provider("deepseek", "sk-draft-123456")
+    assert calls[0]["api_key"] == "sk-draft-123456"
+
+
+def test_probe_blank_draft_falls_back_to_stored_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_probe(monkeypatch)
+    svc = _svc(tmp_path, deepseek_api_key="sk-stored-123456")
+    svc.probe_provider("deepseek", "   ")
+    assert calls[0]["api_key"] == "sk-stored-123456"
+
+
+def test_probe_never_persists_draft_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_probe(monkeypatch)
+    svc = _svc(tmp_path)
+    before = FileJsonConfigRepository(tmp_path / "model_config.json").load()
+    svc.probe_provider("deepseek", "sk-draft-123456")
+    after = FileJsonConfigRepository(tmp_path / "model_config.json").load()
+    assert after == before
+    assert after is not None
+    assert "sk-draft-123456" not in str(after)
+    assert svc.get_view()["providers"][0]["has_key"] is False
+    assert svc.default_uid == ""
+
+
+def test_probe_targets_first_enabled_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_probe(monkeypatch)
+    svc = _svc(tmp_path, deepseek_api_key="sk-x123456789")
+    svc.probe_provider("deepseek")
+    assert calls[0]["model"] == "deepseek-flash"
+
+    calls.clear()
+    svc.set_model_enabled("deepseek", "deepseek-flash", False)
+    svc.probe_provider("deepseek")
+    assert calls[0]["model"] == "deepseek-v4-pro"
+
+
+def test_probe_without_key_fails_without_requesting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_probe(monkeypatch)
+    result = _svc(tmp_path).probe_provider("deepseek")
+    assert result["ok"] is False
+    assert "未配置 API Key" in result["reason"]
+    assert calls == []
+
+
+def test_probe_without_enabled_model_fails_without_requesting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_probe(monkeypatch)
+    svc = _svc(tmp_path, deepseek_api_key="sk-x123456789")
+    svc.set_model_enabled("deepseek", "deepseek-flash", False)
+    svc.set_model_enabled("deepseek", "deepseek-v4-pro", False)
+    result = svc.probe_provider("deepseek")
+    assert result["ok"] is False
+    assert "已启用模型" in result["reason"]
+    assert calls == []
+
+
+def test_probe_reports_upstream_failure_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_probe(monkeypatch, error=ProbeError("API Key 无效或无权限"))
+    result = _svc(tmp_path, deepseek_api_key="sk-x123456789").probe_provider("deepseek")
+    assert result == {"ok": False, "reason": "API Key 无效或无权限"}
+
+
+def test_probe_unknown_provider_raises_not_found(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _fake_probe(monkeypatch)
+    with pytest.raises(ConfigNotFoundError):
+        _svc(tmp_path).probe_provider("glm")
+    assert calls == []
