@@ -1,4 +1,4 @@
-"""工具感知 Agent 图：agent → tools → agent → … → END。"""
+"""工具感知 Agent 图：agent → tools → agent → … → END；无工具时退化为单节点直答图。"""
 
 from __future__ import annotations
 

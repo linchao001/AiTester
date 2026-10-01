@@ -32,8 +32,8 @@ uv run python -m aitester.main
 - `GET /api/health`：联通检查（`llm_provider` 为运行期默认模型 uid，未配置时 `mock`）
 - `POST /api/chat/echo`：窄链路演示，响应 trace 穿透七层
   （interaction → services → context → orchestration → adapters → memory → storage），恒走 mock
-- `POST /api/chat/send`：真实 LLM 链路，按「设置 · 模型设置」的默认模型调用，
-  并按该智能体的携带工具注入工具（LangGraph agent loop 自行调用）
+- `POST /api/chat/send`：真实 LLM 链路，按 `agent_id` 现装一个一次性智能体实例
+  （提示词 / 有效模型 / 携带工具 / 图拓扑），该智能体的默认模型可用则用、否则回落全局默认，未知 `agent_id` 返回 404
   （配置缺失 → 400 指引；上游失败 → 502）
 - `GET /api/models` + 三个 `PUT`：模型配置运行期读写（Key 掩码返回，明文永不出口），
   对应前端顶栏「⚙ 设置」弹窗

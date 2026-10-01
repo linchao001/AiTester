@@ -61,8 +61,12 @@ class AgentRuntime:
         state: dict[str, Any] = self._capability.agent_state(agent_id)
         tools: list[AiTooler] = []
         if state["tool_ids"]:
+            # 会话键与 memory/storage 的 scoped 键保持一致：会话按智能体隔离，
+            # 「改前必读」守卫记录也必须按智能体隔离，否则 A 读过即可解锁 B 会话的写。
             registry = build_default_registry(
-                cwd=".", session_id=session_id, observed=self._observations
+                cwd=".",
+                session_id=f"{agent_id}:{session_id}",
+                observed=self._observations,
             )
             tools = registry.get_many(state["tool_ids"])
 

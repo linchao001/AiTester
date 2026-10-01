@@ -149,7 +149,7 @@ def test_registry_uses_dot_cwd_and_shared_observations(
     runtime = AgentRuntime(capability, model_config, store)
     runtime.build("case_design", "s9", provider_override=MockProvider())
     assert captured["cwd"] == "."  # 项目目录接入是留给项目专项的缝
-    assert captured["session_id"] == "s9"
+    assert captured["session_id"] == "case_design:s9"  # 守卫键与 memory/storage 一样按智能体 scoped
     assert captured["observed"] is store
 
 
