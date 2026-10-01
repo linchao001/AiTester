@@ -1,9 +1,12 @@
+import asyncio
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import reme
 
 from aitester.services.kb.manager import KbUnavailableError, RemeKbManager
 
@@ -150,5 +153,61 @@ def test_cross_instance_convergence_without_explicit_reindex(tmp_path):
                 break
             time.sleep(1)
         assert "实时监听节点" in blob2, f"实例 B 运行期 watch 增量 30 秒内未收敛：{blob2}"
+    finally:
+        mgr.close_all()
+
+
+def test_run_job_async_bridge(tmp_path):
+    """Task 5 异步端点消费的 run_job 桥：asyncio.run 驱动真 manager + 真 KB。"""
+    _seed_kb(tmp_path)
+    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        async def main():
+            return await mgr.run_job("status", project_id="p1", agent_id="a1")
+
+        resp = asyncio.run(main())
+        assert resp.success
+    finally:
+        mgr.close_all()
+
+
+def test_concurrent_same_key_starts_exactly_one_application(tmp_path, monkeypatch):
+    """同一 (project, agent) 并发提交只允许启动一个 Application（单飞）。
+
+    测试侧慢钩子：monkeypatch 出的子类在真实 start() 前 sleep，放大
+    check-then-construct 的 await 窗口以暴露竞争——生产代码零改动。
+    """
+    _seed_kb(tmp_path)
+    constructed = []
+    real_application = reme.Application
+
+    class SlowApplication(real_application):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            constructed.append(self)
+
+        async def start(self):
+            await asyncio.sleep(0.5)  # 仅测试内的慢钩子
+            await super().start()
+
+    monkeypatch.setattr(reme, "Application", SlowApplication)
+
+    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(
+                pool.map(
+                    lambda _: mgr.run_job_sync(
+                        "status", project_id="p1", agent_id="a1", timeout=120.0
+                    ),
+                    range(4),
+                )
+            )
+        assert all(r.success for r in results)
+        assert len(constructed) == 1, f"并发下 Application 被重复构造 {len(constructed)} 次"
+        assert len(mgr._apps) == 1
+        assert mgr._apps[("p1", "a1")] is constructed[0]
     finally:
         mgr.close_all()
