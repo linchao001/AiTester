@@ -336,7 +336,7 @@ export default function KbPage() {
       </div>
 
       {/* —— 写入区 —— */}
-      <KbSectionTitle label="知识写入" sub="写入即全局共享，并对本实例立即重建索引" />
+      <KbSectionTitle label="知识写入" sub="写入即全局共享，索引自动收敛后（约数十秒）可在检索区验证" />
       <div className="case-card">
         <div className="c-head">
           <span>写入知识库</span>
