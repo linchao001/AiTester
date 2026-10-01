@@ -91,6 +91,12 @@ def test_send_upstream_failure_returns_502(tmp_path: Path) -> None:
         def complete(self, messages: list[dict[str, str]]) -> str:
             raise ProviderError("调用 fake/model-x 失败: HTTP 401")
 
+        def bind_tools(self, tools: list) -> "FailingProvider":
+            return FailingProvider()
+
+        def invoke_messages(self, messages: list) -> object:
+            raise ProviderError("调用 fake/model-x 失败: HTTP 401")
+
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",

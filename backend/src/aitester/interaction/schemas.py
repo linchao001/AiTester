@@ -14,6 +14,7 @@ class EchoResponse(BaseModel):
 class SendRequest(BaseModel):
     session_id: str = "default"
     message: str = Field(min_length=1)
+    agent_id: str = "a1"
 
 
 class SendResponse(BaseModel):
@@ -27,6 +28,15 @@ class ModelInfo(BaseModel):
     enabled: bool
     max_output: int
     context: int
+    name: str | None = None
+    caps: list[str] = []
+    note: str | None = None
+    recommended: bool = False
+
+
+class ProviderUrlOption(BaseModel):
+    label: str
+    value: str
 
 
 class ProviderInfo(BaseModel):
@@ -36,6 +46,10 @@ class ProviderInfo(BaseModel):
     has_key: bool
     key_masked: str
     models: list[ModelInfo]
+    proto: str | None = None
+    key_prefix: str | None = None
+    freeze_url: bool = False
+    base_options: list[ProviderUrlOption] = []
 
 
 class ModelsResponse(BaseModel):
@@ -63,6 +77,8 @@ class ToolInfo(BaseModel):
     os: str
     desc: str
     enabled: bool
+    available: bool
+    unavailable_reason: str | None
     carried_by: list[str]
 
 

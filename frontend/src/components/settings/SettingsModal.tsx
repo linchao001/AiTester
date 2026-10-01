@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   getCapabilities,
   getModels,
+  putDefault,
   type CapabilityResponse,
   type ModelsResponse,
 } from "../../api/client";
@@ -29,7 +30,7 @@ export default function SettingsModal({ onClose, onChanged }: SettingsModalProps
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     Promise.all([getModels(), getCapabilities()])
       .then(([m, c]) => {
         setModels(m);
@@ -37,6 +38,10 @@ export default function SettingsModal({ onClose, onChanged }: SettingsModalProps
       })
       .catch((e: Error) => setError(e.message));
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const runModels = useCallback(
     async (action: () => Promise<ModelsResponse>): Promise<void> => {
@@ -75,18 +80,39 @@ export default function SettingsModal({ onClose, onChanged }: SettingsModalProps
   );
 
   return (
-    <div className="modal-mask" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head">
-          <strong>⚙ 设置</strong>
-          <button className="btn-secondary" onClick={onClose}>关闭</button>
+    <div className="mask" onClick={onClose}>
+      <div className="modal set-modal" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <div className="m-head">
+          ⚙ 设置
+          <span className="def-llm" hidden={tab !== "model"}>
+            默认 LLM
+            <select
+              value={models === null ? "" : models.default_uid}
+              disabled={models === null || saving}
+              onChange={(e) => {
+                if (e.target.value !== "") void runModels(() => putDefault(e.target.value));
+              }}
+            >
+              {models === null ? (
+                <option value="">加载中…</option>
+              ) : (
+                usableOptions(models)
+              )}
+            </select>
+          </span>
+          <div className="spacer"></div>
+          <button className="icon-btn" title="关闭" onClick={onClose}>✕</button>
         </div>
-        {error !== null && <p className="modal-error">{error}</p>}
+        {error !== null && (
+          <div className="set-tip" style={{ color: "var(--fail)", padding: "8px 20px 0" }}>
+            {error}
+          </div>
+        )}
         <div className="s-tabs">
           {TABS.map((t) => (
             <button
               key={t.id}
-              className={t.id === tab ? "s-tab active" : "s-tab"}
+              className={t.id === tab ? "s-tab on" : "s-tab"}
               onClick={() => setTab(t.id)}
             >
               {t.label}
@@ -94,16 +120,20 @@ export default function SettingsModal({ onClose, onChanged }: SettingsModalProps
           ))}
         </div>
         {models === null || caps === null ? (
-          <p>{error === null ? "加载中…" : "配置加载失败，请关闭后重试"}</p>
+          <div className="set-body tabbed">
+            <div className="set-right">
+              <p className="mdl-empty">{error === null ? "加载中…" : "配置加载失败，请关闭后重试"}</p>
+            </div>
+          </div>
         ) : (
           <>
-            <div className="modal-body" hidden={tab !== "model"}>
+            <div className="set-body tabbed" hidden={tab !== "model"}>
               <ModelPane models={models} saving={saving} onAction={runModels} />
             </div>
-            <div className="modal-body" hidden={tab !== "agent"}>
+            <div className="set-body tabbed" hidden={tab !== "agent"}>
               <AgentPane models={models} caps={caps} saving={saving} onAction={runCaps} />
             </div>
-            <div className="modal-body" hidden={tab !== "tool"}>
+            <div className="set-body tabbed" hidden={tab !== "tool"}>
               <ToolPane caps={caps} saving={saving} onAction={runCaps} />
             </div>
           </>
@@ -111,4 +141,17 @@ export default function SettingsModal({ onClose, onChanged }: SettingsModalProps
       </div>
     </div>
   );
+}
+
+function usableOptions(models: ModelsResponse) {
+  const options = models.providers.flatMap((p) =>
+    p.models
+      .filter((m) => m.enabled && p.has_key)
+      .map((m) => (
+        <option key={`${p.id}/${m.id}`} value={`${p.id}/${m.id}`}>
+          {p.name} / {m.name || m.id}
+        </option>
+      )),
+  );
+  return options.length > 0 ? options : <option value="">（无可用模型：请先配置 API Key）</option>;
 }

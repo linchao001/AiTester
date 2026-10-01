@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 
 from aitester.adapters.llm import ProviderConfigError, ProviderError
+from aitester.adapters.tools import build_default_registry
 from aitester.interaction.schemas import (
     AgentDefaultUpdate,
     AgentToolsUpdate,
@@ -42,8 +43,20 @@ def chat_echo(req: EchoRequest, request: Request) -> EchoResponse:
 @router.post("/chat/send", response_model=SendResponse)
 def chat_send(req: SendRequest, request: Request) -> SendResponse:
     service: ChatService = request.app.state.chat_service
+    capability: CapabilityConfigService = request.app.state.capability_config
+
+    tools = None
+    view = capability.get_view()
+    agent_state = next((a for a in view["agents"] if a["id"] == req.agent_id), None)
+    if agent_state and agent_state["tool_ids"]:
+        registry = build_default_registry(
+            session_id=req.session_id,
+            observed=request.app.state.file_observations,
+        )
+        tools = registry.get_many(agent_state["tool_ids"]) or None
+
     try:
-        result = service.send(req.session_id, req.message)
+        result = service.send(req.session_id, req.message, tools=tools)
     except ProviderConfigError as exc:
         raise HTTPException(status_code=400, detail=exc.detail) from exc
     except ProviderError as exc:
@@ -146,4 +159,6 @@ def capabilities_tool_enabled(
         capability.set_tool_enabled(tid, req.enabled)
     except ConfigNotFoundError as exc:
         raise HTTPException(status_code=404, detail=exc.detail) from exc
+    except CapabilityConfigError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
     return _cap_view(request)

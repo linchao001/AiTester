@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+from typing import Any
+
+from langchain_core.messages import AIMessage, BaseMessage, get_buffer_string
 from langchain_openai import ChatOpenAI
 
 from aitester.adapters.llm.errors import ProviderError
@@ -13,11 +18,12 @@ class OpenAICompatProvider:
         base_url: str,
         model: str,
         timeout: int = 60,
+        _client: ChatOpenAI | None = None,
     ) -> None:
         self.name = name
         self.model_ref = f"{name}/{model}"
         self._api_key = api_key
-        self._client = ChatOpenAI(
+        self._client = _client or ChatOpenAI(
             model=model, api_key=api_key, base_url=base_url, timeout=timeout
         )
 
@@ -28,3 +34,23 @@ class OpenAICompatProvider:
             raw = f"调用 {self.model_ref} 失败: {exc}".replace(self._api_key, "***")
             raise ProviderError(raw) from exc
         return str(result.content)
+
+    def bind_tools(self, tools: list[Any]) -> OpenAICompatProvider:
+        bound_client = self._client.bind_tools(tools)
+        return OpenAICompatProvider(
+            name=self.name,
+            api_key=self._api_key,
+            base_url="",
+            model="",
+            _client=bound_client,
+        )
+
+    def invoke_messages(self, messages: list[Any]) -> AIMessage:
+        try:
+            result = self._client.invoke(messages)
+        except Exception as exc:
+            raw = f"调用 {self.model_ref} 失败: {exc}".replace(self._api_key, "***")
+            raise ProviderError(raw) from exc
+        if not isinstance(result, AIMessage):
+            return AIMessage(content=str(result.content))
+        return result

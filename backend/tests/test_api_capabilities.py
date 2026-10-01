@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from aitester.config import Settings
@@ -22,6 +23,8 @@ def test_capabilities_seed_view(tmp_path: Path) -> None:
         "read",
         "write",
         "edit",
+        "grep_search",
+        "glob_search",
         "pwsh",
         "bash",
         "web_search",
@@ -30,7 +33,24 @@ def test_capabilities_seed_view(tmp_path: Path) -> None:
     agent = body["agents"][0]
     assert agent["name"] == "用例设计智能体"
     assert agent["default_uid"] == "" and agent["effective_uid"] == ""
-    assert agent["tool_ids"] == ["read", "write", "edit", "web_search"]
+    assert agent["tool_ids"] == [
+        "read",
+        "write",
+        "edit",
+        "grep_search",
+        "glob_search",
+        "web_search",
+    ]
+
+
+def test_capabilities_view_reports_availability(tmp_path: Path) -> None:
+    tools = {t["id"]: t for t in _client(tmp_path).get("/api/capabilities").json()["tools"]}
+    assert tools["read"]["available"] is True
+    assert tools["read"]["unavailable_reason"] is None
+    web = tools["web_search"]
+    assert web["available"] is True
+    assert web["unavailable_reason"] is None
+    assert web["enabled"] is True
 
 
 def test_agent_default_model_endpoints(tmp_path: Path) -> None:
@@ -75,17 +95,46 @@ def test_disabled_model_falls_back_in_view_without_touching_storage(tmp_path: Pa
     assert after["effective_uid"] == "deepseek/deepseek-flash"  # 读取期回落全局默认
     stored = json.loads((tmp_path / "capability_config.json").read_text(encoding="utf-8"))
     assert stored["agents"]["a1"]["default_uid"] == uid
-    assert stored["agents"]["a1"]["tool_ids"] == ["read", "write", "edit", "web_search"]
+    assert stored["agents"]["a1"]["tool_ids"] == [
+        "read",
+        "write",
+        "edit",
+        "grep_search",
+        "glob_search",
+        "web_search",
+    ]
 
 
 def test_agent_tools_endpoint(tmp_path: Path) -> None:
     c = _client(tmp_path)
-    bad = c.put("/api/capabilities/agents/a1/tools", json={"tool_ids": ["read", "bash"]})
-    assert bad.status_code == 400 and "工具" in bad.json()["detail"]
-    ok = c.put("/api/capabilities/agents/a1/tools", json={"tool_ids": ["read", "pwsh"]})
+    ok = c.put("/api/capabilities/agents/a1/tools", json={"tool_ids": ["read", "web_search"]})
     assert ok.status_code == 200
-    assert ok.json()["agents"][0]["tool_ids"] == ["read", "pwsh"]
+    assert ok.json()["agents"][0]["tool_ids"] == ["read", "web_search"]
+    ok = c.put("/api/capabilities/agents/a1/tools", json={"tool_ids": ["write", "edit"]})
+    assert ok.status_code == 200
+    assert ok.json()["agents"][0]["tool_ids"] == ["write", "edit"]
     assert c.put("/api/capabilities/agents/a1/tools", json={"tool_ids": ["nope"]}).status_code == 404
+
+
+def test_agent_tools_endpoint_rejects_disabled_tool(tmp_path: Path) -> None:
+    c = _client(tmp_path)
+    assert c.put("/api/capabilities/tools/edit/enabled", json={"enabled": False}).status_code == 200
+    bad = c.put("/api/capabilities/agents/a1/tools", json={"tool_ids": ["read", "edit"]})
+    assert bad.status_code == 400
+    assert "已禁用" in bad.json()["detail"]
+
+
+def test_enable_unavailable_tool_endpoint_is_400(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "aitester.services.capability_config.unavailable_reason",
+        lambda tool_id: "本机未找到 pwsh 可执行文件" if tool_id == "pwsh" else None,
+    )
+    c = _client(tmp_path)
+    bad = c.put("/api/capabilities/tools/pwsh/enabled", json={"enabled": True})
+    assert bad.status_code == 400
+    assert "本机未找到 pwsh 可执行文件" in bad.json()["detail"]
 
 
 def test_tool_enabled_endpoint_cascades(tmp_path: Path) -> None:

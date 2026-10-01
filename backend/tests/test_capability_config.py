@@ -1,20 +1,31 @@
 import copy
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from aitester.adapters.tools.availability import unavailable_reason
 from aitester.config import Settings
 from aitester.services.capability_config import (
     AGENT_CATALOG,
     DEFAULT_AGENT_STATE,
-    DEFAULT_TOOL_STATE,
     TOOL_CATALOG,
     CapabilityConfigError,
     CapabilityConfigService,
+    default_tool_enabled,
 )
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
 from aitester.storage import FileJsonConfigRepository
+
+
+def _seed_tool_state() -> dict[str, bool]:
+    """按当前机器的探测结果现算种子，测试断言不写死平台结论。"""
+    return {t["id"]: default_tool_enabled(t["id"]) for t in TOOL_CATALOG}
+
+
+_FAKE_REASONS: dict[str, str] = {"pwsh": "本机未找到 pwsh 可执行文件"}
+
 
 
 def _svc(
@@ -62,30 +73,23 @@ def test_first_start_seeds_and_persists(tmp_path: Path) -> None:
     _svc(tmp_path)
     stored = _stored(tmp_path)
     assert stored["version"] == 1
-    assert stored["tool_state"] == {
-        "read": True,
-        "write": True,
-        "edit": True,
-        "pwsh": True,
-        "bash": False,
-        "web_search": True,
-    }
+    assert stored["tool_state"] == _seed_tool_state()
+    assert stored["tool_state"]["read"] is True  # 文件工具全平台可用
+    assert stored["tool_state"]["web_search"] is True  # 已实现：全平台可用，种子即启用
+    if sys.platform == "win32":
+        assert stored["tool_state"]["bash"] is False  # Windows 默认关 Bash，用户可显式开启
     assert stored["agents"] == {
-        "a1": {"default_uid": "", "tool_ids": ["read", "write", "edit", "web_search"]}
+        "a1": {
+            "default_uid": "",
+            "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search"],
+        }
     }
 
 
 def test_existing_file_is_not_reseeded(tmp_path: Path) -> None:
     saved = {
         "version": 1,
-        "tool_state": {
-            "read": False,
-            "write": True,
-            "edit": True,
-            "pwsh": True,
-            "bash": True,
-            "web_search": False,
-        },
+        "tool_state": {**_seed_tool_state(), "read": False},
         "agents": {
             "a1": {"default_uid": "deepseek/deepseek-flash", "tool_ids": ["write"]}
         },
@@ -112,22 +116,17 @@ def test_hand_edited_drift_is_normalized_and_persisted(tmp_path: Path) -> None:
     capability, _ = _svc(tmp_path)  # 构造与读取都不抛 KeyError
     view = capability.get_view()
     assert [t["id"] for t in view["tools"]] == [t["id"] for t in TOOL_CATALOG]
-    assert [t["enabled"] for t in view["tools"]] == [True, True, True, True, False, True]
+    assert [t["enabled"] for t in view["tools"]] == [
+        _seed_tool_state()[t["id"]] for t in TOOL_CATALOG
+    ]
     assert [a["id"] for a in view["agents"]] == ["a1"]
-    assert view["agents"][0]["tool_ids"] == ["pwsh", "read"]
+    # 未知 id 丢弃、去重保序，不可用的 pwsh 一并落掉（见下方落盘断言）
+    kept = [t for t in ("pwsh", "read") if _seed_tool_state()[t]]
+    assert view["agents"][0]["tool_ids"] == kept
     stored = _stored(tmp_path)
     assert stored["version"] == 1  # version 归一到目录种子并被真正使用
-    assert stored["tool_state"] == {
-        "read": True,  # bool("yes")：非空字符串收敛为 True，既定语义
-        "write": True,
-        "edit": True,
-        "pwsh": True,
-        "bash": False,
-        "web_search": True,
-    }
-    assert stored["agents"] == {
-        "a1": {"default_uid": "", "tool_ids": ["pwsh", "read"]}  # 未知 id 丢弃、去重保序、缺字段回落种子
-    }
+    assert stored["tool_state"] == _seed_tool_state()  # bool("yes") 收敛为 True，与种子同值
+    assert stored["agents"] == {"a1": {"default_uid": "", "tool_ids": kept}}
 
 
 def test_seed_identical_config_is_not_rewritten(tmp_path: Path) -> None:
@@ -135,7 +134,7 @@ def test_seed_identical_config_is_not_rewritten(tmp_path: Path) -> None:
     repo = _CountingRepo(
         {
             "version": 1,
-            "tool_state": dict(DEFAULT_TOOL_STATE),
+            "tool_state": _seed_tool_state(),
             "agents": copy.deepcopy(DEFAULT_AGENT_STATE),
         }
     )
@@ -147,13 +146,15 @@ def test_seed_identical_config_is_not_rewritten(tmp_path: Path) -> None:
     assert missing.save_calls == 1
 
 
-def test_catalog_seeds_exactly_one_agent_and_six_tools() -> None:
+def test_catalog_seeds_exactly_one_agent_and_eight_tools() -> None:
     assert [a["id"] for a in AGENT_CATALOG] == ["a1"]
     assert AGENT_CATALOG[0]["name"] == "用例设计智能体"
     assert [t["id"] for t in TOOL_CATALOG] == [
         "read",
         "write",
         "edit",
+        "grep_search",
+        "glob_search",
         "pwsh",
         "bash",
         "web_search",
@@ -167,11 +168,24 @@ def test_get_view_tools_shape_and_carried_by(tmp_path: Path) -> None:
     read = view["tools"][0]
     assert read["group"] == "文件处理工具"
     assert read["enabled"] is True
+    assert read["available"] is True and read["unavailable_reason"] is None
     assert read["carried_by"] == ["a1"]
     bash = next(t for t in view["tools"] if t["id"] == "bash")
-    assert bash["enabled"] is False
-    assert bash["os"] == "macOS"
+    assert bash["os"] == "macOS / Linux"
+    assert bash["enabled"] is _seed_tool_state()["bash"]
     assert bash["carried_by"] == []
+
+
+def test_view_availability_matches_probe(tmp_path: Path) -> None:
+    capability, _ = _svc(tmp_path)
+    view = capability.get_view()
+    for tool in view["tools"]:
+        assert tool["available"] is (unavailable_reason(tool["id"]) is None)
+        assert tool["unavailable_reason"] == unavailable_reason(tool["id"])
+    web = next(t for t in view["tools"] if t["id"] == "web_search")
+    assert web["available"] is True
+    assert web["unavailable_reason"] is None
+    assert web["enabled"] is True
 
 
 def test_get_view_agent_carries_readonly_prompt(tmp_path: Path) -> None:
@@ -182,7 +196,14 @@ def test_get_view_agent_carries_readonly_prompt(tmp_path: Path) -> None:
     assert "## 职责" in agent["prompt"]
     assert agent["default_uid"] == ""
     assert agent["effective_uid"] == ""
-    assert agent["tool_ids"] == ["read", "write", "edit", "web_search"]
+    assert agent["tool_ids"] == [
+        "read",
+        "write",
+        "edit",
+        "grep_search",
+        "glob_search",
+        "web_search",
+    ]
 
 
 def test_effective_uid_follows_global_default_when_unset(tmp_path: Path) -> None:
@@ -247,11 +268,11 @@ def test_set_agent_default_model_unknown_agent_raises_404_error(tmp_path: Path) 
 
 def test_set_agent_tools_keeps_order_and_dedups(tmp_path: Path) -> None:
     capability, _ = _svc(tmp_path)
-    capability.set_agent_tools("a1", ["edit", "read", "read", "pwsh"])
-    assert _stored(tmp_path)["agents"]["a1"]["tool_ids"] == ["edit", "read", "pwsh"]
+    capability.set_agent_tools("a1", ["edit", "read", "read", "write"])
+    assert _stored(tmp_path)["agents"]["a1"]["tool_ids"] == ["edit", "read", "write"]
     view = capability.get_view()
-    assert view["agents"][0]["tool_ids"] == ["edit", "read", "pwsh"]
-    assert next(t for t in view["tools"] if t["id"] == "pwsh")["carried_by"] == ["a1"]
+    assert view["agents"][0]["tool_ids"] == ["edit", "read", "write"]
+    assert [t["id"] for t in view["tools"] if t["carried_by"]] == ["read", "write", "edit"]
 
 
 def test_set_agent_tools_empty_list_is_allowed(tmp_path: Path) -> None:
@@ -263,16 +284,70 @@ def test_set_agent_tools_empty_list_is_allowed(tmp_path: Path) -> None:
 
 def test_set_agent_tools_rejects_disabled_tool(tmp_path: Path) -> None:
     capability, _ = _svc(tmp_path)
+    capability.set_tool_enabled("edit", False)  # 先制造一个确定被禁用的工具
     with pytest.raises(CapabilityConfigError) as exc_info:
-        capability.set_agent_tools("a1", ["read", "bash"])
-    assert "bash" in exc_info.value.detail
+        capability.set_agent_tools("a1", ["read", "edit"])
+    assert "edit" in exc_info.value.detail
     assert "工具" in exc_info.value.detail
     assert _stored(tmp_path)["agents"]["a1"]["tool_ids"] == [
         "read",
         "write",
-        "edit",
+        "grep_search",
+        "glob_search",
         "web_search",
     ]
+
+
+def test_set_agent_tools_accepts_web_search(tmp_path: Path) -> None:
+    capability, _ = _svc(tmp_path)
+    capability.set_agent_tools("a1", ["read", "web_search"])
+    assert _stored(tmp_path)["agents"]["a1"]["tool_ids"] == ["read", "web_search"]
+
+
+def test_web_search_tool_can_be_toggled(tmp_path: Path) -> None:
+    capability, _ = _svc(tmp_path)
+    capability.set_tool_enabled("web_search", False)
+    assert _stored(tmp_path)["tool_state"]["web_search"] is False
+    capability.set_tool_enabled("web_search", True)
+    assert _stored(tmp_path)["tool_state"]["web_search"] is True
+
+
+def test_missing_shell_cannot_be_enabled_or_carried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "aitester.services.capability_config.unavailable_reason",
+        lambda tool_id: _FAKE_REASONS.get(tool_id),
+    )
+    capability, _ = _svc(tmp_path)  # 种子按假探测结果：pwsh 落为禁用
+    assert _stored(tmp_path)["tool_state"]["pwsh"] is False
+    with pytest.raises(CapabilityConfigError) as exc_info:
+        capability.set_tool_enabled("pwsh", True)
+    assert "本机未找到 pwsh 可执行文件" in exc_info.value.detail
+    with pytest.raises(CapabilityConfigError) as exc_info:
+        capability.set_agent_tools("a1", ["read", "pwsh"])
+    assert "不可用" in exc_info.value.detail
+
+
+def test_stored_config_heals_unavailable_carriers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "aitester.services.capability_config.unavailable_reason",
+        lambda tool_id: _FAKE_REASONS.get(tool_id),
+    )
+    FileJsonConfigRepository(tmp_path / "capability_config.json").save(
+        {
+            "version": 1,
+            "tool_state": {**_seed_tool_state(), "pwsh": True},
+            "agents": {"a1": {"default_uid": "", "tool_ids": ["read", "pwsh"]}},
+        }
+    )
+    capability, _ = _svc(tmp_path)
+    stored = _stored(tmp_path)
+    assert stored["tool_state"]["pwsh"] is False  # 手改出来的启用态被落回
+    assert stored["agents"]["a1"]["tool_ids"] == ["read"]
+    assert capability.get_view()["agents"][0]["tool_ids"] == ["read"]
 
 
 def test_set_agent_tools_unknown_ids_raise_404_error(tmp_path: Path) -> None:
@@ -293,7 +368,13 @@ def test_disable_tool_strips_every_agent(tmp_path: Path) -> None:
     assert "read" not in view["agents"][0]["tool_ids"]
     stored = _stored(tmp_path)
     assert stored["tool_state"]["read"] is False
-    assert stored["agents"]["a1"]["tool_ids"] == ["write", "edit", "web_search"]
+    assert stored["agents"]["a1"]["tool_ids"] == [
+        "write",
+        "edit",
+        "grep_search",
+        "glob_search",
+        "web_search",
+    ]
 
 
 def test_reenable_tool_does_not_restore_carriers(tmp_path: Path) -> None:
@@ -313,4 +394,4 @@ def test_set_tool_enabled_unknown_tool_raises_404_error(tmp_path: Path) -> None:
         capability.set_tool_enabled("nope", False)
     with pytest.raises(ConfigNotFoundError):
         capability.set_agent_tools("a1", ["nope"])
-    assert capability.set_tool_enabled("bash", True) is None
+    assert capability.set_tool_enabled("edit", True) is None

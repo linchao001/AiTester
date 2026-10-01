@@ -11,23 +11,120 @@ CATALOG: list[dict[str, Any]] = [
         "id": "deepseek",
         "name": "DeepSeek",
         "base_url": "https://api.deepseek.com",
+        "proto": "openai",
+        "key_prefix": "sk-",
+        "freeze_url": True,
         "models": [
-            {"id": "deepseek-flash", "enabled": True, "max_output": 393216, "context": 1048576},
-            {"id": "deepseek-v4-pro", "enabled": True, "max_output": 393216, "context": 1048576},
+            {
+                "id": "deepseek-flash",
+                "enabled": True,
+                "max_output": 393216,
+                "context": 1048576,
+                "name": "DeepSeek-V4.1-Flash",
+                "caps": ["FC", "视觉"],
+                "note": "官方数据 · 1M 上下文 / 最大输出 384K",
+            },
+            {
+                "id": "deepseek-v4-pro",
+                "enabled": True,
+                "max_output": 393216,
+                "context": 1048576,
+                "name": "DeepSeek-V4-Pro-0813",
+                "caps": ["FC", "推理"],
+                "note": "官方数据 · 1M 上下文 / 最大输出 384K",
+            },
         ],
     },
     {
         "id": "dashscope",
         "name": "通义千问 · DashScope",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "proto": "openai",
+        "key_prefix": "sk",
+        "base_options": [
+            {"label": "中国（北京）", "value": "https://dashscope.aliyuncs.com/compatible-mode/v1"},
+            {"label": "国际（新加坡）", "value": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"},
+            {"label": "美国（弗吉尼亚）", "value": "https://dashscope-us.aliyuncs.com/compatible-mode/v1"},
+        ],
         "models": [
-            {"id": "qwen3.7-max", "enabled": True, "max_output": 8192, "context": 1000000},
-            {"id": "qwen3.8-max", "enabled": True, "max_output": 8192, "context": 131072},
-            {"id": "qwen3.7-plus", "enabled": True, "max_output": 8192, "context": 1000000},
-            {"id": "qwen3.6-plus", "enabled": True, "max_output": 8192, "context": 1000000},
+            {
+                "id": "qwen3.8-max",
+                "enabled": True,
+                "max_output": 8192,
+                "context": 131072,
+                "name": "Qwen3.8 Max",
+                "caps": ["FC", "视觉"],
+                "note": "目录数据 · 128K 上下文",
+            },
+            {
+                "id": "qwen3.7-max",
+                "enabled": True,
+                "max_output": 8192,
+                "context": 1000000,
+                "name": "Qwen3.7 Max",
+                "caps": ["FC"],
+                "note": "目录数据 · 1M 上下文",
+                "recommended": True,
+            },
+            {
+                "id": "qwen3.7-plus",
+                "enabled": True,
+                "max_output": 8192,
+                "context": 1000000,
+                "name": "Qwen3.7 Plus",
+                "caps": ["FC", "视觉", "视频"],
+                "note": "目录数据 · 图视频输入",
+            },
+            {
+                "id": "qwen3.6-plus",
+                "enabled": True,
+                "max_output": 8192,
+                "context": 1000000,
+                "name": "Qwen3.6 Plus",
+                "caps": ["FC", "视觉", "视频"],
+                "note": "目录数据 · 图视频输入",
+            },
         ],
     },
 ]
+
+# 展示元信息只来自官方目录，落盘记录保持精简（启用状态与数值才是用户运行期真相）。
+DISPLAY_KEYS = ("name", "caps", "note", "recommended")
+RUNTIME_KEYS = ("id", "enabled", "max_output", "context")
+PROVIDER_DISPLAY_KEYS = ("proto", "key_prefix", "freeze_url", "base_options")
+
+
+def _provider_display(provider_id: str) -> dict[str, Any]:
+    for p in CATALOG:
+        if p["id"] == provider_id:
+            return {k: p[k] for k in PROVIDER_DISPLAY_KEYS if k in p}
+    return {}
+
+
+def _display_entry(provider_id: str, model_id: str) -> dict[str, Any]:
+    for p in CATALOG:
+        if p["id"] != provider_id:
+            continue
+        for m in p["models"]:
+            if m["id"] == model_id:
+                return {k: m[k] for k in DISPLAY_KEYS if k in m}
+    return {}
+
+
+def _catalog_index(provider_id: str, model_id: str) -> int:
+    for p in CATALOG:
+        if p["id"] == provider_id:
+            for i, m in enumerate(p["models"]):
+                if m["id"] == model_id:
+                    return i
+    return -1
+
+
+def _ordered_models(provider: dict[str, Any]) -> list[dict[str, Any]]:
+    """读侧按官方目录顺序呈现；目录外的模型（后续自定义）保持存储原序排在最后。"""
+    ordered = [m for m in provider["models"] if _catalog_index(provider["id"], m["id"]) >= 0]
+    rest = [m for m in provider["models"] if _catalog_index(provider["id"], m["id"]) < 0]
+    return sorted(ordered, key=lambda m: _catalog_index(provider["id"], m["id"])) + rest
 
 
 def mask_key(key: str) -> str:
@@ -54,6 +151,9 @@ def _default_config(settings: Settings) -> dict[str, Any]:
     }
     for provider in providers:
         provider["api_key"] = keys[provider["id"]]
+        for k in PROVIDER_DISPLAY_KEYS:
+            provider.pop(k, None)
+        provider["models"] = [{k: m[k] for k in RUNTIME_KEYS} for m in provider["models"]]
     default_uid = ""
     for provider in providers:
         if provider["api_key"]:
@@ -87,7 +187,11 @@ class ModelConfigService:
                     "base_url": p["base_url"],
                     "has_key": bool(p["api_key"]),
                     "key_masked": mask_key(p["api_key"]),
-                    "models": [dict(m) for m in p["models"]],
+                    "models": [
+                        {**dict(m), **_display_entry(p["id"], m["id"])}
+                        for m in _ordered_models(p)
+                    ],
+                    **_provider_display(p["id"]),
                 }
                 for p in self._config["providers"]
             ],
@@ -124,7 +228,7 @@ class ModelConfigService:
         for p in self._config["providers"]:
             if not p["api_key"]:
                 continue
-            for m in p["models"]:
+            for m in _ordered_models(p):
                 if m["enabled"]:
                     return f"{p['id']}/{m['id']}"
         return ""

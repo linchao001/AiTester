@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes } from "react-router-dom";
 import { getHealth, type HealthResponse } from "./api/client";
 import SettingsModal from "./components/settings/SettingsModal";
 import ChatPage from "./pages/ChatPage";
@@ -8,9 +8,9 @@ import ProjectsPage from "./pages/ProjectsPage";
 import "./App.css";
 
 const tabs = [
-  { to: "/chat", label: "聊天" },
-  { to: "/kb", label: "知识库" },
-  { to: "/projects", label: "项目管理" },
+  { to: "/chat", label: "💬 聊天" },
+  { to: "/kb", label: "📚 知识库" },
+  { to: "/projects", label: "🗂 项目管理" },
 ];
 
 export default function App() {
@@ -34,33 +34,41 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <span className="brand">AiTester · 测试智能体</span>
-        <nav>
+        <div className="logo">
+          <b>Ai</b>Tester{" "}
+          <span style={{ fontWeight: 500, fontSize: 13, color: "var(--text-2)" }}>测试智能体</span>
+        </div>
+        <span className="ver">v0.1 MVP</span>
+        <nav className="nav-tabs">
           {tabs.map((t) => (
-            <NavLink key={t.to} to={t.to} className={({ isActive }) => (isActive ? "tab active" : "tab")}>
+            <NavLink
+              key={t.to}
+              to={t.to}
+              className={({ isActive }) => (isActive ? "nav-tab on" : "nav-tab")}
+            >
               {t.label}
             </NavLink>
           ))}
         </nav>
-        <button className="btn-settings" onClick={() => setSettingsOpen(true)}>⚙ 设置</button>
+        <div className="spacer"></div>
+        <button className="icon-btn" title="文档">ⓘ</button>
+        <button className="icon-btn" title="设置" onClick={() => setSettingsOpen(true)}>⚙</button>
       </header>
-      <main>
-        <Routes>
-          <Route path="/" element={<Navigate to="/chat" replace />} />
-          <Route
-            path="/chat"
-            element={
-              <ChatPage
-                health={health}
-                healthError={healthError}
-                onOpenSettings={() => setSettingsOpen(true)}
-              />
-            }
-          />
-          <Route path="/kb" element={<KbPage />} />
-          <Route path="/projects" element={<ProjectsPage />} />
-        </Routes>
-      </main>
+      <Routes>
+        <Route path="/" element={<Navigate to="/chat" replace />} />
+        <Route
+          path="/chat"
+          element={
+            <ChatPage
+              health={health}
+              healthError={healthError}
+              onOpenSettings={() => setSettingsOpen(true)}
+            />
+          }
+        />
+        <Route path="/kb" element={<KbPage />} />
+        <Route path="/projects" element={<ProjectsPage />} />
+      </Routes>
       {settingsOpen && (
         <SettingsModal onClose={() => setSettingsOpen(false)} onChanged={refreshHealth} />
       )}

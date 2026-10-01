@@ -1,7 +1,13 @@
-"""运行期能力配置：智能体默认模型与工具启用状态，JSON 落盘为唯一真相。"""
+"""运行期能力配置：智能体默认模型与工具启用状态，JSON 落盘为唯一真相。
+
+工具目录与实现保持一致：不可用的工具（本机缺 shell 等）一律禁用且不可携带，
+种子启用态由 `availability` 探测本机推导，不写死平台结论。
+"""
 import copy
+import sys
 from typing import Any
 
+from aitester.adapters.tools.availability import unavailable_reason
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
 from aitester.storage import JsonConfigRepository
 
@@ -31,6 +37,22 @@ TOOL_CATALOG: list[dict[str, Any]] = [
         "desc": "按精确字符串定位替换，只做小范围改动；目标不唯一或未命中即失败，避免误伤无关代码。",
     },
     {
+        "id": "grep_search",
+        "group": "文件处理工具",
+        "icon": "🔍",
+        "label": "grep_search",
+        "os": "全平台",
+        "desc": "按模式递归检索文件内容，输出「文件:行号: 命中行」；支持正则、大小写、上下文行与文件名过滤。",
+    },
+    {
+        "id": "glob_search",
+        "group": "文件处理工具",
+        "icon": "📁",
+        "label": "glob_search",
+        "os": "全平台",
+        "desc": "按通配符查找文件与目录（如 **/*.json），返回相对路径列表。",
+    },
+    {
         "id": "pwsh",
         "group": "命令执行工具",
         "icon": "🖥",
@@ -43,8 +65,8 @@ TOOL_CATALOG: list[dict[str, Any]] = [
         "group": "命令执行工具",
         "icon": "🐚",
         "label": "bash",
-        "os": "macOS",
-        "desc": "在 macOS / Linux 上执行 Bash，用途与 pwsh 相同。当前运行在 Windows，默认禁用。",
+        "os": "macOS / Linux",
+        "desc": "在 macOS / Linux 上执行 Bash，用途与 pwsh 相同；Windows 上依赖 Git Bash 等 POSIX 环境。",
     },
     {
         "id": "web_search",
@@ -77,10 +99,25 @@ AGENT_CATALOG: list[dict[str, Any]] = [
     },
 ]
 
-DEFAULT_TOOL_STATE: dict[str, bool] = {t["id"]: t["id"] != "bash" for t in TOOL_CATALOG}
 DEFAULT_AGENT_STATE: dict[str, dict[str, Any]] = {
-    "a1": {"default_uid": "", "tool_ids": ["read", "write", "edit", "web_search"]}
+    "a1": {
+        "default_uid": "",
+        "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search"],
+    }
 }
+
+
+def default_tool_enabled(tool_id: str) -> bool:
+    """工具的出厂开关：本机不可用的一律 False。
+
+    bash 在 Windows 上即使探测到 Git Bash 也默认关（跨平台脚本口径不统一），留待用户显式开启。
+    """
+    if unavailable_reason(tool_id) is not None:
+        return False
+    return not (tool_id == "bash" and sys.platform == "win32")
+
+
+DEFAULT_TOOL_STATE: dict[str, bool] = {t["id"]: default_tool_enabled(t["id"]) for t in TOOL_CATALOG}
 
 
 class CapabilityConfigError(RuntimeError):
@@ -94,7 +131,8 @@ class CapabilityConfigError(RuntimeError):
 def _default_config() -> dict[str, Any]:
     return {
         "version": 1,
-        "tool_state": dict(DEFAULT_TOOL_STATE),
+        # 每次现算而不复用模块常量：探测结果与运行时一致，测试也能注入假探测
+        "tool_state": {t["id"]: default_tool_enabled(t["id"]) for t in TOOL_CATALOG},
         "agents": copy.deepcopy(DEFAULT_AGENT_STATE),
     }
 
@@ -104,10 +142,12 @@ def _normalized(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     seed = _default_config()
     raw_tools = config.get("tool_state")
     raw_tools = raw_tools if isinstance(raw_tools, dict) else {}
-    tool_state = {
-        t["id"]: bool(raw_tools[t["id"]]) if t["id"] in raw_tools else seed["tool_state"][t["id"]]
-        for t in TOOL_CATALOG
-    }
+    tool_state: dict[str, bool] = {}
+    for t in TOOL_CATALOG:
+        tool_id = t["id"]
+        enabled = bool(raw_tools[tool_id]) if tool_id in raw_tools else seed["tool_state"][tool_id]
+        # 不可用的工具（本机缺 shell 等）一律落回禁用：配置不宣称跑不了的能力
+        tool_state[tool_id] = enabled and unavailable_reason(tool_id) is None
 
     raw_agents = config.get("agents")
     raw_agents = raw_agents if isinstance(raw_agents, dict) else {}
@@ -120,7 +160,8 @@ def _normalized(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         raw_ids = raw_ids if isinstance(raw_ids, list) else []
         unique: list[str] = []
         for tool_id in raw_ids:
-            if tool_id in tool_state and tool_id not in unique:
+            # 只有启用（因而必然可用）的工具才允许留在携带列表里，旧配置由此自愈
+            if tool_state.get(tool_id) and tool_id not in unique:
                 unique.append(tool_id)
         agents[agent_id] = {
             "default_uid": str(raw.get("default_uid", seed_state["default_uid"])),
@@ -164,23 +205,27 @@ class CapabilityConfigService:
 
     def get_view(self) -> dict[str, Any]:
         agents_state = self._config["agents"]
-        tools = [
-            {
-                "id": t["id"],
-                "group": t["group"],
-                "icon": t["icon"],
-                "label": t["label"],
-                "os": t["os"],
-                "desc": t["desc"],
-                "enabled": self._enabled(t["id"]),
-                "carried_by": [
-                    aid
-                    for aid, state in agents_state.items()
-                    if t["id"] in state["tool_ids"]
-                ],
-            }
-            for t in TOOL_CATALOG
-        ]
+        tools = []
+        for t in TOOL_CATALOG:
+            reason = unavailable_reason(t["id"])
+            tools.append(
+                {
+                    "id": t["id"],
+                    "group": t["group"],
+                    "icon": t["icon"],
+                    "label": t["label"],
+                    "os": t["os"],
+                    "desc": t["desc"],
+                    "enabled": self._enabled(t["id"]),
+                    "available": reason is None,
+                    "unavailable_reason": reason,
+                    "carried_by": [
+                        aid
+                        for aid, state in agents_state.items()
+                        if t["id"] in state["tool_ids"]
+                    ],
+                }
+            )
         views: list[dict[str, Any]] = []
         for seed in AGENT_CATALOG:
             state = agents_state[seed["id"]]
@@ -213,10 +258,17 @@ class CapabilityConfigService:
     def set_agent_tools(self, agent_id: str, tool_ids: list[str]) -> None:
         state = self._agent_state(agent_id)
         unique: list[str] = []
+        unavailable: list[str] = []
         for tool_id in tool_ids:
-            self._tool(tool_id)
-            if tool_id not in unique:
-                unique.append(tool_id)
+            tool = self._tool(tool_id)
+            if tool_id in unique:
+                continue
+            unique.append(tool_id)
+            reason = unavailable_reason(tool_id)
+            if reason is not None:
+                unavailable.append(f"{tool['label']}（{reason}）")
+        if unavailable:
+            raise CapabilityConfigError(f"工具「{'、'.join(unavailable)}」当前不可用，不能携带")
         disabled = [t for t in unique if not self._enabled(t)]
         if disabled:
             raise CapabilityConfigError(
@@ -226,7 +278,10 @@ class CapabilityConfigService:
         self._repo.save(self._config)
 
     def set_tool_enabled(self, tool_id: str, enabled: bool) -> None:
-        self._tool(tool_id)
+        tool = self._tool(tool_id)
+        reason = unavailable_reason(tool_id)
+        if enabled and reason is not None:
+            raise CapabilityConfigError(f"工具「{tool['label']}」当前不可用（{reason}），无法启用")
         self._config["tool_state"][tool_id] = enabled
         if not enabled:
             for state in self._config["agents"].values():

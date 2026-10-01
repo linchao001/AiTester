@@ -9,6 +9,15 @@ export interface ModelInfo {
   enabled: boolean;
   max_output: number;
   context: number;
+  name?: string;
+  caps?: string[];
+  note?: string;
+  recommended?: boolean;
+}
+
+export interface ProviderUrlOption {
+  label: string;
+  value: string;
 }
 
 export interface ProviderInfo {
@@ -18,6 +27,10 @@ export interface ProviderInfo {
   has_key: boolean;
   key_masked: string;
   models: ModelInfo[];
+  proto?: string;
+  key_prefix?: string;
+  freeze_url?: boolean;
+  base_options?: ProviderUrlOption[];
 }
 
 export interface ModelsResponse {
@@ -33,6 +46,8 @@ export interface ToolInfo {
   os: string;
   desc: string;
   enabled: boolean;
+  available: boolean;
+  unavailable_reason: string | null;
   carried_by: string[];
 }
 

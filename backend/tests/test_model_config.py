@@ -27,11 +27,59 @@ def test_first_start_seeds_from_settings_and_persists(tmp_path: Path) -> None:
 
 def test_seed_prefers_dashscope_when_only_it_has_key(tmp_path: Path) -> None:
     svc = _svc(tmp_path, dashscope_api_key="sk-dash-000111")
-    assert svc.default_uid == "dashscope/qwen3.7-max"
+    # 原型 DashScope 模型表首行是 Qwen3.8 Max，回落按表序取其首
+    assert svc.default_uid == "dashscope/qwen3.8-max"
 
 
 def test_seed_without_keys_leaves_default_empty(tmp_path: Path) -> None:
     assert _svc(tmp_path).default_uid == ""
+
+
+def test_seed_stores_only_runtime_keys(tmp_path: Path) -> None:
+    svc = _svc(tmp_path, deepseek_api_key="sk-seed-abcdef123456")
+    stored = FileJsonConfigRepository(tmp_path / "model_config.json").load()
+    assert stored is not None
+    model = stored["providers"][0]["models"][0]
+    assert set(model) == {"id", "enabled", "max_output", "context"}
+    assert svc.default_uid == "deepseek/deepseek-flash"
+
+
+def test_view_carries_catalog_display_fields(tmp_path: Path) -> None:
+    view = _svc(tmp_path).get_view()
+    dashscope = next(p for p in view["providers"] if p["id"] == "dashscope")
+    by_id = {m["id"]: m for m in dashscope["models"]}
+    assert by_id["qwen3.7-max"]["name"] == "Qwen3.7 Max"
+    assert by_id["qwen3.7-max"]["recommended"] is True
+    assert by_id["qwen3.6-plus"]["caps"] == ["FC", "视觉", "视频"]
+    assert by_id["qwen3.8-max"]["note"] == "目录数据 · 128K 上下文"
+
+
+def test_view_orders_models_by_catalog(tmp_path: Path) -> None:
+    saved = {
+        "version": 1,
+        "default_uid": "",
+        "providers": [
+            {
+                "id": "dashscope",
+                "name": "通义千问 · DashScope",
+                "base_url": "https://x",
+                "api_key": "",
+                "models": [
+                    {"id": "custom-new", "enabled": True, "max_output": 1, "context": 1},
+                    {"id": "qwen3.6-plus", "enabled": True, "max_output": 1, "context": 1},
+                    {"id": "qwen3.8-max", "enabled": True, "max_output": 1, "context": 1},
+                    {"id": "qwen3.7-max", "enabled": True, "max_output": 1, "context": 1},
+                ],
+            }
+        ],
+    }
+    repo = FileJsonConfigRepository(tmp_path / "model_config.json")
+    repo.save(saved)
+    view = ModelConfigService(repo, Settings(_env_file=None)).get_view()
+    ids = [m["id"] for m in view["providers"][0]["models"]]
+    # 目录序在前，目录外的模型保持存储原序排在最后
+    assert ids == ["qwen3.8-max", "qwen3.7-max", "qwen3.6-plus", "custom-new"]
+    assert view["providers"][0]["models"][-1].get("name") is None
 
 
 def test_existing_file_is_not_reseeded(tmp_path: Path) -> None:
@@ -118,7 +166,8 @@ def test_cascade_on_disable_default_persisted(tmp_path: Path) -> None:
 def test_cascade_on_clear_key_falls_back_to_next_provider(tmp_path: Path) -> None:
     svc = _svc(tmp_path, deepseek_api_key="sk-x123456789", dashscope_api_key="sk-d123456789")
     svc.update_api_key("deepseek", "")
-    assert svc.default_uid == "dashscope/qwen3.7-max"
+    # 提供商序 → 模型表序：DashScope 表首为 Qwen3.8 Max（与原型一致）
+    assert svc.default_uid == "dashscope/qwen3.8-max"
 
 
 def test_build_default_provider_passes_expected_args(

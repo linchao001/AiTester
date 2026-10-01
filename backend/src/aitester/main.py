@@ -2,6 +2,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
+from aitester.adapters.tools import FileObservationStore
 from aitester.config import Settings, get_settings
 from aitester.interaction.router import router
 from aitester.services import CapabilityConfigService, ChatService
@@ -29,6 +30,7 @@ def create_app(
     application = FastAPI(title="AiTester backend")
     application.state.model_config = model_config
     application.state.capability_config = capability_config
+    application.state.file_observations = FileObservationStore()
     application.state.chat_service = ChatService(model_config=model_config)
     application.include_router(router)
     return application

@@ -1,4 +1,8 @@
-from typing import Protocol
+from __future__ import annotations
+
+from typing import Any, Protocol
+
+from langchain_core.messages import AIMessage
 
 
 class LlmProvider(Protocol):
@@ -8,3 +12,7 @@ class LlmProvider(Protocol):
     model_ref: str
 
     def complete(self, messages: list[dict[str, str]]) -> str: ...
+
+    def bind_tools(self, tools: list[Any]) -> LlmProvider: ...
+
+    def invoke_messages(self, messages: list[Any]) -> AIMessage: ...
