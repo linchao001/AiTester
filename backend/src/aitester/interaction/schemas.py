@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -118,3 +120,31 @@ class AgentToolsUpdate(BaseModel):
 
 class ToolEnabledUpdate(BaseModel):
     enabled: bool
+
+
+class KbSearchRequest(BaseModel):
+    query: str
+    limit: int = 5
+    bucket: str = "all"
+
+
+class KbSaveRequest(BaseModel):
+    title: str
+    content: str
+    bucket: str = "business/wiki"
+
+
+class KbInboxStemRequest(BaseModel):
+    stem: str
+
+
+class KbInboxMergeRequest(BaseModel):
+    stem: str
+    target_path: str = ""
+    mode: str = "REFINE"
+
+
+class KbResponse(BaseModel):
+    success: bool
+    answer: Any = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)

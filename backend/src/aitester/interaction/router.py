@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, HTTPException, Request
 
 from aitester.adapters.llm import ProviderConfigError, ProviderError
@@ -9,6 +11,11 @@ from aitester.interaction.schemas import (
     EchoRequest,
     EchoResponse,
     EnabledUpdate,
+    KbInboxMergeRequest,
+    KbInboxStemRequest,
+    KbResponse,
+    KbSaveRequest,
+    KbSearchRequest,
     KeyUpdate,
     ModelsResponse,
     ProviderTestRequest,
@@ -18,10 +25,15 @@ from aitester.interaction.schemas import (
     ToolEnabledUpdate,
 )
 from aitester.services import ChatService
-from aitester.services.capability_config import CapabilityConfigError, CapabilityConfigService
+from aitester.services.capability_config import (
+    CapabilityConfigError,
+    CapabilityConfigService,
+)
+from aitester.services.kb.manager import KbUnavailableError
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
 
 router = APIRouter(prefix="/api")
+logger = logging.getLogger(__name__)
 
 
 @router.get("/health")
@@ -165,3 +177,90 @@ def capabilities_tool_enabled(
     except CapabilityConfigError as exc:
         raise HTTPException(status_code=400, detail=exc.detail) from exc
     return _cap_view(request)
+
+
+def _kb(request: Request):
+    return request.app.state.kb_manager
+
+
+def _kb_payload(resp) -> dict:
+    return {"success": resp.success, "answer": resp.answer, "metadata": resp.metadata or {}}
+
+
+@router.get("/kb/status", response_model=KbResponse)
+async def kb_status(request: Request):
+    try:
+        return _kb_payload(await _kb(request).run_job("status"))
+    except KbUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/kb/bases", response_model=KbResponse)
+async def kb_bases(request: Request):
+    try:
+        return _kb_payload(await _kb(request).run_job("list_knowledge_bases"))
+    except KbUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/kb/search", response_model=KbResponse)
+async def kb_search(request: Request, body: KbSearchRequest):
+    try:
+        return _kb_payload(await _kb(request).run_job(
+            "knowledge_search", query=body.query, limit=body.limit, bucket=body.bucket,
+        ))
+    except KbUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/kb/save", response_model=KbResponse)
+async def kb_save(request: Request, body: KbSaveRequest):
+    kb = _kb(request)
+    try:
+        resp = await kb.run_job(
+            "save_to_knowledge", title=body.title, content=body.content, bucket=body.bucket,
+        )
+    except KbUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if resp.success:
+        # 控制端裁定：写入成功后同一实例立即补跑一次 reindex，保证写方立即可见；
+        # 跨实例由后台环收敛，reindex 失败不影响 save 的 200 响应
+        try:
+            await kb.run_job("reindex")
+        except Exception as exc:
+            logger.warning("kb save 成功但同实例 reindex 失败：%s", exc)
+    return _kb_payload(resp)
+
+
+@router.get("/kb/inbox", response_model=KbResponse)
+async def kb_inbox(request: Request):
+    try:
+        return _kb_payload(await _kb(request).run_job("list_knowledge_inbox"))
+    except KbUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/kb/inbox/promote", response_model=KbResponse)
+async def kb_inbox_promote(request: Request, body: KbInboxStemRequest):
+    try:
+        return _kb_payload(await _kb(request).run_job("promote_knowledge_inbox", stem=body.stem))
+    except KbUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/kb/inbox/merge", response_model=KbResponse)
+async def kb_inbox_merge(request: Request, body: KbInboxMergeRequest):
+    try:
+        return _kb_payload(await _kb(request).run_job(
+            "merge_knowledge_inbox", stem=body.stem, target_path=body.target_path, mode=body.mode,
+        ))
+    except KbUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/kb/inbox/reject", response_model=KbResponse)
+async def kb_inbox_reject(request: Request, body: KbInboxStemRequest):
+    try:
+        return _kb_payload(await _kb(request).run_job("reject_knowledge_inbox", stem=body.stem))
+    except KbUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
