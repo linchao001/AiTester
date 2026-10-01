@@ -6,10 +6,9 @@ from typing import Any
 import pytest
 
 from aitester.adapters.tools.availability import unavailable_reason
+from aitester.agents import AGENT_CATALOG, DEFAULT_AGENT_STATE, LEGACY_AGENT_IDS
 from aitester.config import Settings
 from aitester.services.capability_config import (
-    AGENT_CATALOG,
-    DEFAULT_AGENT_STATE,
     TOOL_CATALOG,
     CapabilityConfigError,
     CapabilityConfigService,
@@ -79,7 +78,7 @@ def test_first_start_seeds_and_persists(tmp_path: Path) -> None:
     if sys.platform == "win32":
         assert stored["tool_state"]["bash"] is False  # Windows 默认关 Bash，用户可显式开启
     assert stored["agents"] == {
-        "a1": {
+        "case_design": {
             "default_uid": "",
             "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search"],
         }
@@ -91,7 +90,7 @@ def test_existing_file_is_not_reseeded(tmp_path: Path) -> None:
         "version": 1,
         "tool_state": {**_seed_tool_state(), "read": False},
         "agents": {
-            "a1": {"default_uid": "deepseek/deepseek-flash", "tool_ids": ["write"]}
+            "case_design": {"default_uid": "deepseek/deepseek-flash", "tool_ids": ["write"]}
         },
     }
     FileJsonConfigRepository(tmp_path / "capability_config.json").save(saved)
@@ -108,7 +107,7 @@ def test_hand_edited_drift_is_normalized_and_persisted(tmp_path: Path) -> None:
             "version": 9,
             "tool_state": {"read": "yes", "qw": True},
             "agents": {
-                "a1": {"tool_ids": ["qw", "pwsh", "read", "read"]},
+                "case_design": {"tool_ids": ["qw", "pwsh", "read", "read"]},
                 "ghost": {},
             },
         }
@@ -119,14 +118,14 @@ def test_hand_edited_drift_is_normalized_and_persisted(tmp_path: Path) -> None:
     assert [t["enabled"] for t in view["tools"]] == [
         _seed_tool_state()[t["id"]] for t in TOOL_CATALOG
     ]
-    assert [a["id"] for a in view["agents"]] == ["a1"]
+    assert [a["id"] for a in view["agents"]] == ["case_design"]
     # 未知 id 丢弃、去重保序，不可用的 pwsh 一并落掉（见下方落盘断言）
     kept = [t for t in ("pwsh", "read") if _seed_tool_state()[t]]
     assert view["agents"][0]["tool_ids"] == kept
     stored = _stored(tmp_path)
     assert stored["version"] == 1  # version 归一到目录种子并被真正使用
     assert stored["tool_state"] == _seed_tool_state()  # bool("yes") 收敛为 True，与种子同值
-    assert stored["agents"] == {"a1": {"default_uid": "", "tool_ids": kept}}
+    assert stored["agents"] == {"case_design": {"default_uid": "", "tool_ids": kept}}
 
 
 def test_seed_identical_config_is_not_rewritten(tmp_path: Path) -> None:
@@ -147,8 +146,8 @@ def test_seed_identical_config_is_not_rewritten(tmp_path: Path) -> None:
 
 
 def test_catalog_seeds_exactly_one_agent_and_eight_tools() -> None:
-    assert [a["id"] for a in AGENT_CATALOG] == ["a1"]
-    assert AGENT_CATALOG[0]["name"] == "用例设计智能体"
+    assert [s.id for s in AGENT_CATALOG] == ["case_design"]
+    assert AGENT_CATALOG[0].name == "用例设计智能体"
     assert [t["id"] for t in TOOL_CATALOG] == [
         "read",
         "write",
@@ -169,7 +168,7 @@ def test_get_view_tools_shape_and_carried_by(tmp_path: Path) -> None:
     assert read["group"] == "文件处理工具"
     assert read["enabled"] is True
     assert read["available"] is True and read["unavailable_reason"] is None
-    assert read["carried_by"] == ["a1"]
+    assert read["carried_by"] == ["case_design"]
     bash = next(t for t in view["tools"] if t["id"] == "bash")
     assert bash["os"] == "macOS / Linux"
     assert bash["enabled"] is _seed_tool_state()["bash"]
@@ -191,7 +190,7 @@ def test_view_availability_matches_probe(tmp_path: Path) -> None:
 def test_get_view_agent_carries_readonly_prompt(tmp_path: Path) -> None:
     capability, _ = _svc(tmp_path)
     agent = capability.get_view()["agents"][0]
-    assert agent["id"] == "a1"
+    assert agent["id"] == "case_design"
     assert agent["icon"] == "📋"
     assert "## 职责" in agent["prompt"]
     assert agent["default_uid"] == ""
@@ -216,7 +215,7 @@ def test_effective_uid_prefers_agent_default(tmp_path: Path) -> None:
     capability, model_config = _svc(
         tmp_path, deepseek_api_key="sk-x123456789", dashscope_api_key="sk-d123456789"
     )
-    capability.set_agent_default_model("a1", "dashscope/qwen3.7-max")
+    capability.set_agent_default_model("case_design", "dashscope/qwen3.7-max")
     agent = capability.get_view()["agents"][0]
     assert agent["default_uid"] == "dashscope/qwen3.7-max"
     assert agent["effective_uid"] == "dashscope/qwen3.7-max"
@@ -226,7 +225,7 @@ def test_effective_uid_falls_back_when_agent_default_becomes_unusable(tmp_path: 
     capability, model_config = _svc(
         tmp_path, deepseek_api_key="sk-x123456789", dashscope_api_key="sk-d123456789"
     )
-    capability.set_agent_default_model("a1", "dashscope/qwen3.7-max")
+    capability.set_agent_default_model("case_design", "dashscope/qwen3.7-max")
     model_config.set_model_enabled("dashscope", "qwen3.7-max", False)
     agent = capability.get_view()["agents"][0]
     # 配置不自愈：default_uid 原样保留，只在读取时回落全局默认
@@ -241,23 +240,23 @@ def test_effective_uid_empty_when_nothing_configured(tmp_path: Path) -> None:
 
 def test_set_agent_default_model_empty_and_valid_persist(tmp_path: Path) -> None:
     capability, model_config = _svc(tmp_path, deepseek_api_key="sk-x123456789")
-    capability.set_agent_default_model("a1", "deepseek/deepseek-v4-pro")
-    assert _stored(tmp_path)["agents"]["a1"]["default_uid"] == "deepseek/deepseek-v4-pro"
-    capability.set_agent_default_model("a1", "")
-    assert _stored(tmp_path)["agents"]["a1"]["default_uid"] == ""
+    capability.set_agent_default_model("case_design", "deepseek/deepseek-v4-pro")
+    assert _stored(tmp_path)["agents"]["case_design"]["default_uid"] == "deepseek/deepseek-v4-pro"
+    capability.set_agent_default_model("case_design", "")
+    assert _stored(tmp_path)["agents"]["case_design"]["default_uid"] == ""
 
 
 def test_set_agent_default_model_rejects_unusable(tmp_path: Path) -> None:
     capability, model_config = _svc(tmp_path, deepseek_api_key="sk-x123456789")
     model_config.set_model_enabled("deepseek", "deepseek-flash", False)
     with pytest.raises(CapabilityConfigError) as exc_info:
-        capability.set_agent_default_model("a1", "deepseek/deepseek-flash")
+        capability.set_agent_default_model("case_design", "deepseek/deepseek-flash")
     assert "设置 · 模型设置" in exc_info.value.detail
     with pytest.raises(CapabilityConfigError):
-        capability.set_agent_default_model("a1", "dashscope/qwen3.7-max")  # 未配 Key
+        capability.set_agent_default_model("case_design", "dashscope/qwen3.7-max")  # 未配 Key
     with pytest.raises(CapabilityConfigError):
-        capability.set_agent_default_model("a1", "deepseek/nope")  # 不存在
-    assert _stored(tmp_path)["agents"]["a1"]["default_uid"] == ""
+        capability.set_agent_default_model("case_design", "deepseek/nope")  # 不存在
+    assert _stored(tmp_path)["agents"]["case_design"]["default_uid"] == ""
 
 
 def test_set_agent_default_model_unknown_agent_raises_404_error(tmp_path: Path) -> None:
@@ -268,8 +267,8 @@ def test_set_agent_default_model_unknown_agent_raises_404_error(tmp_path: Path) 
 
 def test_set_agent_tools_keeps_order_and_dedups(tmp_path: Path) -> None:
     capability, _ = _svc(tmp_path)
-    capability.set_agent_tools("a1", ["edit", "read", "read", "write"])
-    assert _stored(tmp_path)["agents"]["a1"]["tool_ids"] == ["edit", "read", "write"]
+    capability.set_agent_tools("case_design", ["edit", "read", "read", "write"])
+    assert _stored(tmp_path)["agents"]["case_design"]["tool_ids"] == ["edit", "read", "write"]
     view = capability.get_view()
     assert view["agents"][0]["tool_ids"] == ["edit", "read", "write"]
     assert [t["id"] for t in view["tools"] if t["carried_by"]] == ["read", "write", "edit"]
@@ -277,8 +276,8 @@ def test_set_agent_tools_keeps_order_and_dedups(tmp_path: Path) -> None:
 
 def test_set_agent_tools_empty_list_is_allowed(tmp_path: Path) -> None:
     capability, _ = _svc(tmp_path)
-    capability.set_agent_tools("a1", [])
-    assert _stored(tmp_path)["agents"]["a1"]["tool_ids"] == []
+    capability.set_agent_tools("case_design", [])
+    assert _stored(tmp_path)["agents"]["case_design"]["tool_ids"] == []
     assert all(t["carried_by"] == [] for t in capability.get_view()["tools"])
 
 
@@ -286,10 +285,10 @@ def test_set_agent_tools_rejects_disabled_tool(tmp_path: Path) -> None:
     capability, _ = _svc(tmp_path)
     capability.set_tool_enabled("edit", False)  # 先制造一个确定被禁用的工具
     with pytest.raises(CapabilityConfigError) as exc_info:
-        capability.set_agent_tools("a1", ["read", "edit"])
+        capability.set_agent_tools("case_design", ["read", "edit"])
     assert "edit" in exc_info.value.detail
     assert "工具" in exc_info.value.detail
-    assert _stored(tmp_path)["agents"]["a1"]["tool_ids"] == [
+    assert _stored(tmp_path)["agents"]["case_design"]["tool_ids"] == [
         "read",
         "write",
         "grep_search",
@@ -300,8 +299,8 @@ def test_set_agent_tools_rejects_disabled_tool(tmp_path: Path) -> None:
 
 def test_set_agent_tools_accepts_web_search(tmp_path: Path) -> None:
     capability, _ = _svc(tmp_path)
-    capability.set_agent_tools("a1", ["read", "web_search"])
-    assert _stored(tmp_path)["agents"]["a1"]["tool_ids"] == ["read", "web_search"]
+    capability.set_agent_tools("case_design", ["read", "web_search"])
+    assert _stored(tmp_path)["agents"]["case_design"]["tool_ids"] == ["read", "web_search"]
 
 
 def test_web_search_tool_can_be_toggled(tmp_path: Path) -> None:
@@ -325,7 +324,7 @@ def test_missing_shell_cannot_be_enabled_or_carried(
         capability.set_tool_enabled("pwsh", True)
     assert "本机未找到 pwsh 可执行文件" in exc_info.value.detail
     with pytest.raises(CapabilityConfigError) as exc_info:
-        capability.set_agent_tools("a1", ["read", "pwsh"])
+        capability.set_agent_tools("case_design", ["read", "pwsh"])
     assert "不可用" in exc_info.value.detail
 
 
@@ -340,20 +339,20 @@ def test_stored_config_heals_unavailable_carriers(
         {
             "version": 1,
             "tool_state": {**_seed_tool_state(), "pwsh": True},
-            "agents": {"a1": {"default_uid": "", "tool_ids": ["read", "pwsh"]}},
+            "agents": {"case_design": {"default_uid": "", "tool_ids": ["read", "pwsh"]}},
         }
     )
     capability, _ = _svc(tmp_path)
     stored = _stored(tmp_path)
     assert stored["tool_state"]["pwsh"] is False  # 手改出来的启用态被落回
-    assert stored["agents"]["a1"]["tool_ids"] == ["read"]
+    assert stored["agents"]["case_design"]["tool_ids"] == ["read"]
     assert capability.get_view()["agents"][0]["tool_ids"] == ["read"]
 
 
 def test_set_agent_tools_unknown_ids_raise_404_error(tmp_path: Path) -> None:
     capability, _ = _svc(tmp_path)
     with pytest.raises(ConfigNotFoundError):
-        capability.set_agent_tools("a1", ["nope"])
+        capability.set_agent_tools("case_design", ["nope"])
     with pytest.raises(ConfigNotFoundError):
         capability.set_agent_tools("a9", ["read"])
 
@@ -368,7 +367,7 @@ def test_disable_tool_strips_every_agent(tmp_path: Path) -> None:
     assert "read" not in view["agents"][0]["tool_ids"]
     stored = _stored(tmp_path)
     assert stored["tool_state"]["read"] is False
-    assert stored["agents"]["a1"]["tool_ids"] == [
+    assert stored["agents"]["case_design"]["tool_ids"] == [
         "write",
         "edit",
         "grep_search",
@@ -383,7 +382,7 @@ def test_reenable_tool_does_not_restore_carriers(tmp_path: Path) -> None:
     capability.set_tool_enabled("read", True)
     stored = _stored(tmp_path)
     assert stored["tool_state"]["read"] is True
-    assert "read" not in stored["agents"]["a1"]["tool_ids"]
+    assert "read" not in stored["agents"]["case_design"]["tool_ids"]
     read = next(t for t in capability.get_view()["tools"] if t["id"] == "read")
     assert read["enabled"] is True and read["carried_by"] == []
 
@@ -393,5 +392,80 @@ def test_set_tool_enabled_unknown_tool_raises_404_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigNotFoundError):
         capability.set_tool_enabled("nope", False)
     with pytest.raises(ConfigNotFoundError):
-        capability.set_agent_tools("a1", ["nope"])
+        capability.set_agent_tools("case_design", ["nope"])
     assert capability.set_tool_enabled("edit", True) is None
+
+
+def test_legacy_agent_id_state_is_migrated_once(tmp_path: Path) -> None:
+    # 只用全平台可用的 read/write：本机 pwsh 携带态的保留由 Task 6 Step 9 实测覆盖
+    FileJsonConfigRepository(tmp_path / "capability_config.json").save(
+        {
+            "version": 1,
+            "tool_state": _seed_tool_state(),
+            "agents": {
+                "a1": {
+                    "default_uid": "deepseek/deepseek-flash",
+                    "tool_ids": ["read", "write"],
+                }
+            },
+        }
+    )
+    capability, _ = _svc(tmp_path, deepseek_api_key="sk-x123456789")
+    stored = _stored(tmp_path)
+    # 状态整搬过来，旧键消失（不是别名）
+    assert "a1" not in stored["agents"]
+    assert stored["agents"]["case_design"]["default_uid"] == "deepseek/deepseek-flash"
+    assert stored["agents"]["case_design"]["tool_ids"] == ["read", "write"]
+    agent = capability.get_view()["agents"][0]
+    assert agent["id"] == "case_design"
+    assert agent["default_uid"] == "deepseek/deepseek-flash"
+    assert agent["effective_uid"] == "deepseek/deepseek-flash"
+
+
+def test_migration_does_not_overwrite_existing_new_key(tmp_path: Path) -> None:
+    FileJsonConfigRepository(tmp_path / "capability_config.json").save(
+        {
+            "version": 1,
+            "tool_state": _seed_tool_state(),
+            "agents": {
+                "a1": {"default_uid": "deepseek/deepseek-flash", "tool_ids": ["read"]},
+                "case_design": {"default_uid": "", "tool_ids": ["write"]},
+            },
+        }
+    )
+    _svc(tmp_path)
+    stored = _stored(tmp_path)
+    assert stored["agents"] == {"case_design": {"default_uid": "", "tool_ids": ["write"]}}
+
+
+def test_legacy_id_is_not_an_alias_at_read_time(tmp_path: Path) -> None:
+    capability, _ = _svc(tmp_path)
+    assert [a["id"] for a in capability.get_view()["agents"]] == ["case_design"]
+    assert LEGACY_AGENT_IDS == {"a1": "case_design"}
+    with pytest.raises(ConfigNotFoundError) as exc_info:
+        capability.agent_state("a1")
+    assert "未知智能体" in exc_info.value.detail
+
+
+def test_agent_state_returns_copy_and_is_public(tmp_path: Path) -> None:
+    capability, _ = _svc(tmp_path)
+    state = capability.agent_state("case_design")
+    assert state == {
+        "default_uid": "",
+        "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search"],
+    }
+    state["tool_ids"].append("pwsh")
+    state["default_uid"] = "hacked"
+    assert capability.agent_state("case_design") == {
+        "default_uid": "",
+        "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search"],
+    }
+
+
+def test_effective_uid_is_public_and_rejects_unknown_agent(tmp_path: Path) -> None:
+    capability, model_config = _svc(tmp_path, deepseek_api_key="sk-x123456789")
+    assert capability.effective_uid("case_design") == "deepseek/deepseek-flash"
+    capability.set_agent_default_model("case_design", "deepseek/deepseek-v4-pro")
+    assert capability.effective_uid("case_design") == "deepseek/deepseek-v4-pro"
+    with pytest.raises(ConfigNotFoundError):
+        capability.effective_uid("ghost")

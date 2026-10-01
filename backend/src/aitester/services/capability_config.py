@@ -8,6 +8,7 @@ import sys
 from typing import Any
 
 from aitester.adapters.tools.availability import unavailable_reason
+from aitester.agents import AGENT_CATALOG, DEFAULT_AGENT_STATE, LEGACY_AGENT_IDS
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
 from aitester.storage import JsonConfigRepository
 
@@ -78,34 +79,6 @@ TOOL_CATALOG: list[dict[str, Any]] = [
     },
 ]
 
-AGENT_CATALOG: list[dict[str, Any]] = [
-    {
-        "id": "a1",
-        "icon": "📋",
-        "name": "用例设计智能体",
-        "desc": "读需求与接口文档，产出可直接执行的测试用例并同步用例平台，覆盖等价类、边界值与异常路径。",
-        "prompt": """你是「用例设计智能体」，服务对象是软件测试工程师。
-
-## 职责
-- 依据需求说明、接口文档与存量用例，设计功能 / 接口 / 回归测试用例
-- 用等价类划分、边界值、状态迁移、异常注入保证覆盖，并标注 P0 / P1 / P2
-- 产出统一用例表：编号、需求号、前置条件、步骤、预期结果、优先级
-
-## 约束
-- 项目文件只读，新增文件一律落在 cases/ 下，不改动生产配置
-- 需求信息不足时先列出待澄清问题，不臆造验收标准
-- 每条用例必须能被测试执行智能体直接跑：步骤可操作、预期结果可判定
-- 全程使用中文与 Markdown 表格，不省略步骤""",
-    },
-]
-
-DEFAULT_AGENT_STATE: dict[str, dict[str, Any]] = {
-    "a1": {
-        "default_uid": "",
-        "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search"],
-    }
-}
-
 
 def default_tool_enabled(tool_id: str) -> bool:
     """工具的出厂开关：本机不可用的一律 False。
@@ -151,6 +124,10 @@ def _normalized(config: dict[str, Any]) -> tuple[dict[str, Any], bool]:
 
     raw_agents = config.get("agents")
     raw_agents = raw_agents if isinstance(raw_agents, dict) else {}
+    # 一次性迁移：旧 id 的状态搬到新 id（保住用户改过的默认模型与携带工具），旧键随后被丢弃
+    for legacy_id, new_id in LEGACY_AGENT_IDS.items():
+        if legacy_id in raw_agents and new_id not in raw_agents:
+            raw_agents[new_id] = raw_agents[legacy_id]
     agents: dict[str, dict[str, Any]] = {}
     # 注意：seed["agents"] 是 DEFAULT_AGENT_STATE 形态——aid -> {"default_uid","tool_ids"}，条目内没有 "id" 键
     for agent_id, seed_state in seed["agents"].items():
@@ -200,6 +177,18 @@ class CapabilityConfigService:
             raise ConfigNotFoundError(f"未知智能体「{agent_id}」")
         return agents[agent_id]
 
+    def agent_state(self, agent_id: str) -> dict[str, Any]:
+        """公开读入口：返回副本，调用方改不坏配置真相。"""
+        state = self._agent_state(agent_id)
+        return {"default_uid": state["default_uid"], "tool_ids": list(state["tool_ids"])}
+
+    def effective_uid(self, agent_id: str) -> str:
+        """该智能体的有效模型：自身默认「可用」则用之，否则回落全局默认（读侧回落，不写回）。"""
+        uid = self._agent_state(agent_id)["default_uid"]
+        if uid and self._model_config.is_usable_uid(uid):
+            return uid
+        return self._model_config.default_uid
+
     def _enabled(self, tool_id: str) -> bool:
         return bool(self._config["tool_state"][tool_id])
 
@@ -227,18 +216,17 @@ class CapabilityConfigService:
                 }
             )
         views: list[dict[str, Any]] = []
-        for seed in AGENT_CATALOG:
-            state = agents_state[seed["id"]]
-            default_uid = state["default_uid"]
-            if default_uid and self._model_config.is_usable_uid(default_uid):
-                effective_uid = default_uid
-            else:
-                effective_uid = self._model_config.default_uid
+        for spec in AGENT_CATALOG:
+            state = agents_state[spec.id]
             views.append(
                 {
-                    **seed,
-                    "default_uid": default_uid,
-                    "effective_uid": effective_uid,
+                    "id": spec.id,
+                    "icon": spec.icon,
+                    "name": spec.name,
+                    "desc": spec.desc,
+                    "prompt": spec.prompt,
+                    "default_uid": state["default_uid"],
+                    "effective_uid": self.effective_uid(spec.id),
                     "tool_ids": list(state["tool_ids"]),
                 }
             )

@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from aitester.agents import find_agent
 from aitester.config import Settings
 from aitester.main import create_app
 
@@ -29,9 +30,11 @@ def test_capabilities_seed_view(tmp_path: Path) -> None:
         "bash",
         "web_search",
     ]
-    assert [a["id"] for a in body["agents"]] == ["a1"]
+    assert [a["id"] for a in body["agents"]] == ["case_design"]
     agent = body["agents"][0]
     assert agent["name"] == "用例设计智能体"
+    assert "## 职责" in agent["prompt"]
+    assert agent["prompt"] == find_agent("case_design").prompt
     assert agent["default_uid"] == "" and agent["effective_uid"] == ""
     assert agent["tool_ids"] == [
         "read",
@@ -56,12 +59,12 @@ def test_capabilities_view_reports_availability(tmp_path: Path) -> None:
 def test_agent_default_model_endpoints(tmp_path: Path) -> None:
     c = _client(tmp_path, deepseek_api_key="sk-x123456789")
     bad = c.put(
-        "/api/capabilities/agents/a1/default-model", json={"uid": "dashscope/qwen3.7-max"}
+        "/api/capabilities/agents/case_design/default-model", json={"uid": "dashscope/qwen3.7-max"}
     )
     assert bad.status_code == 400
     assert "设置 · 模型设置" in bad.json()["detail"]
     ok = c.put(
-        "/api/capabilities/agents/a1/default-model",
+        "/api/capabilities/agents/case_design/default-model",
         json={"uid": "deepseek/deepseek-flash"},
     )
     assert ok.status_code == 200
@@ -72,7 +75,7 @@ def test_agent_default_model_endpoints(tmp_path: Path) -> None:
         restarted.get("/api/capabilities").json()["agents"][0]["default_uid"]
         == "deepseek/deepseek-flash"
     )
-    assert c.put("/api/capabilities/agents/a1/default-model", json={"uid": ""}).status_code == 200
+    assert c.put("/api/capabilities/agents/case_design/default-model", json={"uid": ""}).status_code == 200
     assert c.put("/api/capabilities/agents/a9/default-model", json={"uid": ""}).status_code == 404
 
 
@@ -80,7 +83,7 @@ def test_disabled_model_falls_back_in_view_without_touching_storage(tmp_path: Pa
     c = _client(tmp_path, deepseek_api_key="sk-x123456789", dashscope_api_key="sk-d123456789")
     assert c.get("/api/models").json()["default_uid"] == "deepseek/deepseek-flash"
     uid = "dashscope/qwen3.7-max"
-    ok = c.put("/api/capabilities/agents/a1/default-model", json={"uid": uid})
+    ok = c.put("/api/capabilities/agents/case_design/default-model", json={"uid": uid})
     assert ok.status_code == 200
     before = c.get("/api/capabilities").json()["agents"][0]
     assert before["default_uid"] == uid
@@ -94,8 +97,8 @@ def test_disabled_model_falls_back_in_view_without_touching_storage(tmp_path: Pa
     assert after["default_uid"] == uid  # 写入期不清理：存储的默认模型原封不动
     assert after["effective_uid"] == "deepseek/deepseek-flash"  # 读取期回落全局默认
     stored = json.loads((tmp_path / "capability_config.json").read_text(encoding="utf-8"))
-    assert stored["agents"]["a1"]["default_uid"] == uid
-    assert stored["agents"]["a1"]["tool_ids"] == [
+    assert stored["agents"]["case_design"]["default_uid"] == uid
+    assert stored["agents"]["case_design"]["tool_ids"] == [
         "read",
         "write",
         "edit",
@@ -107,19 +110,19 @@ def test_disabled_model_falls_back_in_view_without_touching_storage(tmp_path: Pa
 
 def test_agent_tools_endpoint(tmp_path: Path) -> None:
     c = _client(tmp_path)
-    ok = c.put("/api/capabilities/agents/a1/tools", json={"tool_ids": ["read", "web_search"]})
+    ok = c.put("/api/capabilities/agents/case_design/tools", json={"tool_ids": ["read", "web_search"]})
     assert ok.status_code == 200
     assert ok.json()["agents"][0]["tool_ids"] == ["read", "web_search"]
-    ok = c.put("/api/capabilities/agents/a1/tools", json={"tool_ids": ["write", "edit"]})
+    ok = c.put("/api/capabilities/agents/case_design/tools", json={"tool_ids": ["write", "edit"]})
     assert ok.status_code == 200
     assert ok.json()["agents"][0]["tool_ids"] == ["write", "edit"]
-    assert c.put("/api/capabilities/agents/a1/tools", json={"tool_ids": ["nope"]}).status_code == 404
+    assert c.put("/api/capabilities/agents/case_design/tools", json={"tool_ids": ["nope"]}).status_code == 404
 
 
 def test_agent_tools_endpoint_rejects_disabled_tool(tmp_path: Path) -> None:
     c = _client(tmp_path)
     assert c.put("/api/capabilities/tools/edit/enabled", json={"enabled": False}).status_code == 200
-    bad = c.put("/api/capabilities/agents/a1/tools", json={"tool_ids": ["read", "edit"]})
+    bad = c.put("/api/capabilities/agents/case_design/tools", json={"tool_ids": ["read", "edit"]})
     assert bad.status_code == 400
     assert "已禁用" in bad.json()["detail"]
 
