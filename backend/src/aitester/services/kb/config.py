@@ -63,6 +63,29 @@ _KB_JOBS: dict[str, Any] = {
             },
         ],
     },
+    # reme 内建后台索引环（spec 裁定4：读侧各实例经 watch 循环秒级收敛）。
+    # 形态抄实装 reme/config/default.yaml 的 index_update_loop；
+    # prepare_knowledge_startup/augment_jobs_for_knowledge 会在启动期把
+    # knowledge/<bucket> 发布桶绝对路径追加进本 job 的 watch_dirs。
+    "index_update_loop": {
+        "backend": "background",
+        "watch_dirs": ["knowledge"],
+        "watch_suffixes": ["md"],
+        "steps": [
+            {
+                "backend": "init_changes_step",
+                "monitor_type": "file_store",
+                "monitor_name": "default",
+                "dispatch_steps": ["update_index_step"],
+            },
+            {
+                "backend": "watch_changes_step",
+                "dispatch_steps": [
+                    {"backend": "update_index_step", "persist": False},
+                ],
+            },
+        ],
+    },
     "list_knowledge_inbox": {
         "backend": "base",
         "steps": [{"backend": "list_knowledge_inbox_step"}],

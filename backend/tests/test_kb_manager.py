@@ -85,3 +85,70 @@ def test_two_agents_get_two_workspaces(tmp_path):
         assert (tmp_path / "data" / "workspaces" / "p1" / "a2").is_dir()
     finally:
         mgr.close_all()
+
+
+def test_cross_instance_convergence_without_explicit_reindex(tmp_path):
+    """spec 裁定4：读侧各实例索引经后台 watch 循环最终一致（秒级收敛）。
+
+    实例 A（p1/a1）save + 显式 reindex（写方立即可见语义保留）后，
+    实例 B（p1/a2）不调 reindex：
+    1) B 首启后经 index_update_loop 的 init_changes 全量索引收敛；
+    2) B 运行期间 A 再写入新节点，B 经 watch_changes 增量收敛。
+    """
+    _seed_kb(tmp_path)
+    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        saved = mgr.run_job_sync(
+            "save_to_knowledge",
+            title="跨实例节点",
+            content="这是跨实例收敛测试节点。",
+            bucket="business/wiki",
+            project_id="p1",
+            agent_id="a1",
+        )
+        assert saved.success
+        mgr.run_job_sync("reindex", project_id="p1", agent_id="a1")
+
+        blob = ""
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            found = mgr.run_job_sync(
+                "knowledge_search",
+                query="跨实例收敛测试",
+                limit=5,
+                project_id="p1",
+                agent_id="a2",
+            )
+            blob = json.dumps(found.metadata, ensure_ascii=False) + str(found.answer)
+            if found.success and "跨实例节点" in blob:
+                break
+            time.sleep(1)
+        assert "跨实例节点" in blob, f"实例 B 首启 30 秒内未经 reindex 未收敛：{blob}"
+
+        saved2 = mgr.run_job_sync(
+            "save_to_knowledge",
+            title="实时监听节点",
+            content="这是实时监听收敛测试节点。",
+            bucket="business/wiki",
+            project_id="p1",
+            agent_id="a1",
+        )
+        assert saved2.success
+        blob2 = ""
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            found2 = mgr.run_job_sync(
+                "knowledge_search",
+                query="实时监听收敛测试",
+                limit=5,
+                project_id="p1",
+                agent_id="a2",
+            )
+            blob2 = json.dumps(found2.metadata, ensure_ascii=False) + str(found2.answer)
+            if found2.success and "实时监听节点" in blob2:
+                break
+            time.sleep(1)
+        assert "实时监听节点" in blob2, f"实例 B 运行期 watch 增量 30 秒内未收敛：{blob2}"
+    finally:
+        mgr.close_all()

@@ -14,7 +14,13 @@ def test_bm25_only_without_api_key():
         "status", "list_knowledge_bases", "knowledge_search",
         "save_to_knowledge", "reindex", "list_knowledge_inbox",
         "promote_knowledge_inbox", "merge_knowledge_inbox", "reject_knowledge_inbox",
+        "index_update_loop",
     }
+    # spec 裁定4：后台索引环（index_update_loop），读侧各实例秒级收敛
+    loop = cfg["jobs"]["index_update_loop"]
+    assert loop["backend"] == "background"
+    step_backends = [s["backend"] for s in loop["steps"]]
+    assert step_backends == ["init_changes_step", "watch_changes_step"]
 
 
 def test_embedding_injected_when_key_present():
