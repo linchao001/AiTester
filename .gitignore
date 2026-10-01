@@ -16,5 +16,8 @@ __pycache__/
 # 运行期模型配置（含密钥，不入库）
 backend/data/
 
+# 智能体 write 工具落盘的用例文件（运行期产物，不入库）
+backend/cases/
+
 # SDD 过程工件（ledger/brief/快照，不入库）
 .superpowers/
