@@ -11,6 +11,10 @@ dependencies = [
   "langchain-openai>=1.6.6",
   "openai>=2",
   "httpx>=0.27",
+  "reme-ai>=0.4.1.8",
+  # reme 包顶层 import 链（reme.steps.base_step）硬依赖 agentscope 核心；
+  # 只装基础包以规避 reme-ai[core] 的重依赖（faiss/neo4j/polars 等本期不需要）。
+  "agentscope==2.0.6",
 ]
 
 [dependency-groups]
@@ -22,3 +26,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aitester"]
+
+[tool.uv.sources]
+reme-ai = { path = "../lib/reme_ai-0.4.1.8-py3-none-any.whl" }
