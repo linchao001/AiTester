@@ -1,7 +1,7 @@
 # AiTester 知识库（ReMe 进程内嵌）专项设计
 
 日期：2026-10-01
-状态：已与用户逐条确认裁定，待实施
+状态：已与用户逐条确认裁定，已实施
 
 ## 目标
 
@@ -74,7 +74,7 @@ kb_embedding_dimensions: int = 1024
 
 ### 依赖
 
-`backend/pyproject.toml`：`reme-ai` 经 `[tool.uv.sources]` 指向本地 whl（`../lib/reme_ai-0.4.1.8-py3-none-any.whl`）。**不装 `reme-ai[core]`**（agentscope/faiss/neo4j 等重依赖本期不需要：file_store 用 local，向量走 openai 兼容 API）。BM25 分词器默认后端为 `regex`（default.yaml:884-886），无需 jieba/rjieba。
+`backend/pyproject.toml`：`reme-ai>=0.4.1.8` 经 `[tool.uv.sources]` 指向本地 whl（`../lib/reme_ai-0.4.1.8-py3-none-any.whl`）。**不装 `reme-ai[core]`，但裸包 `agentscope==2.0.6` 是硬装依赖**——实施期实证：`reme/steps/base_step.py` 在模块顶层 import `agentscope.model`，缺它 `import reme` 直接失败；core extra 里 faiss/neo4j/polars 等重依赖本期确不需要（file_store 用 local，向量走 openai 兼容 API）。BM25 分词器默认后端为 `regex`（default.yaml:884-886），无需 jieba/rjieba。
 
 ## 测试策略
 

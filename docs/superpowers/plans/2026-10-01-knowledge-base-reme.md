@@ -6,14 +6,14 @@
 
 **Architecture:** `RemeKbManager` 应用级单例持一个专属事件循环线程，按 (project_id, agent_id) lazy 启动多个 `reme.Application` 实例（纯 dict 配置，不加载 reme yaml、绝不启 ReMe 的 HTTP 服务）；每个实例独占 workspace 目录，经 ReMe 自带 junction 挂载与跨进程写锁共享同一 KB 实体。端点与工具分别经 `run_job`（async）/`run_job_sync` 桥接。
 
-**Tech Stack:** Python 3.11+ / FastAPI / uv / pytest（全同步）/ reme-ai 0.4.1.8（本地 whl）/ React+TS 前端
+**Tech Stack:** Python 3.11+ / FastAPI / uv / pytest（全同步）/ reme-ai 0.4.1.8（本地 whl）+ agentscope 2.0.6（裸包，reme 顶层 import 硬依赖，实施期实证补入）/ React+TS 前端
 
 **Spec:** `docs/superpowers/specs/2026-10-01-knowledge-base-reme-design.md`（本计划实现该设计，四条裁定以其为准）
 
 ## Global Constraints
 
 - ReMe 仅以 `Application(**config_dict)` → `await start()` → `await run_job(name, **kwargs)` 进程内使用；禁止调用 `reme start`/启用 service 后端监听（配置里 `"service": {"backend": "http", "web_enabled": False, ...}` 为 reme 单测证实的合法占位，永不绑端口）。
-- 依赖只用 `lib/reme_ai-0.4.1.8-py3-none-any.whl` 的 base extras，**不装 `reme-ai[core]`**；BM25 分词器用默认 `regex` 后端。
+- 依赖只用 `lib/reme_ai-0.4.1.8-py3-none-any.whl` 的 base extras，**不装 `reme-ai[core]`**（faiss/neo4j/polars 等重依赖本期不需要）；但须另装裸包 **`agentscope==2.0.6`**——实施期实证：`reme/steps/base_step.py` 模块顶层 import `agentscope.model`，缺则 `import reme` 即 ModuleNotFoundError。BM25 分词器用默认 `regex` 后端（无需 jieba/rjieba）。
 - 每个 (project_id, agent_id) 实例独占 workspace：`backend/data/workspaces/<project_id>/<agent_id>/`；严禁两个实例同开一个 workspace 目录。
 - `knowledge_base_id` 是应用级配置（默认 `zhb_kb`），不进项目维度。
 - backend 测试全同步、不用 pytest-asyncio（现状基线 239 例全绿）；新测试放 `backend/tests/` 平铺。
@@ -52,7 +52,7 @@ Expected: FAIL（ModuleNotFoundError: reme）
 
 - [ ] **Step 3: 加依赖**
 
-`backend/pyproject.toml`：`dependencies` 追加一行 `"reme-ai>=0.4.1.8",`；文件末尾若无 `[tool.uv.sources]` 段则新建并加：
+`backend/pyproject.toml`：`dependencies` 追加两行 `"reme-ai>=0.4.1.8",` 与 `"agentscope==2.0.6",`（后者为实施期实证补入的硬依赖，见 Global Constraints；带注释说明原因）；文件末尾若无 `[tool.uv.sources]` 段则新建并加：
 
 ```toml
 [tool.uv.sources]
