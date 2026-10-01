@@ -7,6 +7,7 @@ reme/config/default.yaml 与 reme/schema/application_config.py；
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Any
 
@@ -86,6 +87,17 @@ def build_reme_config(cfg: KbConfig) -> dict[str, Any]:
         "tokenizer": {"default": {"backend": "regex"}},
         "keyword_index": {"default": {"backend": "bm25", "tokenizer": "default"}},
         "file_graph": {"default": {"backend": "local"}},
+        # update_index_step 按扩展名解析 file_chunker；缺省即整条索引失败（键名/默认值对齐 default.yaml）。
+        "file_chunker": {
+            "markdown": {
+                "backend": "markdown",
+                "supported_extensions": ["md"],
+                "embed_toc": True,
+                "max_ast_sections": 100,
+                "include_frontmatter_in_metadata": False,
+                "include_frontmatter_keys_in_metadata": [],
+            },
+        },
         "file_store": {
             "default": {
                 "backend": "local",
@@ -125,5 +137,5 @@ def build_reme_config(cfg: KbConfig) -> dict[str, Any]:
         "knowledge_write_mode": "open",
         "service": {"backend": "http", "web_enabled": False, "port": 8199},
         "components": components,
-        "jobs": {name: dict(spec) for name, spec in _KB_JOBS.items()},
+        "jobs": copy.deepcopy(_KB_JOBS),
     }
