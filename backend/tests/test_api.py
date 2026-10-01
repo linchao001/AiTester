@@ -3,10 +3,13 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from aitester.agents import find_agent
 from aitester.adapters.llm import MockProvider, ProviderError
 from aitester.config import Settings
 from aitester.main import app, create_app
+from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.chat import ChatService
+from langchain_core.messages import AIMessage
 
 client = TestClient(app)
 
@@ -66,7 +69,10 @@ def test_send_uses_injected_provider_and_reports_model(tmp_path: Path) -> None:
         capability_config_path=tmp_path / "c.cap.json",
         settings=Settings(_env_file=None),
     )
-    application.state.chat_service = ChatService(provider=MockProvider())
+    assert isinstance(application.state.agent_runtime, AgentRuntime)
+    application.state.chat_service = ChatService(
+        provider=MockProvider(), agent_runtime=application.state.agent_runtime
+    )
     resp = TestClient(application).post(
         "/api/chat/send", json={"session_id": "s2", "message": "生成用例"}
     )
@@ -75,6 +81,72 @@ def test_send_uses_injected_provider_and_reports_model(tmp_path: Path) -> None:
     assert body["reply"] == "[mock] 生成用例"
     assert body["trace"] == ALL_LAYERS
     assert body["model"] == "mock/mock"
+
+
+def test_send_with_unknown_agent_returns_404(tmp_path: Path) -> None:
+    application = create_app(
+        model_config_path=tmp_path / "m.json",
+        capability_config_path=tmp_path / "c.cap.json",
+        settings=Settings(_env_file=None),
+    )
+    application.state.chat_service = ChatService(
+        provider=MockProvider(), agent_runtime=application.state.agent_runtime
+    )
+    resp = TestClient(application).post(
+        "/api/chat/send", json={"session_id": "s3", "message": "hi", "agent_id": "ghost"}
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "未知智能体「ghost」"
+
+
+def test_send_with_legacy_agent_id_returns_404(tmp_path: Path) -> None:
+    application = create_app(
+        model_config_path=tmp_path / "m.json",
+        capability_config_path=tmp_path / "c.cap.json",
+        settings=Settings(_env_file=None),
+    )
+    application.state.chat_service = ChatService(
+        provider=MockProvider(), agent_runtime=application.state.agent_runtime
+    )
+    resp = TestClient(application).post(
+        "/api/chat/send", json={"message": "hi", "agent_id": "a1"}
+    )
+    assert resp.status_code == 404
+    assert "未知智能体「a1」" in resp.json()["detail"]
+
+
+def test_send_uses_agent_prompt_and_default_agent_id(tmp_path: Path) -> None:
+    seen: list[list[object]] = []
+
+    class _SpyProvider:
+        name = "spy"
+        model_ref = "spy/model"
+
+        def complete(self, messages: list[dict[str, str]]) -> str:
+            return "[spy]"
+
+        def bind_tools(self, tools: list) -> "_SpyProvider":
+            return self
+
+        def invoke_messages(self, messages: list) -> AIMessage:
+            seen.append(list(messages))
+            return AIMessage(content="[spy] 收到")
+
+    application = create_app(
+        model_config_path=tmp_path / "m.json",
+        capability_config_path=tmp_path / "c.cap.json",
+        settings=Settings(_env_file=None),
+    )
+    application.state.chat_service = ChatService(
+        provider=_SpyProvider(), agent_runtime=application.state.agent_runtime
+    )
+    resp = TestClient(application).post(
+        "/api/chat/send", json={"session_id": "s4", "message": "生成登录用例"}
+    )
+    assert resp.status_code == 200
+    # 请求体不带 agent_id 时取 SendRequest 默认值 case_design；系统提示词来自 md
+    assert str(seen[0][0].content) == find_agent("case_design").prompt
+    assert resp.json()["reply"] == "[spy] 收到"
 
 
 def test_send_without_configured_default_returns_400(tmp_path: Path) -> None:
@@ -102,7 +174,9 @@ def test_send_upstream_failure_returns_502(tmp_path: Path) -> None:
         capability_config_path=tmp_path / "c.cap.json",
         settings=Settings(_env_file=None),
     )
-    application.state.chat_service = ChatService(provider=FailingProvider())
+    application.state.chat_service = ChatService(
+        provider=FailingProvider(), agent_runtime=application.state.agent_runtime
+    )
     resp = TestClient(application).post("/api/chat/send", json={"message": "hi"})
     assert resp.status_code == 502
     assert "fake/model-x" in resp.json()["detail"]

@@ -6,6 +6,7 @@ from aitester.adapters.tools import FileObservationStore
 from aitester.config import Settings, get_settings
 from aitester.interaction.router import router
 from aitester.services import CapabilityConfigService, ChatService
+from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.model_config import ModelConfigService
 from aitester.storage import FileJsonConfigRepository
 
@@ -31,7 +32,10 @@ def create_app(
     application.state.model_config = model_config
     application.state.capability_config = capability_config
     application.state.file_observations = FileObservationStore()
-    application.state.chat_service = ChatService(model_config=model_config)
+    application.state.agent_runtime = AgentRuntime(
+        capability_config, model_config, application.state.file_observations
+    )
+    application.state.chat_service = ChatService(agent_runtime=application.state.agent_runtime)
     application.include_router(router)
     return application
 

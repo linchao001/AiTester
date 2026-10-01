@@ -14,7 +14,7 @@ class EchoResponse(BaseModel):
 class SendRequest(BaseModel):
     session_id: str = "default"
     message: str = Field(min_length=1)
-    agent_id: str = "a1"
+    agent_id: str = "case_design"
 
 
 class SendResponse(BaseModel):
