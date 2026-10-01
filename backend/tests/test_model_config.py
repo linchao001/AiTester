@@ -205,3 +205,65 @@ def test_is_usable_uid_rules(tmp_path: Path) -> None:
     assert svc.is_usable_uid("dashscope/qwen3.7-max") is False  # 未配 Key
     assert svc.is_usable_uid("deepseek/nope") is False
     assert svc.is_usable_uid("garbage") is False
+
+
+def test_build_provider_with_explicit_uid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded: dict[str, object] = {}
+
+    class _FakeChatForBuild:
+        def __init__(self, **kwargs: object) -> None:
+            recorded.update(kwargs)
+
+    monkeypatch.setattr(openai_compat, "ChatOpenAI", _FakeChatForBuild)
+    svc = _svc(tmp_path, deepseek_api_key="sk-x123456789", dashscope_api_key="sk-d123456789")
+    provider = svc.build_provider("dashscope/qwen3.7-max")
+    assert provider.model_ref == "dashscope/qwen3.7-max"
+    assert recorded["model"] == "qwen3.7-max"
+    assert recorded["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+
+def test_build_provider_empty_uid_keeps_default_model_copy(tmp_path: Path) -> None:
+    svc = _svc(tmp_path)
+    with pytest.raises(ProviderConfigError) as exc_info:
+        svc.build_provider("")
+    # 文案逐字保持：现有 400 断言依赖「设置 · 模型设置」
+    assert exc_info.value.detail == "尚未配置默认模型：请在 设置 · 模型设置 中填写 API Key 并选择默认 LLM"
+
+
+def test_build_provider_rejects_unusable_model(tmp_path: Path) -> None:
+    svc = _svc(tmp_path, deepseek_api_key="sk-x123456789")
+    svc.set_model_enabled("deepseek", "deepseek-flash", False)
+    with pytest.raises(ProviderConfigError) as exc_info:
+        svc.build_provider("deepseek/deepseek-flash")
+    assert "已停用" in exc_info.value.detail
+
+    other_dir = Path(tmp_path, "other")
+    other_dir.mkdir()
+    other = _svc(other_dir)  # 两个提供商都没配 Key
+    with pytest.raises(ProviderConfigError) as exc_info:
+        other.build_provider("dashscope/qwen3.7-max")
+    assert "未配置 API Key" in exc_info.value.detail
+
+
+def test_build_provider_unknown_uid_raises_not_found(tmp_path: Path) -> None:
+    svc = _svc(tmp_path, deepseek_api_key="sk-x123456789")
+    with pytest.raises(ConfigNotFoundError):
+        svc.build_provider("deepseek/nope")
+    with pytest.raises(ConfigNotFoundError):
+        svc.build_provider("glm/deepseek-flash")
+
+
+def test_build_default_provider_delegates_to_build_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recorded: list[str] = []
+
+    class _FakeChatDeleg:
+        def __init__(self, **kwargs: object) -> None:
+            recorded.append(str(kwargs["model"]))
+
+    monkeypatch.setattr(openai_compat, "ChatOpenAI", _FakeChatDeleg)
+    svc = _svc(tmp_path, deepseek_api_key="sk-x123456789")
+    assert svc.build_default_provider().model_ref == "deepseek/deepseek-flash"
+    assert svc.build_provider("deepseek/deepseek-flash").model_ref == "deepseek/deepseek-flash"
+    assert recorded == ["deepseek-flash", "deepseek-flash"]

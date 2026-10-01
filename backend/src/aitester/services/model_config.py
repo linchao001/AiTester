@@ -267,8 +267,8 @@ class ModelConfigService:
         self._config["default_uid"] = uid
         self._repo.save(self._config)
 
-    def build_default_provider(self) -> LlmProvider:
-        uid = self._config["default_uid"]
+    def build_provider(self, uid: str) -> LlmProvider:
+        """按 uid 构建 provider：空 uid / 未配 Key / 已停用 → ProviderConfigError（400 可照做文案）。"""
         if not uid:
             raise ProviderConfigError(
                 "尚未配置默认模型：请在 设置 · 模型设置 中填写 API Key 并选择默认 LLM"
@@ -278,11 +278,11 @@ class ModelConfigService:
         model = self._model(provider, mid)
         if not provider["api_key"]:
             raise ProviderConfigError(
-                f"默认模型「{uid}」的提供商未配置 API Key：请在 设置 · 模型设置 中填写"
+                f"模型「{uid}」的提供商未配置 API Key：请在 设置 · 模型设置 中填写"
             )
         if not model["enabled"]:
             raise ProviderConfigError(
-                f"默认模型「{uid}」已停用：请在 设置 · 模型设置 中启用或改选默认模型"
+                f"模型「{uid}」已停用：请在 设置 · 模型设置 中启用或改选模型"
             )
         return OpenAICompatProvider(
             name=pid,
@@ -290,3 +290,6 @@ class ModelConfigService:
             base_url=provider["base_url"],
             model=mid,
         )
+
+    def build_default_provider(self) -> LlmProvider:
+        return self.build_provider(self._config["default_uid"])
