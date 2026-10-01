@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
@@ -19,6 +19,9 @@ class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
 
+GraphBuilder = Callable[[LlmProvider, list[AiTooler]], CompiledStateGraph]
+
+
 def _tool_error_message(error: Exception) -> str:
     """把工具异常转为模型可见的错误结果文本。
 
@@ -29,7 +32,17 @@ def _tool_error_message(error: Exception) -> str:
 
 
 def build_agent_graph(provider: LlmProvider, tools: list[AiTooler]) -> CompiledStateGraph:
-    """构建带工具调用循环的 Agent 状态图。"""
+    """构建 Agent 状态图：有工具走 agent↔tools 循环，无工具退化为单节点直答。"""
+    if not tools:
+        def answer_node(state: AgentState) -> dict[str, list[BaseMessage]]:
+            return {"messages": [provider.invoke_messages(state["messages"])]}
+
+        plain = StateGraph(AgentState)
+        plain.add_node("agent", answer_node)
+        plain.add_edge(START, "agent")
+        plain.add_edge("agent", END)
+        return plain.compile()
+
     tool_node = ToolNode(tools, handle_tool_errors=_tool_error_message)
     bound = provider.bind_tools(tools)
 
@@ -52,13 +65,14 @@ def build_agent_graph(provider: LlmProvider, tools: list[AiTooler]) -> CompiledS
     return graph.compile()
 
 
-def run_agent(
+def run_graph(
+    build: GraphBuilder,
     provider: LlmProvider,
     tools: list[AiTooler],
     messages: list[BaseMessage],
 ) -> dict[str, Any]:
-    """执行 agent loop，返回 {reply, tool_traces}。"""
-    graph = build_agent_graph(provider, tools)
+    """按指定拓扑执行一轮，返回 {reply, tool_traces}。"""
+    graph = build(provider, tools)
     result = graph.invoke({"messages": messages})
 
     reply = ""
@@ -70,3 +84,12 @@ def run_agent(
             tool_traces.append({"tool": msg.name or "", "result": str(msg.content)})
 
     return {"reply": reply, "tool_traces": tool_traces}
+
+
+def run_agent(
+    provider: LlmProvider,
+    tools: list[AiTooler],
+    messages: list[BaseMessage],
+) -> dict[str, Any]:
+    """默认 react 循环的便捷入口（等价于 run_graph(build_agent_graph, …)）。"""
+    return run_graph(build_agent_graph, provider, tools, messages)

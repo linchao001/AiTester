@@ -5,11 +5,20 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
+from aitester.adapters.llm import MockProvider
 from aitester.adapters.tools import build_default_registry
 from aitester.adapters.tools.file_tools.observation import FileObservationStore
-from aitester.orchestration import run_agent
+from aitester.agents import AGENT_CATALOG
+from aitester.orchestration import (
+    GRAPH_BUILDERS,
+    build_agent_graph,
+    get_graph_builder,
+    run_agent,
+    run_graph,
+)
 
 
 class ScriptedProvider:
@@ -165,3 +174,53 @@ def test_agent_loop_multiple_tool_rounds(tmp_path: Path) -> None:
     assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "v2"
     names = [trace["tool"] for trace in result["tool_traces"]]
     assert names == ["write", "edit"]
+
+
+def test_registry_resolves_react_to_build_agent_graph() -> None:
+    assert get_graph_builder("react") is build_agent_graph
+
+
+def test_registry_rejects_unregistered_builder_name() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        get_graph_builder("plan_execute")
+    assert "未注册" in str(exc_info.value)
+
+
+def test_every_catalog_agent_has_a_registered_builder() -> None:
+    for spec in AGENT_CATALOG:
+        assert GRAPH_BUILDERS[spec.graph_builder] is get_graph_builder(spec.graph_builder)
+
+
+def test_graph_without_tools_answers_in_single_node() -> None:
+    result = run_graph(build_agent_graph, MockProvider(), [], [HumanMessage(content="生成用例")])
+    assert result["reply"] == "[mock] 生成用例"
+    assert result["tool_traces"] == []
+
+
+def test_run_graph_on_react_matches_run_agent(tmp_path: Path) -> None:
+    def script() -> list[AIMessage]:
+        return [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "write",
+                        "args": {"file_path": "h.txt", "content": "v"},
+                        "id": "c1",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="已写入"),
+        ]
+
+    tools = _tools(tmp_path)
+    by_helper = run_agent(ScriptedProvider(script()), tools, [HumanMessage(content="写")])
+    by_graph = run_graph(
+        get_graph_builder("react"),
+        ScriptedProvider(script()),
+        tools,
+        [HumanMessage(content="写")],
+    )
+    assert by_graph["reply"] == by_helper["reply"] == "已写入"
+    assert [t["tool"] for t in by_graph["tool_traces"]] == ["write"]
