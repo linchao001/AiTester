@@ -73,10 +73,13 @@ class RemeKbManager:
 
     async def _start_app(self, key: tuple[str, str]):
         project_id, agent_id = key
-        from reme import Application
-
-        app = Application(**build_reme_config(self._kb_config(project_id, agent_id)))
         try:
+            # 构造期同样可能抛错（reme Application.__init__ 的挂载检查/mkdir/组件
+            # 装配均会真抛），守卫必须覆盖构造+start 全程，否则失败任务滞留
+            # _start_tasks，该 key 之后每次 _get_app 都重放旧异常而无法重试
+            from reme import Application
+
+            app = Application(**build_reme_config(self._kb_config(project_id, agent_id)))
             await app.start()
         except BaseException:
             # 启动失败必须摘除在途任务，否则该 key 被永久污染无法重试

@@ -172,6 +172,40 @@ def test_run_job_async_bridge(tmp_path):
         mgr.close_all()
 
 
+def test_failed_construction_is_popped_and_retries(tmp_path, monkeypatch):
+    """构造期异常（reme Application.__init__ 真会抛）不得留下 FAILED 任务毒化 key。
+
+    首次构造抛错后：_start_tasks 必须已摘除该 key；第二次调用应重新构造并成功，
+    而不是永远重放缓存的旧异常。
+    """
+    _seed_kb(tmp_path)
+    real_application = reme.Application
+    attempts = []
+
+    class FlakyApplication(real_application):
+        def __init__(self, **kwargs):
+            attempts.append(kwargs)
+            if len(attempts) == 1:
+                raise RuntimeError("模拟构造期失败（ensure_knowledge_mount/wiring）")
+            super().__init__(**kwargs)
+
+    monkeypatch.setattr(reme, "Application", FlakyApplication)
+
+    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        with pytest.raises(RuntimeError, match="模拟构造期失败"):
+            mgr.run_job_sync("status", project_id="p1", agent_id="a1", timeout=60.0)
+        assert ("p1", "a1") not in mgr._start_tasks, "失败启动的任务滞留缓存，key 被永久污染"
+        resp = mgr.run_job_sync("status", project_id="p1", agent_id="a1", timeout=120.0)
+        assert resp.success
+        assert len(attempts) == 2
+        assert ("p1", "a1") in mgr._apps
+    finally:
+        monkeypatch.setattr(reme, "Application", real_application)
+        mgr.close_all()
+
+
 def test_concurrent_same_key_starts_exactly_one_application(tmp_path, monkeypatch):
     """同一 (project, agent) 并发提交只允许启动一个 Application（单飞）。
 
