@@ -1060,8 +1060,9 @@ def test_registry_uses_dot_cwd_and_shared_observations(
 
 def test_instances_are_independent_objects(tmp_path: Path) -> None:
     runtime, _, _ = _runtime(tmp_path)
-    a = runtime.build("case_design", "s1", provider_override=MockProvider())
-    b = runtime.build("case_design", "s1", provider_override=MockProvider())
+    mock = MockProvider()  # 复用同一个实例，否则 is 断言恒 False、测不到任何行为
+    a = runtime.build("case_design", "s1", provider_override=mock)
+    b = runtime.build("case_design", "s1", provider_override=mock)
     assert a is not b
     assert a.provider is b.provider  # 注入的是同一个 mock，但实例本身各自新建
     assert a.tools and len(a.tools) == len(b.tools)
@@ -1633,7 +1634,7 @@ Expected: 打印出非空 `hits`。若断言失败（hatchling 没把 md 收进�
 - [ ] **Step 2: 后端全量回归**
 
 Run: `cd backend && uv run pytest -q`
-Expected: 全部通过、0 failed（基线 177 + 新增约 30 项）
+Expected: 全部通过、0 failed（基线 177 + 本计划新增，实测收口为 **214 passed**）
 
 - [ ] **Step 3: 前端零改动仍绿**
 
