@@ -36,6 +36,11 @@ class RemeKbManager:
     def is_started(self) -> bool:
         return self._started
 
+    @property
+    def is_enabled(self) -> bool:
+        """settings.kb_enabled 的真实开关；与 is_started 不同，不受启停生命周期影响。"""
+        return bool(getattr(self._settings, "kb_enabled", False))
+
     def start(self) -> None:
         if not getattr(self._settings, "kb_enabled", False) or self._started:
             return
@@ -81,11 +86,13 @@ class RemeKbManager:
 
             app = Application(**build_reme_config(self._kb_config(project_id, agent_id)))
             await app.start()
-        except BaseException:
+        except BaseException as exc:
             # 启动失败必须摘除在途任务，否则该 key 被永久污染无法重试
             if self._start_tasks.get(key) is asyncio.current_task():
                 self._start_tasks.pop(key, None)
-            raise
+            # 终审裁定：实例启动失败统一收敛为 KbUnavailableError，
+            # 路由层据此映射 503，而非裸异常穿透成 500
+            raise KbUnavailableError(f"知识库实例启动失败: {exc}") from exc
         self._apps[key] = app
         if self._start_tasks.get(key) is asyncio.current_task():
             self._start_tasks.pop(key, None)

@@ -8,10 +8,9 @@ from aitester.services.kb.manager import KbUnavailableError
 
 
 class _RecordingKbManager:
-    def __init__(self, exc=None, fail_on=None):
+    def __init__(self, exc=None):
         self.calls: list[tuple[str, dict]] = []
         self.exc = exc
-        self.fail_on = set(fail_on or ())
 
     def start(self):
         pass
@@ -22,8 +21,6 @@ class _RecordingKbManager:
     async def run_job(self, name, *, project_id="default", agent_id="console", **kwargs):
         if self.exc is not None:
             raise self.exc
-        if name in self.fail_on:
-            raise RuntimeError(f"job {name} 失败")
         self.calls.append((name, kwargs))
         return SimpleNamespace(success=True, answer="ok", metadata={"echo": name})
 
@@ -53,20 +50,10 @@ def test_kb_save_and_inbox_routes(tmp_path):
         assert client.post("/api/kb/save", json={"title": "t", "content": "c"}).status_code == 200
         assert client.get("/api/kb/inbox").status_code == 200
         assert client.post("/api/kb/inbox/promote", json={"stem": "s"}).status_code == 200
-    # 控制端裁定：save 成功后同实例立即补跑一次 reindex（写方立即可见）
+    # 终审裁定：save 端点只派发 save job，不再同步补跑 reindex（后台环收敛）
     assert kb.calls[0] == ("save_to_knowledge", {"title": "t", "content": "c", "bucket": "business/wiki"})
-    assert kb.calls[1] == ("reindex", {})
-    assert kb.calls[2] == ("list_knowledge_inbox", {})
-    assert kb.calls[3] == ("promote_knowledge_inbox", {"stem": "s"})
-
-
-def test_kb_save_success_kept_when_reindex_fails(tmp_path):
-    kb = _RecordingKbManager(fail_on={"reindex"})
-    with _client(tmp_path, kb) as client:
-        r = client.post("/api/kb/save", json={"title": "t", "content": "c"})
-    assert r.status_code == 200
-    assert r.json()["answer"] == "ok"
-    assert [name for name, _ in kb.calls] == ["save_to_knowledge"]
+    assert kb.calls[1] == ("list_knowledge_inbox", {})
+    assert kb.calls[2] == ("promote_knowledge_inbox", {"stem": "s"})
 
 
 def test_kb_inbox_merge_and_reject(tmp_path):

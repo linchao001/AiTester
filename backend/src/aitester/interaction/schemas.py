@@ -124,7 +124,7 @@ class ToolEnabledUpdate(BaseModel):
 
 class KbSearchRequest(BaseModel):
     query: str
-    limit: int = 5
+    limit: int = Field(default=5, ge=1, le=100)
     bucket: str = "all"
 
 

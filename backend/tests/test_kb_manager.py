@@ -194,7 +194,9 @@ def test_failed_construction_is_popped_and_retries(tmp_path, monkeypatch):
     mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
-        with pytest.raises(RuntimeError, match="模拟构造期失败"):
+        # 终审裁定：启动失败以 KbUnavailableError 收敛（供路由层映射 503），
+        # 原文案仍随 __cause__ 携带在消息中
+        with pytest.raises(KbUnavailableError, match="知识库实例启动失败"):
             mgr.run_job_sync("status", project_id="p1", agent_id="a1", timeout=60.0)
         assert ("p1", "a1") not in mgr._start_tasks, "失败启动的任务滞留缓存，key 被永久污染"
         resp = mgr.run_job_sync("status", project_id="p1", agent_id="a1", timeout=120.0)

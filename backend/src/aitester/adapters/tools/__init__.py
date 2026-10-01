@@ -25,7 +25,8 @@ def build_default_registry(
 
     `observed` 为跨请求共享的会话级观察记录，用于「改前必读」守卫；
     不传则新建一个仅在本注册表生命周期内有效的记录。
-    `kb` 为 RemeKbManager（或其同签名替身）；不传则不注册知识库工具。
+    `kb` 为 RemeKbManager（或其同签名替身）；不传则不注册知识库工具；
+    传了但 `kb_enabled` 关闭（`is_enabled` 为假）同样不注册，模型不可见。
     """
     store = observed if observed is not None else FileObservationStore()
     registry = ToolRegistry()
@@ -36,7 +37,7 @@ def build_default_registry(
     for cls in COMMAND_TOOLS:
         registry.register(cls(cwd=cwd))
     registry.register(WebSearchTool())
-    if kb is not None:
+    if kb is not None and getattr(kb, "is_enabled", True):
         registry.register(KbSearchTool(kb=kb, agent_id=agent_id))
         registry.register(KbSaveTool(kb=kb, agent_id=agent_id))
     return registry

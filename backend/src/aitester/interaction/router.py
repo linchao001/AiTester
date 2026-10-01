@@ -1,5 +1,3 @@
-import logging
-
 from fastapi import APIRouter, HTTPException, Request
 
 from aitester.adapters.llm import ProviderConfigError, ProviderError
@@ -33,7 +31,6 @@ from aitester.services.kb.manager import KbUnavailableError
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
 
 router = APIRouter(prefix="/api")
-logger = logging.getLogger(__name__)
 
 
 @router.get("/health")
@@ -215,20 +212,14 @@ async def kb_search(request: Request, body: KbSearchRequest):
 
 @router.post("/kb/save", response_model=KbResponse)
 async def kb_save(request: Request, body: KbSaveRequest):
-    kb = _kb(request)
     try:
-        resp = await kb.run_job(
+        resp = await _kb(request).run_job(
             "save_to_knowledge", title=body.title, content=body.content, bucket=body.bucket,
         )
     except KbUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    if resp.success:
-        # 控制端裁定：写入成功后同一实例立即补跑一次 reindex，保证写方立即可见；
-        # 跨实例由后台环收敛，reindex 失败不影响 save 的 200 响应
-        try:
-            await kb.run_job("reindex")
-        except Exception as exc:
-            logger.warning("kb save 成功但同实例 reindex 失败：%s", exc)
+    # 控制端裁定：save 后不再同步补跑 reindex——写方实例由后台
+    # index_update_loop 收敛，跨实例最终一致已有专项测试覆盖
     return _kb_payload(resp)
 
 
