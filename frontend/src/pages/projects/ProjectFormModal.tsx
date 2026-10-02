@@ -65,7 +65,7 @@ export default function ProjectFormModal({
         picked = (await window.showDirectoryPicker({ mode: "readwrite" })).name;
       } catch (err) {
         if ((err as { name?: string })?.name === "AbortError") return;
-        // 本次浏览器/上下文不可用：降级走手输回落，不让按钮再撞同一次
+        // 本页面生命周期内不再撞第二次：降级走手输回落（瞬时错误也一并回避，回落功能完整）
         pickerDegraded = true;
       }
     }
@@ -131,7 +131,7 @@ export default function ProjectFormModal({
       <div className="modal" role="dialog" aria-modal="true">
         <div className="m-head"><span>{editing ? "编辑项目" : "新建项目"}</span>
           <div className="spacer" />
-          <button className="icon-btn" title="关闭" onClick={requestClose}>✕</button>
+          <button className="icon-btn" title="关闭" onClick={requestClose} disabled={saving}>✕</button>
         </div>
         <div className="m-body">
           <div className="field">
