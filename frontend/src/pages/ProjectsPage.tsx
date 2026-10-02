@@ -18,6 +18,8 @@ export default function ProjectsPage() {
   const toastTimer = useRef<number>();
 
   const agentNames = Object.fromEntries(agentOptions.map((a) => [a.id, a.name]));
+  // 智能体选项是弹窗可用性的前提：选项为空时保存恒被「请至少选择一个智能体」拦截，入口须一并门控
+  const formReady = loaded && agentOptions.length > 0;
 
   const toast = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -58,13 +60,18 @@ export default function ProjectsPage() {
     <div className="page">
       <div className="page-head">
         <h1>项目管理</h1>
-        {loaded && <span className="num">共 {projects.length} 个</span>}
+        {loaded && !error && <span className="num">共 {projects.length} 个</span>}
         <div className="spacer" />
-        <button className="btn-primary" onClick={() => setModal({ mode: "create", project: null })}>
+        <button className="btn-primary" disabled={!formReady} onClick={() => setModal({ mode: "create", project: null })}>
           ＋ 新建项目
         </button>
       </div>
-      {error && <p className="p-empty">加载失败：{error}</p>}
+      {error && (
+        <p className="p-empty">
+          加载失败：{error}{" "}
+          <button className="mini-btn" onClick={() => void reload()}>重试</button>
+        </p>
+      )}
       {loaded && !error && projects.length === 0 && (
         <p className="p-empty">还没有项目，点右上「＋ 新建项目」创建第一个。</p>
       )}
@@ -95,7 +102,7 @@ export default function ProjectsPage() {
                   <td><span className="p-kb">{p.kb}</span></td>
                   <td>{p.session_count}</td>
                   <td><div className="row-acts">
-                    <button className="mini-btn" onClick={() => setModal({ mode: "edit", project: p })}>编辑</button>
+                    <button className="mini-btn" disabled={!formReady} onClick={() => setModal({ mode: "edit", project: p })}>编辑</button>
                     <button className="mini-btn danger" onClick={() => void onRemove(p)}>删除</button>
                   </div></td>
                 </tr>

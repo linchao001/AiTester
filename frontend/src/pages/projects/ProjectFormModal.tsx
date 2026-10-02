@@ -16,6 +16,8 @@ declare global {
 const ABS_PATH = /^([A-Za-z]:[\\/]|\/|\\\\|~[\\/])/;
 const PROJECT_ROOT_DEFAULT = "D:/work/projects";
 const joinPath = (parent: string, name: string) => `${parent.replace(/[\\/]+$/, "")}/${name}`;
+// 降级只作用于本文件：NotAllowedError 等瞬时错误不代表浏览器永久没有该能力，写坏 window 会殃及同标签页一切消费方且只有刷新能恢复
+let pickerDegraded = false;
 
 interface ProjectFormModalProps {
   mode: "create" | "edit";
@@ -38,11 +40,17 @@ export default function ProjectFormModal({
   const [tip, setTip] = useState("");
   const [saving, setSaving] = useState(false);
 
+  /* 统一关闭入口：saving 期间任何路径都不得卸载弹窗——请求结果会落在已卸载组件上，用户零反馈误以为成功 */
+  function requestClose() {
+    if (saving) return;
+    onClose();
+  }
+
   useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") requestClose(); }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, saving]);
 
   function toggle(id: string) {
     setAgents((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -52,13 +60,13 @@ export default function ProjectFormModal({
   async function pickDir() {
     const raw = dir.trim();
     let picked = "";
-    if (typeof window.showDirectoryPicker === "function") {
+    if (!pickerDegraded && typeof window.showDirectoryPicker === "function") {
       try {
         picked = (await window.showDirectoryPicker({ mode: "readwrite" })).name;
       } catch (err) {
         if ((err as { name?: string })?.name === "AbortError") return;
-        // 该浏览器/上下文不可用：回落手输，不让按钮再撞同一次
-        (window as { showDirectoryPicker?: unknown }).showDirectoryPicker = undefined;
+        // 本次浏览器/上下文不可用：降级走手输回落，不让按钮再撞同一次
+        pickerDegraded = true;
       }
     }
     if (!picked) {
@@ -119,11 +127,11 @@ export default function ProjectFormModal({
   }
 
   return (
-    <div className="mask" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="mask" onMouseDown={(e) => { if (e.target === e.currentTarget) requestClose(); }}>
       <div className="modal" role="dialog" aria-modal="true">
         <div className="m-head"><span>{editing ? "编辑项目" : "新建项目"}</span>
           <div className="spacer" />
-          <button className="icon-btn" title="关闭" onClick={onClose}>✕</button>
+          <button className="icon-btn" title="关闭" onClick={requestClose}>✕</button>
         </div>
         <div className="m-body">
           <div className="field">
@@ -179,7 +187,7 @@ export default function ProjectFormModal({
         <div className="m-foot">
           <span className="m-tip">{tip}</span>
           <div className="spacer" />
-          <button className="mini-btn" onClick={onClose} disabled={saving}>取消</button>
+          <button className="mini-btn" onClick={requestClose} disabled={saving}>取消</button>
           <button className="btn-primary" onClick={() => void save()} disabled={saving}>
             {saving ? "保存中…" : "保存"}
           </button>
