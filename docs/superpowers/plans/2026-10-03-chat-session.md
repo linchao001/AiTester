@@ -2163,7 +2163,9 @@ export default function ChatPage({ health, healthError, onOpenSettings }: Props)
     if (!text || !guard() || !agentId) return;
     busyRef.current = true;
     setBusy(true);
-    setMessages((prev) => [...prev, { role: "user", content: text, ts: Date.now(), steps: null }]);
+    // 乐观气泡按对象身份撤，不按文案匹配：同一句话在历史里出现过时，按内容 filter 会把旧的那条一起删掉
+    const optimistic: ChatMessage = { role: "user", content: text, ts: Date.now(), steps: null };
+    setMessages((prev) => [...prev, optimistic]);
     setInput("");
     try {
       const resp = await chatSend(activeId ?? "", text, agentId);
@@ -2179,7 +2181,7 @@ export default function ChatPage({ health, healthError, onOpenSettings }: Props)
       }
     } catch (err) {
       // 失败必须可见：撤掉乐观 user 气泡并回填原文，不让用户对着「发出去了却没回」的空框
-      setMessages((prev) => prev.filter((m) => !(m.role === "user" && m.content === text)));
+      setMessages((prev) => prev.filter((m) => m !== optimistic));
       setInput(text);
       toast(err instanceof ApiError ? err.message : String(err));
     } finally {
