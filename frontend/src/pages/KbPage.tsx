@@ -1,397 +1,227 @@
-import { useCallback, useEffect, useState } from "react";
-import {
-  getKbBases,
-  getKbStatus,
-  kbSave,
-  kbSearch,
-  type KbResponse,
-} from "../api/client";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { kbSearchFiles, kbTree, type KbBrowseItem, type KbSearchHit } from "../api/client";
+import KbTreePane from "./kb/KbTreePane";
 
-/** 检索范围桶（与后端 knowledge_search 的 bucket 参数取值一致）。 */
-const SEARCH_BUCKETS = ["all", "business", "test", "business/wiki", "test/test_design", "test/defects"];
-/** 写入发布桶（save_to_knowledge 仅接受 2 段 bucket，默认 business/wiki）。 */
-const SAVE_BUCKETS = ["business/wiki", "test/test_design", "test/defects"];
-
-interface SearchHit {
-  title: string;
-  source: string;
-  score: number | null;
+/** Task 9/10 消费：中栏文档状态（原型 KB 对象 :2342-2345 的文档部分）。 */
+export interface KbDocState {
+  rel: string;
+  name: string;
+  ext: string;
+  content: string;
+  disk: string;
+  mtime: number;
+  mode: "view" | "edit";
 }
 
-function toText(v: unknown): string {
-  if (typeof v === "string") return v;
-  if (v === null || v === undefined || typeof v === "object") return "";
-  return String(v);
+/** 收起按钮恢复文案与 resizer 夹持范围（用户裁定：180–560 / 260–640，宽于原型 520/620 上限）。 */
+const KBW_MIN = 180, KBW_MAX = 560, KBC_MIN = 260, KBC_MAX = 640;
+
+/** 原型 :1652-1660 dragBar 的 hook 化：mousedown → document mousemove → mouseup，卸载即清理。 */
+function bindDragBar(el: HTMLElement, onMove: (ev: MouseEvent) => void): () => void {
+  let detachMove: (() => void) | null = null;
+  const down = (e: MouseEvent) => {
+    e.preventDefault();
+    el.classList.add("dragging");
+    const move = (ev: MouseEvent) => onMove(ev);
+    const up = () => {
+      el.classList.remove("dragging");
+      detachMove?.();
+      detachMove = null;
+      document.body.style.userSelect = "";
+    };
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+    detachMove = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+  };
+  el.addEventListener("mousedown", down);
+  return () => { el.removeEventListener("mousedown", down); detachMove?.(); document.body.style.userSelect = ""; };
 }
 
-/** 命中节点标题：实测 reme 0.4.1.8 的 results 项无顶层 title，从 metadata/text 标题行/文件名逐级兜底。 */
-function hitTitle(r: Record<string, unknown>, path: string): string {
-  const direct = toText(r.title);
-  if (direct) return direct;
-  const md = typeof r.metadata === "object" && r.metadata !== null ? (r.metadata as Record<string, unknown>) : {};
-  const fromMeta = toText(md.title);
-  if (fromMeta) return fromMeta;
-  const heading = /^#[ \t]+(.+)$/m.exec(toText(r.text));
-  if (heading) return heading[1].trim();
-  const base = path.split(/[\\/]/).pop() ?? "";
-  return base.replace(/\.md$/i, "") || "（无标题节点）";
-}
-
-/** 解析 knowledge_search 的 metadata.results：path/start_line/end_line/scores.score（见 reme search_step 实装）。 */
-function readHits(metadata: Record<string, unknown> | undefined): SearchHit[] {
-  const raw = metadata?.results;
-  if (!Array.isArray(raw)) return [];
-  const hits: SearchHit[] = [];
-  for (const item of raw) {
-    if (typeof item !== "object" || item === null) continue;
-    const r = item as Record<string, unknown>;
-    const path = toText(r.path);
-    const scores = typeof r.scores === "object" && r.scores !== null ? (r.scores as Record<string, unknown>) : {};
-    const lines =
-      typeof r.start_line === "number" ? `:${r.start_line}${typeof r.end_line === "number" ? `-${r.end_line}` : ""}` : "";
-    hits.push({
-      title: hitTitle(r, path) || "（无标题节点）",
-      source: path ? path + lines : "",
-      score: typeof scores.score === "number" ? scores.score : null,
-    });
-  }
-  return hits;
-}
-
-/** 从 bases 的 metadata 摘出 KB id 与实体路径等键值对；status 是运行时状态（内存占用），answer 原样展示。
-    解析不出任何已知字段时返回空数组（上层降级原始 JSON）。 */
-function readStatusKvs(bases: KbResponse | null): { k: string; v: string }[] {
-  const kvs: { k: string; v: string }[] = [];
-  const md = bases?.metadata ?? {};
-  const kbId = toText(md.active_knowledge_base_id);
-  if (kbId) kvs.push({ k: "当前知识库", v: kbId });
-  const dir = toText(md.knowledge_bases_dir);
-  if (dir) kvs.push({ k: "基地目录", v: dir });
-  if (dir && kbId) {
-    const sep = dir.includes("\\") ? "\\" : "/";
-    kvs.push({ k: "实体路径", v: `${dir.replace(/[\\/]+$/, "")}${sep}${kbId}` });
-  }
-  const list = md.knowledge_bases;
-  if (Array.isArray(list)) {
-    kvs.push({ k: "可用知识库", v: `${list.length} 个` });
-    for (const item of list) {
-      if (typeof item !== "object" || item === null) continue;
-      const b = item as Record<string, unknown>;
-      const name = toText(b.name);
-      kvs.push({ k: `库 ${toText(b.id)}`, v: `${name || "（未命名）"}${toText(b.domain) ? `（领域：${toText(b.domain)}）` : ""}` });
-    }
-  }
-  return kvs;
-}
-
-function KbSectionTitle({ label, sub }: { label: string; sub?: string }) {
+/** 原型对 #kbTree 直接换 innerHTML（搜索中…/错误行），React 等价：占位盒与 KbTreePane 同构（树盒+脚注）。 */
+function TreeBoxPlaceholder({ msg, root }: { msg: string; root: string }): ReactNode {
   return (
-    <div className="sec-title">
-      {label}
-      {sub && <span className="m-sub">{sub}</span>}
-    </div>
+    <>
+      <div className="kb-tree"><div className="hd">{msg}</div></div>
+      <div className="kb-root">{root ? `KB · ${root}` : ""}</div>
+    </>
   );
 }
 
 export default function KbPage() {
-  // —— 状态卡 ——
-  const [status, setStatus] = useState<KbResponse | null>(null);
-  const [bases, setBases] = useState<KbResponse | null>(null);
-  const [kbError, setKbError] = useState<string | null>(null);
-  const [statusLoading, setStatusLoading] = useState(true);
+  // —— 三栏布局状态（原型 viewKb classList + --kbw/--kbc）——
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const [sideHidden, setSideHidden] = useState(false);
+  const [chatHidden, setChatHidden] = useState(false);
 
-  // —— 检索区 ——
-  const [query, setQuery] = useState("");
-  const [limitText, setLimitText] = useState("5");
-  const [searchBucket, setSearchBucket] = useState("all");
-  const [searching, setSearching] = useState(false);
-  const [searchResp, setSearchResp] = useState<KbResponse | null>(null);
-  const [searchError, setSearchError] = useState<string | null>(null);
-
-  // —— 写入区 ——
-  const [saveTitle, setSaveTitle] = useState("");
-  const [saveContent, setSaveContent] = useState("");
-  const [saveBucket, setSaveBucket] = useState("business/wiki");
-  const [saving, setSaving] = useState(false);
-  const [saveResult, setSaveResult] = useState<{ ok: boolean; msg: string } | null>(null);
-
-  const refreshStatus = useCallback(() => {
-    setStatusLoading(true);
-    void Promise.allSettled([getKbStatus(), getKbBases()]).then(([s, b]) => {
-      setStatusLoading(false);
-      setStatus(s.status === "fulfilled" ? s.value : null);
-      setBases(b.status === "fulfilled" ? b.value : null);
-      // kb_manager 不可用时后端返回 503；提示条展示 detail，不让整页白屏
-      setKbError(s.status === "rejected" ? (s.reason as Error).message : null);
-    });
+  // —— toast（原型 :1512：2200ms 自动收起，重复触发重置计时）——
+  const [toastMsg, setToastMsg] = useState("");
+  const toastTimer = useRef<number>();
+  const toast = useCallback((msg: string) => {
+    setToastMsg(msg);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToastMsg(""), 2200);
   }, []);
 
+  // —— 树数据加载（原型 KB.kids/expanded/root + kbLoadDir :2378-2385，缓存留在本页）——
+  const [root, setRoot] = useState("");
+  const [kids, setKids] = useState<Record<string, KbBrowseItem[]>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({ "": true });
+  const [total, setTotal] = useState<number | null>(null);
+  const [treeErr, setTreeErr] = useState<string | null>(null);
+  const [activeRel, setActiveRel] = useState("");
+  const kidsRef = useRef(kids);
+  const expandedRef = useRef(expanded);
+  const rootRef = useRef(root);
+  kidsRef.current = kids;
+  expandedRef.current = expanded;
+  rootRef.current = root;
+
+  /** 原型 kbLoadDir：kids 缺失才拉（懒加载=首次展开触发）；root 首次响应时落一次。 */
+  const loadKids = useCallback(async (rel: string): Promise<KbBrowseItem[]> => {
+    if (kidsRef.current[rel]) return kidsRef.current[rel];
+    const j = await kbTree(rel);
+    if (!rootRef.current) { rootRef.current = j.root; setRoot(j.root); }
+    kidsRef.current = { ...kidsRef.current, [rel]: j.items };
+    setKids(kidsRef.current);
+    if (rel === "") setTotal(j.items.length); // 计数 num：根条目数
+    return j.items;
+  }, []);
+
+  // 根目录 mount 时加载一次（原型 kbEnter 的懒进入，React 侧在挂载时执行）
+  const didInit = useRef(false);
   useEffect(() => {
-    refreshStatus();
-  }, [refreshStatus]);
+    if (didInit.current) return;
+    didInit.current = true;
+    loadKids("").catch((e: Error) =>
+      // 原型 :2733 提示语中的 serve.js 启动方式不适用本项目（正式后端为 FastAPI），只保留错误信息
+      setTreeErr(`知识库接口不可用：${e.message}`));
+  }, [loadKids]);
 
-  function doSearch(): void {
-    if (searching) return;
-    const q = query.trim();
-    if (!q) {
-      setSearchError("请先输入查询内容");
-      setSearchResp(null);
+  /** 原型 :2414-2421 —— 目录点击：折叠 or 展开+首次拉取；失败走 toast。 */
+  const onToggleDir = useCallback((rel: string) => {
+    if (expandedRef.current[rel]) {
+      setExpanded((prev) => { const n = { ...prev }; delete n[rel]; return n; });
       return;
     }
-    const parsed = Number(limitText);
-    const lim = Number.isFinite(parsed) && parsed >= 1 ? Math.min(Math.trunc(parsed), 20) : 5;
-    setLimitText(String(lim));
+    setExpanded((prev) => ({ ...prev, [rel]: true }));
+    loadKids(rel).catch((e: Error) => toast(e.message));
+  }, [loadKids, toast]);
+
+  /** Task 8 仅高亮选中行；文档载入/父级展开属 Task 9（中栏）范围。 */
+  const onOpenFile = useCallback((rel: string) => setActiveRel(rel), []);
+
+  // —— 搜索：300ms 防抖 + 序号防竞态（原型 :2716-2727 kbSearchSeq；间隔 260→300ms 按 brief）——
+  const [query, setQuery] = useState("");
+  const [searchHits, setSearchHits] = useState<KbSearchHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchErr, setSearchErr] = useState<string | null>(null);
+  const searchSeq = useRef(0);
+  const searchTimer = useRef<number>();
+  const onQueryChange = useCallback((v: string) => {
+    setQuery(v);
+    window.clearTimeout(searchTimer.current);
+    const q = v.trim();
+    const seq = ++searchSeq.current;
+    if (!q) { searchSeq.current++; setSearchHits(null); setSearching(false); setSearchErr(null); return; }
     setSearching(true);
-    setSearchError(null);
-    void kbSearch(q, lim, searchBucket)
-      .then((resp) => setSearchResp(resp))
-      .catch((e: Error) => {
-        setSearchResp(null);
-        setSearchError(e.message);
-      })
-      .finally(() => setSearching(false));
-  }
+    searchTimer.current = window.setTimeout(() => {
+      kbSearchFiles(q, 200).then((j) => {
+        if (seq !== searchSeq.current) return;
+        setSearchErr(null); setSearchHits(j.hits); setSearching(false);
+      }).catch((e: Error) => {
+        if (seq !== searchSeq.current) return;
+        setSearchErr(e.message); setSearching(false);
+      });
+    }, 300);
+  }, []);
+  useEffect(() => () => { window.clearTimeout(searchTimer.current); window.clearTimeout(toastTimer.current); }, []);
 
-  function doSave(): void {
-    const title = saveTitle.trim();
-    const content = saveContent.trim();
-    if (!title || !content) {
-      setSaveResult({ ok: false, msg: "写入失败：请先填写标题与正文" });
-      return;
-    }
-    if (!window.confirm("写入后对所有项目与其他智能体可见，确认？")) return;
-    setSaving(true);
-    setSaveResult(null);
-    void kbSave(title, content, saveBucket)
-      .then((resp) => {
-        if (resp.success) {
-          const answer = toText(resp.answer);
-          setSaveResult({
-            ok: true,
-            msg: `写入成功${answer ? `：${answer}` : ""}。可在上方「知识检索」区验证命中。`,
-          });
-        } else {
-          setSaveResult({ ok: false, msg: `写入失败：${toText(resp.answer) || "后端未返回原因"}` });
-        }
-      })
-      .catch((e: Error) => setSaveResult({ ok: false, msg: `写入失败：${e.message}` }))
-      .finally(() => setSaving(false));
-  }
+  // —— 双 resizer：拖拽写 --kbw/--kbc（原型 :2708-2715，夹持范围按裁定放宽）——
+  useEffect(() => {
+    const layout = layoutRef.current;
+    if (!layout) return;
+    const specs: Array<[string, (x: number) => void]> = [
+      ["kbResizer", (x) => {
+        const w = Math.min(Math.max(x - layout.getBoundingClientRect().left, KBW_MIN), KBW_MAX);
+        layout.style.setProperty("--kbw", `${w}px`);
+      }],
+      ["kbChatResizer", (x) => {
+        const w = Math.min(Math.max(layout.getBoundingClientRect().right - x, KBC_MIN), KBC_MAX);
+        layout.style.setProperty("--kbc", `${w}px`);
+      }],
+    ];
+    const detachers: Array<() => void> = [];
+    specs.forEach(([id, onMove]) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      detachers.push(bindDragBar(el, (ev) => onMove(ev.clientX)));
+    });
+    return () => detachers.forEach((fn) => fn());
+  }, []);
 
-  const statusKvs = readStatusKvs(bases);
-  const hits = searchResp ? readHits(searchResp.metadata) : [];
-  const searchAnswer = searchResp ? toText(searchResp.answer) : "";
+  const searchingView = query.trim() && (searching || searchErr !== null);
 
   return (
-    <div className="page">
-      <div className="page-head">
-        <h1>知识库</h1>
-        <span className="num">全局共享 · ReMe</span>
-        <div className="spacer"></div>
-        <button className="mini-btn" onClick={refreshStatus} disabled={statusLoading}>
-          {statusLoading ? "刷新中…" : "刷新状态"}
-        </button>
-      </div>
-
-      {kbError !== null && (
-        <div className="stale-warn" style={{ maxWidth: 1080, margin: "0 auto 14px" }}>
-          知识库未启用或不可用：{kbError}
-        </div>
-      )}
-
-      {/* —— 状态卡 —— */}
-      <KbSectionTitle label="知识库状态" sub="来自 /api/kb/status 与 /api/kb/bases" />
-      <div className="case-card">
-        <div className="c-head">
-          <span>当前状态</span>
-          <span className="badge">
-            {statusLoading
-              ? "读取中"
-              : status === null
-                ? "不可用"
-                : status.success
-                  ? "正常"
-                  : "异常"}
-          </span>
-        </div>
-        <div style={{ padding: "10px 14px 12px" }}>
-          {status === null && bases === null && kbError === null && (
-            <div className="empty-tip">{statusLoading ? "正在读取知识库状态…" : "暂无状态数据"}</div>
-          )}
-          {statusKvs.length > 0 && (
-            <div className="kb-meta" style={{ border: "none", background: "transparent", padding: "0 0 4px" }}>
-              {statusKvs.map((kv) => (
-                <span className="kv" key={`${kv.k}-${kv.v}`} title={kv.v}>
-                  <b>{kv.k}：</b>
-                  {kv.v}
-                </span>
-              ))}
-            </div>
-          )}
-          {statusKvs.length === 0 && (status !== null || bases !== null) && (
-            <pre className="kb-raw">
-              {JSON.stringify({ status: status?.metadata, bases: bases?.metadata }, null, 2)}
-            </pre>
-          )}
-          {bases !== null && toText(bases.answer) && (
-            <div className="ag-desc">{toText(bases.answer)}</div>
-          )}
-          {status !== null && toText(status.answer) && (
-            <div className="ag-desc" style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>
-              运行时状态：{toText(status.answer)}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* —— 检索区 —— */}
-      <KbSectionTitle label="知识检索" sub="在指定范围桶内做 BM25/向量混合检索" />
-      <div className="case-card">
-        <div className="c-head">
-          <span>检索</span>
-          <span className="badge">{searching ? "检索中" : searchResp ? `命中 ${hits.length} 条` : "未检索"}</span>
-        </div>
-        <div style={{ padding: "12px 14px 14px" }}>
-          <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
-            <div className="field" style={{ flex: "2 1 260px", marginBottom: 8 }}>
-              <label htmlFor="kb-query">查询内容</label>
-              <input
-                id="kb-query"
-                type="text"
-                value={query}
-                placeholder="输入关键词或问题"
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && doSearch()}
-              />
-            </div>
-            <div className="field" style={{ width: 110, marginBottom: 8 }}>
-              <label htmlFor="kb-limit">返回条数</label>
-              <input
-                id="kb-limit"
-                type="number"
-                min={1}
-                max={20}
-                value={limitText}
-                onChange={(e) => setLimitText(e.target.value)}
-              />
-            </div>
-            <div className="field" style={{ width: 190, marginBottom: 8 }}>
-              <label htmlFor="kb-search-bucket">检索范围</label>
-              <select
-                id="kb-search-bucket"
-                value={searchBucket}
-                onChange={(e) => setSearchBucket(e.target.value)}
-              >
-                {SEARCH_BUCKETS.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <button className="btn-primary" onClick={doSearch} disabled={searching} style={{ marginBottom: 8 }}>
-              {searching ? "检索中…" : "检索"}
-            </button>
+    <>
+      {/* 原型 :696-751 三栏骨架；收起类名 side-hidden/chat-hidden（CSS 依赖 #kbResizer/#kbChatResizer id） */}
+      <div
+        ref={layoutRef}
+        className={`kb-layout${sideHidden ? " side-hidden" : ""}${chatHidden ? " chat-hidden" : ""}`}
+      >
+        <aside className="kb-side">
+          <div className="kb-side-head">📚 目录<span className="num">{total === null ? "–" : `${total} 项`}</span><div className="spacer"></div>
+            <button className="icon-btn" title="隐藏目录树" onClick={() => setSideHidden(true)}>«</button>
           </div>
-          {searchError !== null && <div className="stale-warn">{searchError}</div>}
-          {searchResp !== null && !searchResp.success && (
-            <div className="stale-warn">检索失败：{searchAnswer || "后端未返回原因"}</div>
-          )}
-          {searchResp !== null && searchResp.success && searchAnswer && (
-            <div
-              className="ag-desc"
-              style={{ whiteSpace: "pre-wrap", maxHeight: 240, overflowY: "auto", marginTop: 12 }}
-            >
-              {searchAnswer}
-            </div>
-          )}
-          {searchResp !== null && searchResp.success && hits.length === 0 && (
-            <div className="empty-tip">无命中，可尝试更换范围桶</div>
-          )}
-          {searchResp !== null && searchResp.success && hits.length > 0 && (
-            <table style={{ marginTop: 12 }}>
-              <thead>
-                <tr>
-                  <th>标题</th>
-                  <th>出处路径</th>
-                  <th>得分</th>
-                </tr>
-              </thead>
-              <tbody>
-                {hits.map((h, i) => (
-                  <tr key={h.source || `${h.title}-${i}`}>
-                    <td>{h.title}</td>
-                    <td>
-                      <span className="p-dir" title={h.source}>
-                        {h.source}
-                      </span>
-                    </td>
-                    <td>{h.score === null ? "-" : h.score.toFixed(3)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </div>
-
-      {/* —— 写入区 —— */}
-      <KbSectionTitle label="知识写入" sub="写入即全局共享，索引自动收敛后（约数十秒）可在检索区验证" />
-      <div className="case-card">
-        <div className="c-head">
-          <span>写入知识库</span>
-          <span className="badge">影响所有项目</span>
-        </div>
-        <div style={{ padding: "12px 14px 14px" }}>
-          <div className="field">
-            <label htmlFor="kb-save-title">
-              标题 <span className="req">*</span>
-            </label>
-            <input
-              id="kb-save-title"
-              type="text"
-              value={saveTitle}
-              placeholder="知识节点标题"
-              onChange={(e) => setSaveTitle(e.target.value)}
+          <div className="kb-search"><span className="mag">🔍</span>
+            <input value={query} placeholder="全库搜索文件名…" onChange={(e) => onQueryChange(e.target.value)} />
+          </div>
+          {searchingView ? (
+            <TreeBoxPlaceholder msg={searchErr !== null ? searchErr : "搜索中…"} root={root} />
+          ) : treeErr !== null && !query.trim() ? (
+            /* 原型同盒覆盖：搜索出结果后错误行让位于命中列表，清空搜索再回显 */
+            <TreeBoxPlaceholder msg={treeErr} root={root} />
+          ) : (
+            <KbTreePane
+              root={root}
+              kids={kids}
+              expanded={expanded}
+              activeRel={activeRel}
+              total={total}
+              searchHits={searchHits}
+              onToggleDir={onToggleDir}
+              onOpenFile={onOpenFile}
             />
-          </div>
-          <div className="field">
-            <label htmlFor="kb-save-content">
-              正文（Markdown） <span className="req">*</span>
-            </label>
-            <textarea
-              id="kb-save-content"
-              value={saveContent}
-              placeholder="知识节点正文，须为已确认成立的事实或经用户认可的内容"
-              onChange={(e) => setSaveContent(e.target.value)}
-            />
-          </div>
-          <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
-            <div className="field" style={{ width: 190, marginBottom: 8 }}>
-              <label htmlFor="kb-save-bucket">发布桶</label>
-              <select
-                id="kb-save-bucket"
-                value={saveBucket}
-                onChange={(e) => setSaveBucket(e.target.value)}
-              >
-                {SAVE_BUCKETS.map((b) => (
-                  <option key={b} value={b}>
-                    {b}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <button className="btn-primary" onClick={doSave} disabled={saving} style={{ marginBottom: 8 }}>
-              {saving ? "写入中…" : "写入知识库"}
-            </button>
-          </div>
-          {saveResult !== null && (
-            <div className={saveResult.ok ? "set-tip" : "stale-warn"} style={saveResult.ok ? { color: "var(--ok)" } : undefined}>
-              {saveResult.msg}
-            </div>
           )}
-        </div>
+        </aside>
+        <div className="resizer" id="kbResizer" title="拖拽调整目录树宽度"></div>
+
+        <section className="kb-main">
+          <div className="kb-head">
+            {/* 恢复钮按裁定带文字标签；原型放在中栏头部（:709/:718），侧栏收起后唯一可见位置 */}
+            {sideHidden && <button className="mini-btn" id="btnKbSideShow" title="显示目录树" onClick={() => setSideHidden(false)}>📁 目录</button>}
+            <div className="kb-crumbs">未打开文件</div>
+            <div className="spacer"></div>
+            {chatHidden && <button className="mini-btn" id="btnKbChatShow" title="显示知识库助手" onClick={() => setChatHidden(false)}>💬 助手</button>}
+          </div>
+          {/* Task 9 填充：kb-meta / 预览 / 编辑 / 底部操作栏；本任务仅占位空壳（原型初始空态 :722） */}
+          <div className="kb-doc">
+            <div className="kb-empty"><span className="big">📚</span><span>左侧选择知识库文件；中间渲染或编辑，右侧可让助手帮你改。</span></div>
+          </div>
+        </section>
+
+        <div className="resizer" id="kbChatResizer" title="拖拽调整助手宽度"></div>
+        <aside className="kb-chat">
+          <div className="kb-chat-head">🤖 知识库助手<div className="spacer"></div>
+            {/* 原型初始 zhb_kb，root 载入后换实体目录名（kbLoadDir :2381） */}
+            <span className="scope">{root ? root.split(/[\\/]/).pop() : "zhb_kb"}</span>
+            <button className="icon-btn" title="隐藏助手" onClick={() => setChatHidden(true)}>»</button>
+          </div>
+          {/* Task 10 填充：消息流 / 快捷指令 / 输入区；本任务仅占位空壳 */}
+          <div className="kb-msgs"></div>
+        </aside>
       </div>
-    </div>
+      <div className={`toast${toastMsg ? " show" : ""}`}>{toastMsg}</div>
+    </>
   );
 }
