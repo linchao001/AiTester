@@ -265,17 +265,59 @@ export interface KbDraft {
   mtime: number;
 }
 
+export interface ChatStep {
+  tool: string;
+  ok: boolean;
+  round: number;
+  detail: string;
+}
+
 export interface SendResponse {
   reply: string;
   trace: string[];
   model: string;
   drafts: KbDraft[];
+  session_id: string;
+  title: string;
+  steps: ChatStep[];
 }
 
 export function chatSend(sessionId: string, message: string, agentId: string): Promise<SendResponse> {
   return apiFetch<SendResponse>("/api/chat/send", {
     method: "POST", headers: JSON_HEADERS,
     body: JSON.stringify({ session_id: sessionId, message, agent_id: agentId }) });
+}
+
+export interface ChatSession {
+  id: string;
+  agent_id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+  message_count: number;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  ts: number;
+  steps: ChatStep[] | null;
+}
+
+const sessionsApi = (sub = "") => `/api/chat/sessions${sub}`;
+
+export function getSessions(agentId: string): Promise<{ sessions: ChatSession[] }> {
+  return apiFetch<{ sessions: ChatSession[] }>(
+    `${sessionsApi()}?${new URLSearchParams({ agent_id: agentId }).toString()}`);
+}
+
+export function getSessionMessages(sessionId: string): Promise<{ session_id: string; messages: ChatMessage[] }> {
+  return apiFetch<{ session_id: string; messages: ChatMessage[] }>(sessionsApi(`/${sessionId}/messages`));
+}
+
+/** 204 由 apiFetch 短路成 null（与 deleteProject 同款），失败时抛 ApiError。 */
+export function deleteChatSession(sessionId: string): Promise<null> {
+  return apiFetch<null>(sessionsApi(`/${sessionId}`), { method: "DELETE" });
 }
 
 export interface Project {
