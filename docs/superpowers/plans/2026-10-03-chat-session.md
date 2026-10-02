@@ -2301,7 +2301,7 @@ export default function ChatPage({ health, healthError, onOpenSettings }: Props)
 
 - [ ] **Step 1b: 评审后落地（控制端下手，代码以仓内为准）**
 
-Task 11 评审提出 4 项 Important + 若干 Minor，落地如下（都改本步的草稿代码，不改已入库组件的对外契约，除第 5 条）：
+Task 11 评审两轮共提出 4 项 Important + 1 项控制端自引入的 Critical + 若干 Minor，落地如下（都改本步的草稿代码，不改已入库组件的对外契约，除第 1、5 条）：
 
 1. **错误态出路**：`healthError` 只有 App 的 `refreshHealth` 成功才会清，本页拉不动它 → `ChatPage` 多一个必填 prop `onRetryHealth`（App 传 `refreshHealth`），两个错误态的「重试」统一走 `retryAll = onRetryHealth() + reloadMeta()`。**这条推翻了本任务 Interfaces 里「App.tsx 三 props 保持不变」的写法**（`App.tsx` 现传 4 个）。
 2. **开会话的最新点击优先**：`openSeq` 序号 + `loadingRef`，慢响应不得覆盖后点的会话；`guard()` 增加「会话还在加载，请稍候」，防止在途加载期间发送把消息写进另一条会话。
@@ -2310,6 +2310,11 @@ Task 11 评审提出 4 项 Important + 若干 Minor，落地如下（都改本�
 5. **自增高收进 `Composer`**：`useEffect` 改为每次 `input` 变化都量（`auto` → `min(scrollHeight,160)`），`onChange` 里那段量高删掉。这样 chip 填值、失败回填、发送清空三条路径共用一套，`ChatPage.onChip` 退回「`setInput` + `focus`」，不再需要 `react-dom` 的 `flushSync`。
 6. **删除就地摘行**：`deleteChatSession` 成功后先 `setSessions(prev => prev.filter(...))` 再刷整表，整表刷新失败也不会留一条已删的行。
 7. **`PlaceholderPage.tsx` 删除**：ChatPage 改写后它零引用，是死组件。
+8. **第 2 轮修复（第 1 轮 scoped 复审抓出控制端自己写坏的 Critical，commit `1faf430`）**——第 2、3 条的实现形态以本条为准：
+   - `loadingRef` 入口无条件认领：`openSession` 一进来就 `loadingRef.current = !!id`，`null` 分支的早退才会释放。原写法在「点会话 A → 点新建」这种 A→null 时序下让 A 的 `finally` 因 seq 已被认领而跳过，标记永久卡 `true` → `guard()` 恒假 → 发送/新建/切换/选中/删除全废，只能刷新页面。这是 Critical，是我第 1 轮修复引入的。
+   - `listSeq` 守 `reloadSessions`：整表响应回来时只对「最新一次请求」生效，慢响应不得把旧智能体的行覆盖回侧栏（stale 分支仍 `return j.sessions` 供调用方，但不 `setSessions`）。
+   - `mutRef` 锁 `remove` 的两段 `await`：删除尾部会自动开会话并抢 `openSeq`，此时点别的智能体/另一条会话正好落在交叉点上，`guard()` 里加「上一个操作还在执行，请稍候」。
+   - `retryAll` 补 `void reloadSessions()`：错误态点「重试」只恢复了 `reloadMeta`，侧栏仍是空的，用户会以为重试没生效。
 
 未采纳（附理由）：`reloadMeta` 以 `agentId` 为 dep 导致挂载拉两遍——这次重拉正是「切智能体后刷新 `systemPrompt`/生效模型」的机制，拆开会引入新的时序 bug；非 `ApiError` 时 `String(err)` 把英文 `Failed to fetch` 送进 toast——`App.tsx:27` 早就这么写，KB/项目两页同口径，属跨页既存形态，本期不动（留给后续统一收口）。
 
@@ -2468,7 +2473,7 @@ git commit -m "docs(chat): 聊天页第 1 片收尾——能力段与 spec 状�
 
 ---
 
-## 计划期新增偏离（`QODER.md`「禁止静默偏离」条款要求，逐条待用户点头）
+## 计划期新增偏离（`QODER.md`「禁止静默偏离」条款要求，1-5 条已随 spec 评审一并认可，2026-10-03 确认）
 
 写计划时在 `prototype/index.html` 里逐个对照 composer / welcome / 侧栏三处，发现下面几处**必须**偏离（能力未到本期），已同步写进 spec 的「前端呈现」条。下表 1-5 是计划期（第 1 条是纠错，其余是本期范围决定），6-9 是执行期评审后补登记。
 
@@ -2480,7 +2485,7 @@ git commit -m "docs(chat): 聊天页第 1 片收尾——能力段与 spec 状�
 | 4 | 欢迎态副行 | `📁 订单系统 · 发送消息即在此项目开始新会话`（`:1314`） | `发送消息即在此智能体开始新会话 · 会话保存在本机` | 项目维度是第 2 片；数据落点目录不在 UI 裸露（README 里写） |
 | 5 | 欢迎态 4 条 chip | `📋 根据需求生成测试用例` / `🔌 自动化编码：接口脚本落地` / `🐞 回归失败归因分析` / `📊 生成测试报告`（`:1316-1319`） | 📋/🐞 两条标签与其长指令逐字照搬；🔌 换成 `🔌 接口用例设计`，🔌/🧩 新增 `🧩 等价类与边界值补覆盖` | 已批准的裁定 5：本期只有 `case_design`，「脚本落地」「生成测试报告」超出其职责 |
 
-执行期新增（评审后登记，同样待点头）：
+执行期新增（评审后登记，用户 2026-10-03 对 6-9 条答复「认可，按现状走」）：
 
 | # | 位置 | 原型 | 本期 | 理由 |
 |---|---|---|---|---|

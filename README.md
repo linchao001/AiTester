@@ -72,6 +72,7 @@ uv run python -m aitester.main
 - `GET/POST/PUT/DELETE /api/projects`（项目 CRUD，JSON 落盘；本地文件目录与知识库配置创建后不可修改）
   项目字段由「名称 / 描述 / 本地文件目录 / 启用智能体 / 知识库」构成；知识库字段只存**别名 `kb` 且不可改**，
   界面不回显底层知识库标识（集中解析只活在后端）；本期只落 CRUD——聊天页按项目隔离与会话数统计属后续专项
+- 聊天页 `/chat`：会话落盘（`backend/data/sessions`）、列表/搜索/分组/删除、多轮记忆（最近 40 条进 prompt）、真实工具调用过程展示
 - 测试：`uv run pytest`
 - 配置：复制 `.env.example` 为 `.env`（仅 HOST/PORT + 两个可选种子 Key）；
   运行期模型配置存 `backend/data/model_config.json`（gitignore，含密钥），
