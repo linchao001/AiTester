@@ -33,7 +33,9 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);            // 与 KbPage 同款同步重入锁（不依赖重渲染时序）
   const openSeq = useRef(0);                // 开会话的「最新一次点击」序号
+  const listSeq = useRef(0);                // 拉整表的「最新一次请求」序号
   const loadingRef = useRef(false);         // 会话正文在途：此时发送会写进另一条会话，必须挡在 guard 之后
+  const mutRef = useRef(false);             // 删除等改整表的操作在途：尾部会自动开会话，交叉点就点在别的智能体上
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [query, setQuery] = useState("");
@@ -75,12 +77,13 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
 
   const reloadSessions = useCallback(async () => {
     if (!agentId) return [];
+    const seq = ++listSeq.current;          // 切智能体会先清列表；慢响应不得把上一个智能体的整表覆盖回来
     try {
       const j = await getSessions(agentId);
-      setSessions(j.sessions);
+      if (seq === listSeq.current) setSessions(j.sessions);
       return j.sessions;
     } catch (err) {
-      toast(err instanceof ApiError ? err.message : String(err));
+      if (seq === listSeq.current) toast(err instanceof ApiError ? err.message : String(err));
       return [];
     }
   }, [agentId, toast]);
@@ -92,9 +95,9 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
 
   const openSession = useCallback(async (id: string | null) => {
     const seq = ++openSeq.current;                    // 只认最新一次点击，慢响应不得覆盖后点的会话
+    loadingRef.current = !!id;                        // 新点击直接接管在途标记：null 代表「没有正文要拉」，否则上一条 stale 请求的 finally 不认它，标记永真
     setActiveId(id);
     if (!id) { setMessages([]); return; }
-    loadingRef.current = true;
     try {
       const j = await getSessionMessages(id);
       if (seq !== openSeq.current) return;
@@ -116,6 +119,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     if (!health) { toast("后端未就绪，请稍候或重试"); return false; }
     if (busyRef.current) { toast("上一条消息还在执行，请稍候"); return false; }
     if (loadingRef.current) { toast("会话还在加载，请稍候"); return false; }
+    if (mutRef.current) { toast("上一个操作还在执行，请稍候"); return false; }
     return true;
   }, [health, toast]);
 
@@ -161,6 +165,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     if (!guard()) return;
     const row = sessions.find((s) => s.id === id);
     if (!window.confirm(`删除会话「${row?.title ?? id}」？删除后不可恢复。`)) return;
+    mutRef.current = true;                 // 两次 await 期间锁住切智能体/选中：尾部会自动开会话，交叉了就把正文开在别的智能体的会话上
     try {
       await deleteChatSession(id);
       // 先就地摘掉这一行：整表刷新失败时侧栏也不会留着一条已删的会话
@@ -170,6 +175,8 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       if (activeId === id) void openSession(rows.length ? rows[0].id : null);
     } catch (err) {
       toast(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      mutRef.current = false;
     }
   }, [activeId, guard, reloadSessions, sessions, openSession, toast]);
 
@@ -189,7 +196,8 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   const retryAll = useCallback(() => {
     onRetryHealth();
     void reloadMeta();
-  }, [onRetryHealth, reloadMeta]);
+    void reloadSessions();   // 失败前 agentId 可能已经有值，effect 不会再触发整表拉取，重试必须把侧栏一起补回来
+  }, [onRetryHealth, reloadMeta, reloadSessions]);
 
   if (error) {
     return (
