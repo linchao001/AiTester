@@ -3,8 +3,6 @@ import json
 import pytest
 
 from aitester.services.session_store import (
-    ChatMessage,
-    Session,
     SessionStore,
     SessionStoreError,
     is_session_id,
@@ -99,7 +97,7 @@ def test_delete_removes_index_entry_and_file(tmp_path) -> None:
     assert store.delete(sid) is False  # 二次删除明确返回 False，路由据此 404
 
 
-def test_index_file_shape_is_versioned_and_ignores_orphans(tmp_path) -> None:
+def test_index_shape_is_versioned(tmp_path) -> None:
     root = tmp_path / "sessions"
     store = SessionStore(root)
     sid = store.new_id()
@@ -110,6 +108,57 @@ def test_index_file_shape_is_versioned_and_ignores_orphans(tmp_path) -> None:
     assert set(index["sessions"][0]) == {
         "id", "agent_id", "title", "created_at", "updated_at", "message_count"
     }
+
+
+def test_index_dirty_entries_dropped_or_healed_on_load(tmp_path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True)
+    good = {
+        "id": "sess_0a1b2c3d", "agent_id": "case_design", "title": "原始",
+        "created_at": 1, "updated_at": 2, "message_count": 1,
+    }
+    dirty = [
+        good,
+        {**good, "id": "legacy_001"},
+        {**good, "title": "重复"},
+        {"id": "sess_11112222", "title": "无智能体"},
+        {"id": "sess_33334444", "agent_id": "ghost", "message_count": -5},
+    ]
+    (root / "index.json").write_text(
+        json.dumps({"version": 1, "sessions": dirty}, ensure_ascii=False), encoding="utf-8"
+    )
+
+    store = SessionStore(root)
+    rows = store.list("case_design")
+    assert [(s.id, s.title) for s in rows] == [("sess_0a1b2c3d", "原始")]
+    assert store.get("legacy_001") is None
+    assert store.get("sess_11112222") is None
+    healed = store.list("ghost")
+    assert [(s.id, s.message_count) for s in healed] == [("sess_33334444", 0)]
+
+    created = store.create(store.new_id(), "case_design", "新问题")
+    saved = json.loads((root / "index.json").read_text(encoding="utf-8"))
+    ids = [item["id"] for item in saved["sessions"]]
+    assert sorted(ids) == sorted(["sess_0a1b2c3d", "sess_33334444", created.id])
+    keys = {"id", "agent_id", "title", "created_at", "updated_at", "message_count"}
+    assert all(set(item) == keys for item in saved["sessions"])
+    ghost = next(item for item in saved["sessions"] if item["id"] == "sess_33334444")
+    assert ghost["message_count"] == 0
+
+
+def test_corrupt_index_self_heals_to_empty(tmp_path) -> None:
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True)
+    (root / "index.json").write_text('{"version":1,"sess', encoding="utf-8")
+
+    store = SessionStore(root)
+    assert store.list("case_design") == []
+
+    created = store.create(store.new_id(), "case_design", "问题")
+    store.append(created.id, "user", "问题")
+    reopened = SessionStore(root)
+    got = reopened.get(created.id)
+    assert got is not None and got.message_count == 1
 
 
 def test_store_survives_reinstantiation(tmp_path) -> None:

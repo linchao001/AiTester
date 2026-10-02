@@ -1,6 +1,6 @@
 """会话真相：index.json 存元信息，<session_id>.jsonl 逐行追加消息。
 
-双文件是有意的：每次发消息重写全量历史是写放大，append 是 O(1)；列表只需 index。
+双文件是有意的：append 只追加一行，不重写全量历史；计数以该会话 jsonl 行数为准（重读本会话自己的行文件，非整份历史）；列表只需 index。
 index 走 FileJsonConfigRepository（同目录 tmp + os.replace），与项目/模型配置同一原子写口。
 """
 
@@ -15,11 +15,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from aitester.storage import FileJsonConfigRepository
+from aitester.storage import ConfigStorageError, FileJsonConfigRepository
 
 SESSION_ID_RE = re.compile(r"^sess_[0-9a-f]{8}$")
 TITLE_MAX = 16
-DETAIL_MAX = 80
 DEFAULT_TITLE = "新会话"
 MISSING_SESSION_DETAIL = "会话不存在或已被删除"
 
@@ -70,7 +69,7 @@ class ChatMessage:
         return asdict(self)
 
     @staticmethod
-    def from_dict(raw: dict[str, Any]) -> "ChatMessage":
+    def from_dict(raw: dict[str, Any]) -> ChatMessage:
         steps = raw.get("steps")
         return ChatMessage(
             role=str(raw.get("role") or ""),
@@ -97,7 +96,11 @@ class SessionStore:
             self._index = self._load_index()
 
     def _load_index(self) -> _Index:
-        raw = self._repo.load()
+        try:
+            raw = self._repo.load()
+        except ConfigStorageError:
+            # index 坏了必须自愈：交互层在 app 启动时就构造本 store，崩不得；下次写盘自然修复
+            return _Index()
         if not isinstance(raw, dict):
             return _Index()
         items = raw.get("sessions")
