@@ -6,13 +6,18 @@ import {
   getProjects,
   type Project,
 } from "../api/client";
+import ProjectFormModal from "./projects/ProjectFormModal";
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [agentNames, setAgentNames] = useState<Record<string, string>>({});
+  const [agentOptions, setAgentOptions] = useState<{ id: string; name: string }[]>([]);
+  const [modal, setModal] = useState<{ mode: "create" | "edit"; project: Project | null } | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [toastMsg, setToastMsg] = useState("");
   const toastTimer = useRef<number>();
+
+  const agentNames = Object.fromEntries(agentOptions.map((a) => [a.id, a.name]));
 
   const toast = useCallback((msg: string) => {
     setToastMsg(msg);
@@ -24,14 +29,18 @@ export default function ProjectsPage() {
     try {
       const [pj, caps] = await Promise.all([getProjects(), getCapabilities()]);
       setProjects(pj.projects);
-      setAgentNames(Object.fromEntries(caps.agents.map((a) => [a.id, a.name])));
+      setAgentOptions(caps.agents.map((a) => ({ id: a.id, name: a.name })));
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoaded(true);
     }
   }, []);
 
   useEffect(() => { void reload(); }, [reload]);
+  // 卸载时清 toast 定时器（同 KbPage 的收尾约定）
+  useEffect(() => () => { window.clearTimeout(toastTimer.current); }, []);
 
   async function onRemove(p: Project) {
     // 与 /kb 页同款原生确认（CDP 自动化会挂，人工点击无碍）
@@ -49,14 +58,14 @@ export default function ProjectsPage() {
     <div className="page">
       <div className="page-head">
         <h1>项目管理</h1>
-        <span className="num">共 {projects.length} 个</span>
+        {loaded && <span className="num">共 {projects.length} 个</span>}
         <div className="spacer" />
-        <button className="btn-primary" onClick={() => undefined} disabled>
+        <button className="btn-primary" onClick={() => setModal({ mode: "create", project: null })}>
           ＋ 新建项目
         </button>
       </div>
       {error && <p className="p-empty">加载失败：{error}</p>}
-      {!error && projects.length === 0 && (
+      {loaded && !error && projects.length === 0 && (
         <p className="p-empty">还没有项目，点右上「＋ 新建项目」创建第一个。</p>
       )}
       {projects.length > 0 && (
@@ -86,7 +95,7 @@ export default function ProjectsPage() {
                   <td><span className="p-kb">{p.kb}</span></td>
                   <td>{p.session_count}</td>
                   <td><div className="row-acts">
-                    <button className="mini-btn" onClick={() => undefined} disabled>编辑</button>
+                    <button className="mini-btn" onClick={() => setModal({ mode: "edit", project: p })}>编辑</button>
                     <button className="mini-btn danger" onClick={() => void onRemove(p)}>删除</button>
                   </div></td>
                 </tr>
@@ -94,6 +103,15 @@ export default function ProjectsPage() {
             </tbody>
           </table>
         </div>
+      )}
+      {modal && (
+        <ProjectFormModal
+          mode={modal.mode}
+          project={modal.project}
+          agentOptions={agentOptions}
+          onClose={() => setModal(null)}
+          onSaved={(msg) => { toast(msg); void reload(); }}
+        />
       )}
       <p className="p-tip">
         提示：项目与智能体是多对多关系——此处勾选的智能体即聊天页「当前智能体」的可选范围；
