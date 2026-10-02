@@ -163,3 +163,47 @@ def test_post_create(tmp_path, kb_root):
                       json={"content": "x"}).status_code == 409
         assert c.post("/api/kb/browse/file", params={"path": "ghost/x.md"},
                       json={"content": "x"}).status_code == 400
+
+
+def test_put_post_without_body_422(tmp_path, kb_root):
+    # 终审项 7：body 必传——无请求体由 FastAPI 校验层 422，而非 None 解引用 500
+    with _client(tmp_path, kb_root) as c:
+        assert c.put("/api/kb/browse/file", params={"path": "business/wiki/a.md"}).status_code == 422
+        assert c.post("/api/kb/browse/file", params={"path": "_inbox/x.md"}).status_code == 422
+
+
+def test_error_bodies_carry_editable_false(tmp_path, kb_root):
+    # 终审项 10：spec §A 错误表——415/413 JSON 体附 editable:false，detail 文案逐字不变
+    big = kb_root / "big.txt"
+    big.write_text("x" * (2 * 1024 * 1024 + 1), encoding="utf-8")
+    over = "x" * (2 * 1024 * 1024 + 1)
+    with _client(tmp_path, kb_root) as c:
+        r = c.get("/api/kb/browse/file", params={"path": "bin.exe"})
+        assert r.status_code == 415
+        assert r.json() == {"detail": "暂不支持预览该文件类型", "editable": False}
+        r = c.get("/api/kb/browse/file", params={"path": "big.txt"})
+        assert r.status_code == 413 and r.json()["editable"] is False
+        assert r.json()["detail"] == "文件超过 2MB，只读不加载"
+        r = c.put("/api/kb/browse/file", params={"path": "bin.exe"}, json={"content": "x"})
+        assert r.status_code == 415 and r.json()["editable"] is False
+        r = c.put("/api/kb/browse/file", params={"path": "business/wiki/a.md"},
+                  json={"content": over})
+        assert r.status_code == 413 and r.json()["editable"] is False
+        r = c.post("/api/kb/browse/file", params={"path": "_inbox/bin2.exe"}, json={"content": "x"})
+        assert r.status_code == 415 and r.json()["editable"] is False
+        r = c.post("/api/kb/browse/file", params={"path": "_inbox/big.md"}, json={"content": over})
+        assert r.status_code == 413 and r.json()["editable"] is False
+
+
+def test_tool_and_browse_share_hidden_predicate(tmp_path, kb_root):
+    # 终审项 2 闭环：工具拒过的路径 browse 也 403——同一判据（paths.is_hidden）两侧共消费
+    from langchain_core.tools import ToolException
+
+    from aitester.adapters.tools.kb_tools import PrepareKbWriteTool
+
+    tool = PrepareKbWriteTool(kb_root=kb_root)
+    (kb_root / ".scratch").mkdir()
+    with pytest.raises(ToolException, match="hidden or internal"):
+        tool._run(op="create", path=".scratch/x.md", content="c", summary="s")
+    with _client(tmp_path, kb_root) as c:
+        assert c.get("/api/kb/browse/tree", params={"path": ".scratch"}).status_code == 403

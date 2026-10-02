@@ -15,12 +15,15 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from aitester.services.kb.paths import resolve_kb_root
+from aitester.services.kb.paths import (
+    hidden_segment,
+    is_hidden,
+    mtime_ms,
+    resolve_kb_root,
+)
 
 router = APIRouter(prefix="/api/kb/browse")
 
-HIDDEN_DIRS = {".git", ".idea", ".vscode", ".locks", "__pycache__", "node_modules", ".obsidian"}
-HIDDEN_FILES = {".ds_store", "thumbs.db"}
 TEXT_EXT = {".md", ".markdown", ".txt", ".json", ".jsonl", ".py", ".js", ".ts", ".yaml", ".yml",
             ".sql", ".sh", ".bat", ".ini", ".cfg", ".csv", ".html", ".css", ".xml", ".toml",
             ".gitignore", ".log"}
@@ -30,7 +33,6 @@ WALK_DEPTH = 12
 
 _FM_RE = re.compile(r"^---\r?\n([\s\S]*?)\r?\n---")
 _KV_RE = re.compile(r"^([A-Za-z0-9_\-.]+):\s*(.*)$")
-_NOISE_RE = re.compile(r"\.(pyc|pyo|pack|idx|rev|sample)$")
 
 
 def _root(request: Request) -> Path:
@@ -44,8 +46,8 @@ def _root(request: Request) -> Path:
 
 
 def _hidden(name: str) -> bool:
-    return (name in HIDDEN_DIRS or name.lower() in HIDDEN_FILES or name.startswith(".")
-            or bool(_NOISE_RE.search(name.lower())))
+    # 隐藏名判据收敛到 paths.is_hidden（读写两侧共用同一谓词，终审修复项 2/9）
+    return is_hidden(name)
 
 
 def _resolve(root: Path, rel: str) -> Path:
@@ -57,7 +59,7 @@ def _resolve(root: Path, rel: str) -> Path:
     cand = (root_r / clean).resolve() if clean else root_r
     if cand != root_r and root_r not in cand.parents:
         raise HTTPException(status_code=403, detail="路径超出知识库范围")
-    if any(_hidden(seg) for seg in cand.relative_to(root_r).parts):
+    if hidden_segment(cand.relative_to(root_r).parts):
         raise HTTPException(status_code=403, detail="路径超出知识库范围")
     return cand
 
@@ -73,7 +75,7 @@ def _is_text(abs: Path) -> bool:
 
 def _stat_d(p: Path) -> dict[str, Any]:
     st = p.stat()
-    return {"size": st.st_size, "mtime": int(st.st_mtime_ns // 1_000_000)}
+    return {"size": st.st_size, "mtime": mtime_ms(st)}
 
 
 def _parse_fm(text: str) -> dict[str, str] | None:
@@ -98,7 +100,12 @@ def _walk_abs(root: Path, depth: int = 0) -> list[Path]:
     stack = [(root, depth)]
     while stack:
         cur, d = stack.pop()
-        for e in sorted(cur.iterdir(), key=lambda e: e.name.lower()):
+        try:
+            entries = sorted(cur.iterdir(), key=lambda e: e.name.lower())
+        except OSError:
+            # 瞬时列举失败按空目录收敛（与 _stat_d 守卫同口径韧性）
+            continue
+        for e in entries:
             if _hidden(e.name):
                 continue
             out.append(e)
@@ -116,7 +123,12 @@ def browse_tree(request: Request, path: str = "") -> dict[str, Any]:
     if not target.is_dir():
         raise HTTPException(status_code=400, detail="不是目录")
     items = []
-    for e in target.iterdir():
+    try:
+        entries = list(target.iterdir())
+    except OSError:
+        # 瞬时列举失败按空目录收敛（与 _stat_d 守卫同口径韧性）
+        entries = []
+    for e in entries:
         if _hidden(e.name):
             continue
         info: dict[str, Any] = {"name": e.name, "rel": _rel_of(root, e), "dir": e.is_dir()}
@@ -131,7 +143,7 @@ def browse_tree(request: Request, path: str = "") -> dict[str, Any]:
 
 
 @router.get("/file")
-def browse_file(request: Request, path: str = "") -> dict[str, Any]:
+def browse_file(request: Request, path: str = "") -> Any:
     root = _root(request)
     target = _resolve(root, path)
     if not target.exists():
@@ -139,14 +151,15 @@ def browse_file(request: Request, path: str = "") -> dict[str, Any]:
     if target.is_dir():
         raise HTTPException(status_code=400, detail="是目录，不是文件")
     if not _is_text(target):
-        raise HTTPException(status_code=415, detail="暂不支持预览该文件类型")
+        # spec §A 错误表：415/413 附 editable:false（前端据此不进取编辑态）
+        return JSONResponse(status_code=415, content={"detail": "暂不支持预览该文件类型", "editable": False})
     st = target.stat()
     if st.st_size > MAX_TEXT:
-        raise HTTPException(status_code=413, detail="文件超过 2MB，只读不加载")
+        return JSONResponse(status_code=413, content={"detail": "文件超过 2MB，只读不加载", "editable": False})
     return {
         "rel": _rel_of(root, target), "name": target.name, "ext": target.suffix.lower(),
         "content": target.read_text(encoding="utf-8", errors="replace"),
-        "size": st.st_size, "mtime": int(st.st_mtime_ns // 1_000_000), "editable": True,
+        "size": st.st_size, "mtime": mtime_ms(st), "editable": True,
     }
 
 
@@ -195,7 +208,7 @@ def browse_scan(request: Request, path: str = "", limit: int = 800, md: str = "1
             continue
         head = abs.read_text(encoding="utf-8", errors="replace")[:4000]
         docs.append({"rel": _rel_of(root, abs), "name": abs.name, "size": st.st_size,
-                     "mtime": int(st.st_mtime_ns // 1_000_000), "fm": _parse_fm(head)})
+                     "mtime": mtime_ms(st), "fm": _parse_fm(head)})
         if len(docs) >= limit:
             break
     return {"root": str(root), "scanned": len(docs), "truncated": len(docs) >= limit, "docs": docs}
@@ -206,45 +219,48 @@ class KbBrowseWriteBody(BaseModel):
 
 
 @router.put("/file")
-def browse_put(request: Request, path: str = Query(""), mtime: int = Query(0),
-               body: KbBrowseWriteBody = None) -> Any:
+def browse_put(request: Request, body: KbBrowseWriteBody,
+               path: str = Query(""), mtime: int = Query(0)) -> Any:
+    # body 必传（终审项 7）：无请求体由 FastAPI 直接 422，而非 None 解引用 500
     root = _root(request)
     target = _resolve(root, path)
     if not _is_text(target):
-        raise HTTPException(status_code=415, detail="只允许写入文本文件")
+        # spec §A 错误表：415/413 附 editable:false（与 409 同款 JSONResponse 形态）
+        return JSONResponse(status_code=415, content={"detail": "只允许写入文本文件", "editable": False})
     if not target.exists():
         raise HTTPException(status_code=404, detail="文件不存在，请用新建接口")
     if target.is_dir():
         raise HTTPException(status_code=400, detail="是目录")
-    cur = int(target.stat().st_mtime_ns // 1_000_000)
+    cur = mtime_ms(target.stat())
     if mtime and cur != mtime:
         # 对齐 serve.js：乐观锁冲突不覆盖，回磁盘当前 mtime 供前端重载
         return JSONResponse(status_code=409,
                             content={"detail": "文件在页面打开后被外部修改，未覆盖", "mtime": cur})
     data = body.content.encode("utf-8")
     if len(data) > MAX_TEXT:
-        raise HTTPException(status_code=413, detail="内容过大")
+        return JSONResponse(status_code=413, content={"detail": "内容过大", "editable": False})
     target.write_bytes(data)
     return {"rel": _rel_of(root, target), "size": len(data),
-            "mtime": int(target.stat().st_mtime_ns // 1_000_000)}
+            "mtime": mtime_ms(target.stat())}
 
 
 @router.post("/file")
-def browse_post(request: Request, path: str = Query(""),
-                body: KbBrowseWriteBody = None) -> Any:
+def browse_post(request: Request, body: KbBrowseWriteBody,
+                path: str = Query("")) -> Any:
+    # body 必传（终审项 7）：无请求体由 FastAPI 直接 422，而非 None 解引用 500
     root = _root(request)
     target = _resolve(root, path)
     if not _is_text(target):
-        raise HTTPException(status_code=415, detail="只允许写入文本文件")
+        return JSONResponse(status_code=415, content={"detail": "只允许写入文本文件", "editable": False})
     if target.exists():
         raise HTTPException(status_code=409, detail="同名文件已存在，请换个名字")
     if not target.parent.is_dir():
         raise HTTPException(status_code=400, detail="父目录不存在")
     data = body.content.encode("utf-8")
     if len(data) > MAX_TEXT:
-        raise HTTPException(status_code=413, detail="内容过大")
+        return JSONResponse(status_code=413, content={"detail": "内容过大", "editable": False})
     target.write_bytes(data)
     return JSONResponse(status_code=201, content={
         "rel": _rel_of(root, target), "size": len(data),
-        "mtime": int(target.stat().st_mtime_ns // 1_000_000),
+        "mtime": mtime_ms(target.stat()),
     })

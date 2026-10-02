@@ -96,23 +96,35 @@ class PrepareKbWriteTool(AiTooler):
     kb_root: Path = Path(".")
 
     def _run(self, op: str, path: str, content: str, summary: str) -> tuple[str, dict[str, Any]]:
+        # 延迟导入：adapters.tools 初始化链上导入 aitester.services.kb.paths 会经
+        # services/__init__ 反向触发 agent_runtime→adapters.tools 循环导入
+        from aitester.services.kb.paths import hidden_segment, mtime_ms
+
         rel = (path or "").strip().replace("\\", "/").lstrip("/")
         if not rel or "\0" in rel:
             raise ToolException("Invalid path: provide a non-empty path relative to the knowledge base root.")
         if not rel.lower().endswith(".md"):
             raise ToolException("Only Markdown (.md) files can be written to the knowledge base.")
-        root = Path(self.kb_root)
+        root = Path(self.kb_root).resolve()  # 纵深防御：默认部署的根可能未规范化（短名/junction）
         if not root.is_dir():
             raise ToolException("Knowledge base root does not exist on disk yet.")
         target = (root / rel).resolve()
         if target != root and root not in target.parents:
             raise ToolException("Invalid path: target escapes the knowledge base root.")
         rel = target.relative_to(root).as_posix()
+        # 与 browse 读侧同一隐藏判据：草稿期即拒，杜绝「确认写入后 browse 403」的死路（终审项 2）
+        hidden = hidden_segment(tuple(rel.split("/")))
+        if hidden:
+            raise ToolException(
+                f"Invalid path segment '{hidden}': hidden or internal names (dot-prefixed, "
+                ".git/__pycache__/node_modules-like, .pyc/.idx-like) cannot be written to the "
+                "knowledge base; pick a visible path such as '_inbox/note.md' and redraft."
+            )
         if op == "modify":
             if not target.is_file():
                 raise ToolException(f"Cannot modify: {rel} does not exist; use op 'create' instead.")
             base = target.read_text(encoding="utf-8", errors="replace")
-            mtime = int(target.stat().st_mtime_ns // 1_000_000)
+            mtime = mtime_ms(target.stat())
         else:
             if target.exists():
                 raise ToolException(f"Cannot create: {rel} already exists; use op 'modify' or another name.")

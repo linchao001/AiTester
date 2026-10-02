@@ -58,7 +58,7 @@ uv run python -m aitester.main
   与 QwenPaw 的原文口径；面向用户的 UI 文案（设置弹窗等）保持中文
 - `/api/kb/browse/*（文件浏览与受控写盘，serve.js 语义）`：GET `tree`/`file`/`search`/`scan` + PUT/POST `file`，
   直读直写 KB 实体目录；PUT 带 `mtime` 乐观锁，磁盘已被外部改动则 409 不覆盖；POST 新建撞同名 409；
-  路径穿越/隐藏目录/非白名单扩展名/超 2 MB 逐条拦截（403/400/415/413）
+  路径穿越/隐藏目录 403；目标类型不符（非目录/是目录/父目录不存在）400；非白名单扩展名 415；超 2 MB 413
 - 知识库（ReMe 进程内嵌）：backend 进程内直跑本地 wheel 的 ReMe `Application.run_job`，绝不启 HTTP 服务；
   KB 全局共享单份 `zhb_kb`（实体 `~/.reme/knowledge_bases/zhb_kb`），经 `/api/kb/*` 与前端 `/kb` 页使用；
   embedding 按 Key 启用 —— 设 `KB_EMBEDDING_API_KEY` 走语义+BM25 双路，未设则回落 `DASHSCOPE_API_KEY`，

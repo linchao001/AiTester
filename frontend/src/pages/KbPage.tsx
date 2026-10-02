@@ -174,6 +174,13 @@ export default function KbPage() {
       return j;
     } catch (err) {
       if (err instanceof ApiError && err.status === 409 && mode === "PUT") {
+        // 跨文件护栏（终审项 3）：当前打开的是另一份脏文档时不强制切换重载，
+        // 否则未保存修改被无声丢弃；同文件或干净文档保留规范认可的强制重载。
+        const cur = docRef.current;
+        if (cur && cur.rel !== rel && cur.content !== cur.disk) {
+          toast("存在未保存的修改，已跳过自动重载，手动保存或放弃后可重新打开");
+          return null;
+        }
         toast("文件在别处被改过，已重新载入磁盘最新内容（未保存的修改已丢弃）");
         void kbOpen(rel, true);
         return null;

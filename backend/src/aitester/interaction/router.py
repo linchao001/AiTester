@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import ValidationError
 
 from aitester.adapters.llm import ProviderConfigError, ProviderError
 from aitester.interaction.schemas import (
@@ -9,6 +10,7 @@ from aitester.interaction.schemas import (
     EchoRequest,
     EchoResponse,
     EnabledUpdate,
+    KbDraft,
     KbInboxMergeRequest,
     KbInboxStemRequest,
     KbResponse,
@@ -61,11 +63,19 @@ def chat_send(req: SendRequest, request: Request) -> SendResponse:
         raise HTTPException(status_code=400, detail=exc.detail) from exc
     except ProviderError as exc:
         raise HTTPException(status_code=502, detail=exc.detail) from exc
+    # 草案容错（终审项 5）：模型偶发产出缺必填键的畸形 dict，逐条丢弃而非整响应 500，
+    # 回复与其余合法草案照常返回
+    drafts: list[KbDraft] = []
+    for d in result.get("drafts", []):
+        try:
+            drafts.append(KbDraft.model_validate(d))
+        except ValidationError:
+            continue
     return SendResponse(
         reply=result["reply"],
         trace=["interaction"] + result["trace"],
         model=result["model"],
-        drafts=result.get("drafts", []),
+        drafts=drafts,
     )
 
 

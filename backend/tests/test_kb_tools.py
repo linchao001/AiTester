@@ -128,6 +128,40 @@ def test_prepare_validation_errors(tmp_path):
         tool._run(op="create", path="ghostdir/x.md", content="c", summary="s")
 
 
+def test_prepare_rejects_hidden_segments(tmp_path):
+    # 终审项 2：与 browse 读侧同判据——草案期即拒（模型可读英文文案自纠），
+    # 杜绝「工具放行→用户确认→browse 403→卡片死路」
+    tool = _tool(tmp_path)
+    for p in (".scratch/x.md", "business/.git/x.md", "__pycache__/x.md",
+              "business/.GIT/x.md", "business/wiki/.Hidden.md"):
+        with pytest.raises(ToolException, match="hidden or internal"):
+            tool._run(op="create", path=p, content="c", summary="s")
+    with pytest.raises(ToolException, match="hidden or internal"):
+        tool._run(op="modify", path="business/.locks/x.md", content="c", summary="s")
+
+
+def test_draft_artifact_conforms_to_kb_draft_contract(tmp_path):
+    # 终审项 5：用真实工具产物校验契约（含 summary/abs_display 逐字段钉死），不手抄 dict
+    from aitester.interaction.schemas import KbDraft
+
+    tool = _tool(tmp_path)
+    (tmp_path / "_inbox").mkdir()
+    out_modify, art_modify = tool._run(
+        op="modify", path="business/wiki/x.md", content="new", summary="改一句")
+    out_create, art_create = tool._run(
+        op="create", path="_inbox/n.md", content="# N", summary="新建")
+
+    d1 = KbDraft.model_validate(art_modify)
+    assert d1.op == "modify" and d1.path == "business/wiki/x.md"
+    assert d1.abs_display == art_modify["abs_display"] and d1.summary == "改一句"
+    assert d1.content == "new" and d1.base == "old" and d1.mtime > 0
+
+    d2 = KbDraft.model_validate(art_create)
+    assert d2.op == "create" and d2.path == "_inbox/n.md"
+    assert d2.base is None and d2.mtime == 0 and d2.summary == "新建"
+    assert "NOT yet written" in out_modify and "NOT yet written" in out_create
+
+
 def test_registry_registers_prepare_kb_write(tmp_path):
     reg = build_default_registry(cwd=".", kb=_StubRootKb(tmp_path), agent_id="kb_assistant")
     assert reg.get("prepare_kb_write") is not None

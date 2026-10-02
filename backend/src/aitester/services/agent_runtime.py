@@ -6,6 +6,7 @@
 """
 
 from dataclasses import dataclass
+from logging import getLogger
 from typing import Any
 
 from aitester.agents import PLATFORM_AGENT_CATALOG, find_agent
@@ -16,6 +17,8 @@ from aitester.adapters.tools.file_tools import FileObservationStore
 from aitester.orchestration.graph_registry import GraphBuilder, get_graph_builder
 from aitester.services.capability_config import CapabilityConfigService
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
+
+logger = getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -95,7 +98,8 @@ class AgentRuntime:
         工具面天然按「清单 ∩ 实际可注册集合」收敛（spec 裁定②）：kb 关闭/未注入时
         knowledge_search / prepare_kb_write 不在注册表，get_many 取交集只剩三件套。
         cwd 固定 default 项目的 workspace 目录（实例池键 ("default", spec.id)，
-        会话记忆键 f"{spec.id}:{session_id}" 与守卫键同构），reme junction 由实例首启挂载。
+        会话记忆键 f"{spec.id}:{session_id}" 与守卫键同构），knowledge junction 由
+        装配期 best-effort 预热首启实例挂载（冷 workspace 修复，失败不阻断装配）。
         """
         provider: LlmProvider = (
             provider_override
@@ -107,6 +111,14 @@ class AgentRuntime:
             workspace = self._kb.workspace_dir("default", spec.id)
             workspace.mkdir(parents=True, exist_ok=True)
             cwd = str(workspace)
+            # 热挂载（终审项 4）：knowledge junction 由 reme 实例首启（mount_knowledge，
+            # 仅发生在 manager._start_app）创建；此处 best-effort 跑一次 status job 把
+            # 首启提前到装配期，令首轮 read/grep/glob 不再看到空目录。
+            # 失败绝不影响 build：实例坏时后续 knowledge_search 自会按 503/错误文案收敛。
+            try:
+                self._kb.run_job_sync("status", project_id="default", agent_id=spec.id)
+            except Exception:  # 预热仅尽力而为，任何异常记录后继续装配
+                logger.warning("kb_assistant 实例预热失败（不影响装配）", exc_info=True)
         registry = build_default_registry(
             cwd=cwd,
             session_id=f"{spec.id}:{session_id}",

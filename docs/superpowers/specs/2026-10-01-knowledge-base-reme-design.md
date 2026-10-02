@@ -99,6 +99,6 @@ embedding 首配后的一次检索会实际调用向量 API——属真实成本
 | 风险 | 缓解 |
 |---|---|
 | Windows junction 创建失败（目标在别盘/权限） | mount 走 reme 自带逻辑；失败显式 KbUnavailableError，不静默 |
-| 各实例索引收敛延迟（读侧秒级不一致） | 写入后 UI 提示"索引刷新中"；控制台实例检索前可手动 reindex |
+| 各实例索引收敛延迟（读侧约数十秒不一致） | 写入后经 watch 后台环约数十秒自动收敛，落盘提示已按此口径告知；无需手动重建 |
 | whl 与源码仓漂移 | 以 whl METADATA 0.4.1.8 为准；计划中的 job/step 名已从 whl 解包内容核实 |
 | rjieba 在 win/py3.11 安装 | Task 1 首步即 `uv sync` 实测，失败则 tokenizer 配置切 `backend: jieba` 纯 Python 实现 |

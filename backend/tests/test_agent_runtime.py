@@ -1,6 +1,7 @@
 """装配器单测：实例内容来自数据（提示词/模型/工具），实例本身不持有状态。"""
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -187,8 +188,9 @@ def test_kb_assistant_forced_binding_ignores_capability(tmp_path: Path) -> None:
         kb_root_dir = tmp_path / "bases" / "zhb_kb"
         def workspace_dir(self, project_id, agent_id):
             return tmp_path / "workspaces" / project_id / agent_id
-        def run_job_sync(self, *a, **kw):  # pragma: no cover
-            raise AssertionError
+        def run_job_sync(self, name, *, project_id="default", agent_id="console", **kw):
+            # 终审项 4 后装配期会预热 status job：RecordingKb 风格记录即可，不触真 reme
+            return SimpleNamespace(success=True, answer="ok", metadata={})
 
     runtime = AgentRuntime(cap, model, FileObservationStore(), kb=_StubKb())
     inst = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
@@ -200,6 +202,63 @@ def test_kb_assistant_forced_binding_ignores_capability(tmp_path: Path) -> None:
     cap.set_agent_tools("case_design", [])
     inst2 = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
     assert len(inst2.tools) == 5
+
+
+def test_kb_assistant_warms_kb_instance_on_build(tmp_path: Path) -> None:
+    # 终审项 4：knowledge junction 由 reme 实例首启创建（manager._start_app →
+    # reme/knowledge/mount.py），装配期必须 best-effort 派发一次 status 预热，
+    # 否则冷 workspace 首轮 read/grep/glob 只见空目录
+    s = Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"))
+    model = ModelConfigService(FileJsonConfigRepository(tmp_path / "m.json"), s)
+    cap = CapabilityConfigService(FileJsonConfigRepository(tmp_path / "c.json"), model)
+
+    class _RecordingKb:
+        is_enabled = True
+        kb_root_dir = tmp_path / "bases" / "zhb_kb"
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str]] = []
+
+        def workspace_dir(self, project_id, agent_id):
+            return tmp_path / "workspaces" / project_id / agent_id
+
+        def run_job_sync(self, name, *, project_id="default", agent_id="console", **kw):
+            self.calls.append((name, project_id, agent_id))
+            return SimpleNamespace(success=True, answer="ok", metadata={})
+
+    kb = _RecordingKb()
+    runtime = AgentRuntime(cap, model, FileObservationStore(), kb=kb)
+    inst = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
+    assert kb.calls == [("status", "default", "kb_assistant")]  # 调用形状对齐 manager 签名
+    assert len(inst.tools) == 5
+
+
+def test_kb_assistant_build_survives_warm_failure(tmp_path: Path) -> None:
+    # 终审项 4 守卫：预热失败（reme 坏/超时）只记日志，绝不炸 build()
+    s = Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"))
+    model = ModelConfigService(FileJsonConfigRepository(tmp_path / "m.json"), s)
+    cap = CapabilityConfigService(FileJsonConfigRepository(tmp_path / "c.json"), model)
+
+    class _FailingKb:
+        is_enabled = True
+        kb_root_dir = tmp_path / "bases" / "zhb_kb"
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str]] = []
+
+        def workspace_dir(self, project_id, agent_id):
+            return tmp_path / "workspaces" / project_id / agent_id
+
+        def run_job_sync(self, name, *, project_id="default", agent_id="console", **kw):
+            self.calls.append((name, project_id, agent_id))
+            raise RuntimeError("reme 实例起不来")
+
+    kb = _FailingKb()
+    runtime = AgentRuntime(cap, model, FileObservationStore(), kb=kb)
+    inst = runtime.build("kb_assistant", "s", provider_override=MockProvider())
+    assert kb.calls == [("status", "default", "kb_assistant")]
+    assert [t.name for t in inst.tools] == [
+        "read", "grep_search", "glob_search", "knowledge_search", "prepare_kb_write"]
 
 
 def test_kb_assistant_unregistered_kb_degrades(tmp_path: Path) -> None:

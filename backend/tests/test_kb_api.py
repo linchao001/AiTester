@@ -106,3 +106,21 @@ def test_chat_send_drafts_defaults_empty(tmp_path):
     with TestClient(app) as c:
         j = c.post("/api/chat/send", json={"message": "echo 我"}).json()
     assert j["drafts"] == []  # 向后兼容：SendResponse 默认空列表
+
+
+def test_chat_send_skips_malformed_drafts(tmp_path):
+    # 终审项 5：缺必填键/非 dict 的畸形草案逐条跳过，不整响应 500，回复不丢
+    app = create_app(
+        model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
+        settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
+    valid = {"op": "create", "path": "a.md", "abs_display": "P",
+             "summary": "s", "content": "c", "base": None, "mtime": 0}
+    app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid: {
+        "reply": "回复还在", "trace": ["services"], "model": "m",
+        "drafts": [valid, {"op": "create"}, "garbage", None]})
+    with TestClient(app) as c:
+        r = c.post("/api/chat/send", json={"message": "写点什么"})
+    assert r.status_code == 200
+    j = r.json()
+    assert j["reply"] == "回复还在"
+    assert [d["path"] for d in j["drafts"]] == ["a.md"]  # 仅合法草案存活
