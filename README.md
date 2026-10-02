@@ -56,11 +56,19 @@ uv run python -m aitester.main
   截断与超时都会附可照做的提示
 - 工具面向模型的文案（工具描述 / 参数说明 / 错误与执行结果）一律英文，对齐 dsh-tool-fs
   与 QwenPaw 的原文口径；面向用户的 UI 文案（设置弹窗等）保持中文
+- `/api/kb/browse/*（文件浏览与受控写盘，serve.js 语义）`：GET `tree`/`file`/`search`/`scan` + PUT/POST `file`，
+  直读直写 KB 实体目录；PUT 带 `mtime` 乐观锁，磁盘已被外部改动则 409 不覆盖；POST 新建撞同名 409；
+  路径穿越/隐藏目录/非白名单扩展名/超 2 MB 逐条拦截（403/400/415/413）
 - 知识库（ReMe 进程内嵌）：backend 进程内直跑本地 wheel 的 ReMe `Application.run_job`，绝不启 HTTP 服务；
   KB 全局共享单份 `zhb_kb`（实体 `~/.reme/knowledge_bases/zhb_kb`），经 `/api/kb/*` 与前端 `/kb` 页使用；
   embedding 按 Key 启用 —— 设 `KB_EMBEDDING_API_KEY` 走语义+BM25 双路，未设则回落 `DASHSCOPE_API_KEY`，
   均无则纯 BM25；`knowledge_search` / `save_to_knowledge` 已注册为智能体工具；
   inbox 回流审核与 knowledge_dream 自动回流为后续专项
+- `/kb` 三栏页（目录树 + 预览/编辑 + 助手）：右栏助手为内置平台智能体 `kb_assistant`（知识库助手），
+  设置页与聊天页对其不可见，工具面强制绑定 read / grep_search / glob_search / knowledge_search /
+  prepare_kb_write 五件，不随能力勾选变化；**助手零直写**——任何写盘必经「待写入草案」卡片，
+  用户点「✓ 确认写入磁盘」后才经 browse POST/PUT 真正落盘；落盘后索引经 watch **约数十秒自动收敛**，
+  无需手动重建；旧三区表单页已移除（`/api/kb/status|bases|search|save` 端点保留，工具与其余链路仍在用）
 - 测试：`uv run pytest`
 - 配置：复制 `.env.example` 为 `.env`（仅 HOST/PORT + 两个可选种子 Key）；
   运行期模型配置存 `backend/data/model_config.json`（gitignore，含密钥），

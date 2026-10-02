@@ -1,6 +1,6 @@
 # /kb 知识库页对齐原型（目录树 + 预览编辑 + reme 聊天助手）设计
 
-> 状态：已与用户逐条确认裁定，待实施
+> 状态：已与用户逐条确认裁定，已实施（实现 commit c810b42..a32cfb3，十一任务账本见 `.superpowers/sdd/2026-10-02-kb-assistant-page/`）
 > 前序：`2026-10-01-knowledge-base-reme-design.md`（KB 底座四条裁定，已实施 master@3547804）
 > 原型真相：`prototype/index.html`（:8899 三栏页）+ `prototype/serve.js`（KB 文件 API）
 

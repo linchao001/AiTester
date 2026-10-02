@@ -12,7 +12,7 @@
 1. **进程内嵌，禁 HTTP 服务形态**。`ReMe(**config_dict)` → `await start()` → `await run_job(name, **kwargs)`，配置为纯 dict（不加载 reme yaml）。ReMe 的 `reme start` / `service` 后端一律不启用（qwenpaw 中 `service: {backend: "http"}` 仅为占位，从未启动服务）。
 2. **embedding 按 Key 启用**。模型设置中存在向量模型 API Key 时注入 `as_embedding` + `embedding_store` 组件（语义+BM25 双路 RRF）；无 Key 时降级纯 BM25（`file_store.default.embedding_store = ""`）。换 embedding 模型后需触发 `reindex` 重建向量索引。
 3. **manager 按 (project_id, agent_id) 粒度实例化**。每实例独占一个 workspace：`backend/data/workspaces/<project_id>/<agent_id>/`。禁止两个 ReMe 实例同开一个 workspace_dir（BM25 整库 pickle 后写覆盖、faiss/chunks 无 workspace 级锁，源码证据见 `bm25_index.py:362-365`、`application.py:54-68`）。
-4. **KB 全局单份共享**。`knowledge_base_id` 为应用级配置（默认 `zhb_kb`，实体 `~/.reme/knowledge_bases/zhb_kb`，可被 `REME_KNOWLEDGE_BASES_DIR`/配置项覆盖）。所有 (project, agent) 实例经 junction/symlink 把同一实体挂到各自 `knowledge/`；写并发依赖 ReMe 自带跨进程文件锁（`reme/knowledge/lock.py`，每 KB 一把 write.lock），不自造锁。读侧各实例索引经 watch 循环最终一致（秒级收敛）。
+4. **KB 全局单份共享**。`knowledge_base_id` 为应用级配置（默认 `zhb_kb`，实体 `~/.reme/knowledge_bases/zhb_kb`，可被 `REME_KNOWLEDGE_BASES_DIR`/配置项覆盖）。所有 (project, agent) 实例经 junction/symlink 把同一实体挂到各自 `knowledge/`；写并发依赖 ReMe 自带跨进程文件锁（`reme/knowledge/lock.py`，每 KB 一把 write.lock），不自造锁。读侧各实例索引经 watch 循环最终一致（约数十秒自动收敛，无需手动重建）。
 
 ## 架构
 
@@ -45,7 +45,7 @@ adapters/tools  KbSearchTool / KbSaveTool → 注册进 ToolRegistry，
 - `services/kb/manager.py`：`RemeKbManager`。单例事件循环线程；`run_job_sync/async`（工具用 sync、端点用 async）；`close_all()` 挂 lifespan；KB 未启用/启动失败 → `KbUnavailableError`（映射 503），不静默假成功。
 - `interaction/`：`/api/kb/status|bases|search|save|inbox/*` 端点 + pydantic schemas，DTO 风格对齐现有 `schemas.py`。
 - `adapters/tools/kb_tools.py` + `capability_config.TOOL_CATALOG` 两条目（知识库工具组）；`build_default_registry(..., kb=..., agent_id=...)` 扩展可选参数，`AgentRuntime.build` 透传（agent_runtime.py:43、61-71）。
-- `frontend/pages/KbPage.tsx`：应用级页面（KB 是全局资产，入口不放项目级）。三区：状态卡（kb_id、实体路径、embedding 开/关）、检索（query+limit+bucket→结果列表带路径/片段）、写入（title/content/bucket→save，写后可在检索区验证）。带标签控件，无裸图标按钮。
+- `frontend/pages/KbPage.tsx`：应用级页面（KB 是全局资产，入口不放项目级）。首版为三区表单（状态卡/检索/写入），已被 `2026-10-02-kb-assistant-page-design.md` 的 /kb 三栏改版（目录树 + 预览/编辑 + 知识库助手）取代；本档 `/api/kb/status|bases|search|save` 等端点保留（工具与其余链路仍在用），仅页面呈现移除。写盘必经草案卡确认；落盘后索引经 watch 约数十秒自动收敛，无手动重建。
 
 ### API 面（本期）
 

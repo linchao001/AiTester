@@ -1097,6 +1097,8 @@ export function kbSave(title: string, content: string, bucket: string): Promise<
 
 - [ ] **Step 2: KbPage.tsx 重写为三区布局**
 
+> 后记（2026-10-02，文档回写）：本步的三区表单页已被 /kb 三栏改版（目录树 + 预览/编辑 + 知识库助手）取代，见 `specs/2026-10-02-kb-assistant-page-design.md`（实现 c810b42..a32cfb3）；下列端点本身保留、语义不变。本任务下方描述（含 Step 4 实测项）仅作历史留档，不再代表现网页面形态。
+
 单文件组件，三个带文字标题的区块（沿用项目现有页面 CSS 类名风格，参考 ChatPage.tsx/settings 组件的排版基元；不引入新依赖）：
 
 1. **状态卡**：挂载时 `getKbStatus()` + `getKbBases()`（如 client 未导出则用 `apiFetch("/api/kb/bases")` 同法补一个 `getKbBases()`）；显示 `success`、`metadata` 中 KB id 与实体路径（解析失败时降级显示原始 JSON）；`kb_enabled=False`/503 时显示「知识库未启用或不可用」提示条，不白屏。
