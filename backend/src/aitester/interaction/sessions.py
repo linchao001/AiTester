@@ -14,7 +14,11 @@ from aitester.interaction.schemas import (
     SessionsResponse,
     StepInfo,
 )
-from aitester.services.session_store import ChatMessage, SessionStore
+from aitester.services.session_store import (
+    MISSING_SESSION_DETAIL,
+    ChatMessage,
+    SessionStore,
+)
 
 
 def _store(request: Request) -> SessionStore:
@@ -22,7 +26,7 @@ def _store(request: Request) -> SessionStore:
 
 
 def _missing() -> HTTPException:
-    return HTTPException(status_code=404, detail="会话不存在或已被删除")
+    return HTTPException(status_code=404, detail=MISSING_SESSION_DETAIL)
 
 
 router = APIRouter(prefix="/api/chat/sessions")

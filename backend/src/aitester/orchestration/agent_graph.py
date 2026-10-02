@@ -22,6 +22,9 @@ class AgentState(TypedDict):
 
 GraphBuilder = Callable[[LlmProvider, list[AiTooler]], CompiledStateGraph]
 
+# 过程块参数摘要的截断上限（spec 接口块登记值，实现此前漂移成裸 80）
+DETAIL_MAX = 80
+
 
 def _tool_error_message(error: Exception) -> str:
     """把工具异常转为模型可见的错误结果文本。
@@ -97,9 +100,9 @@ def run_graph(
         if isinstance(msg, ToolMessage):
             call = calls_by_id.get(str(msg.tool_call_id), {})
             try:
-                detail = json.dumps(call.get("args") or {}, ensure_ascii=False)[:80]
+                detail = json.dumps(call.get("args") or {}, ensure_ascii=False)[:DETAIL_MAX]
             except (TypeError, ValueError):
-                detail = str(call.get("args"))[:80]  # 非常规 args（非 JSON 可序列化）不退化成报错，UI 只截一行
+                detail = str(call.get("args"))[:DETAIL_MAX]  # 非常规 args（非 JSON 可序列化）不退化成报错，UI 只截一行
             tool_traces.append({
                 "tool": msg.name or "",
                 "result": str(msg.content),

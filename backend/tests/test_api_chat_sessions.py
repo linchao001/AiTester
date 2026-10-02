@@ -155,3 +155,74 @@ def test_messages_drops_malformed_persisted_steps(tmp_path: Path) -> None:
     assert r.status_code == 200
     assert r.json()["messages"][-1]["steps"] == [
         {"tool": "grep", "ok": False, "round": 2, "detail": "x"}]
+
+
+def _wired_app(tmp_path: Path):
+    """create_app 缝装配真实 ChatService（注入 MockProvider，零网络），返回 app 以便先种会话。"""
+    application = _app(tmp_path)
+    application.state.chat_service = ChatService(
+        provider=MockProvider(),
+        agent_runtime=application.state.agent_runtime,
+        sessions=application.state.sessions,
+    )
+    return application
+
+
+def test_send_to_foreign_session_returns_404(tmp_path: Path) -> None:
+    # 会话归属校验：sess_* 建在 agent A 下，用 agent_id=B 续写必须 404，否则等于往别人的会话里写
+    application = _wired_app(tmp_path)
+    sid = application.state.sessions.new_id()
+    application.state.sessions.create(sid, "case_design", "订单退款")
+    client = TestClient(application)
+    r = client.post(
+        "/api/chat/send",
+        json={"session_id": sid, "message": "hi", "agent_id": "kb_assistant"},
+    )
+    assert r.status_code == 404
+    assert r.json()["detail"] == "会话不属于该智能体"
+    # 归属正确时照常成功，且原样续写同一条会话
+    ok = client.post(
+        "/api/chat/send",
+        json={"session_id": sid, "message": "再加一条", "agent_id": "case_design"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["session_id"] == sid
+
+
+def test_send_returns_nonempty_steps_at_http_level(tmp_path: Path) -> None:
+    # 端点级 steps 非空且内容回显：与 chat.py「装配漏了 steps 键」的假绿区分开——
+    # 若 send 不再回 steps，373 用例全绿而 UI 的「🔧 执行过程」整块消失
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from aitester.services.agent_runtime import AgentInstance
+
+    class _FakeGraph:
+        def invoke(self, state):
+            return {"messages": [
+                AIMessage(content="", tool_calls=[
+                    {"name": "read", "args": {"path": "a.md"}, "id": "c1", "type": "tool_call"}]),
+                ToolMessage(content="内容", tool_call_id="c1", name="read", status="success"),
+                AIMessage(content="完成"),
+            ]}
+
+    application = _app(tmp_path)
+    # 真装配 send→_complete→run_graph 全链路（假 graph 产真 steps），不经真实工具、零网络
+    application.state.chat_service = ChatService(
+        provider=MockProvider(),
+        agent_runtime=SimpleNamespace(
+            build=lambda agent_id, session_id, provider_override=None: AgentInstance(
+                agent_id=agent_id, system_prompt="p", provider=MockProvider(),
+                tools=[], build_graph=lambda provider, tools: _FakeGraph())),
+        sessions=application.state.sessions,
+    )
+    client = TestClient(application)
+    r = client.post(
+        "/api/chat/send", json={"message": "读文件", "agent_id": "case_design"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["steps"] == [
+        {"tool": "read", "ok": True, "round": 1, "detail": '{"path": "a.md"}'}]
+    # 落盘后从 messages 端点读回，痕迹与 send 同一份
+    msgs = client.get(
+        f"/api/chat/sessions/{body['session_id']}/messages").json()["messages"]
+    assert msgs[-1]["steps"] == body["steps"]

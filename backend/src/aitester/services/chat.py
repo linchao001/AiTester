@@ -10,7 +10,12 @@ from aitester.memory import InMemoryMemoryStore, MemoryStore
 from aitester.orchestration import run_echo, run_graph
 from aitester.orchestration.graph_registry import GraphBuilder
 from aitester.services.agent_runtime import AgentRuntime
-from aitester.services.session_store import SessionStore, SessionStoreError, is_session_id
+from aitester.services.session_store import (
+    MISSING_SESSION_DETAIL,
+    SessionStore,
+    SessionStoreError,
+    is_session_id,
+)
 from aitester.storage import InMemoryRepository, Repository
 
 SYSTEM_PROMPT = "你是 AiTester 测试智能体（骨架占位）。"
@@ -113,8 +118,14 @@ class ChatService:
             if self.sessions is None or is_platform_agent(agent_id):
                 raise ProviderConfigError("请指定会话 id 或通过 create_app 装配会话存储")
             sid = self.sessions.new_id()
-        elif self.sessions is not None and is_session_id(sid) and self.sessions.get(sid) is None:
-            raise SessionStoreError("会话不存在或已被删除")
+        elif self.sessions is not None and is_session_id(sid):
+            existing = self.sessions.get(sid)
+            if existing is None:
+                raise SessionStoreError(MISSING_SESSION_DETAIL)
+            # 会话归属校验：sess_* 续写前先判等 agent_id，否则任何 agent_id 都能往别人的会话里写；
+            # 第 2 片 project_id 进键前必须关的洞，detail 经路由 SessionStoreError→404 落到用户
+            if existing.agent_id != agent_id:
+                raise SessionStoreError("会话不属于该智能体")
 
         instance = self.agent_runtime.build(agent_id, sid, provider_override=self.provider)
 

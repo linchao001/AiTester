@@ -1,6 +1,7 @@
 """会话真相：index.json 存元信息，<session_id>.jsonl 逐行追加消息。
 
-双文件是有意的：append 只追加一行，不重写全量历史；计数以该会话 jsonl 行数为准（重读本会话自己的行文件，非整份历史）；列表只需 index。
+双文件是有意的：jsonl 追加只写一行、不重写全量历史，但 append 需整读该会话 jsonl 重算
+message_count（非 O(1)，代价随会话长度线性上升）；列表只需 index，不碰正文。
 index 走 FileJsonConfigRepository（同目录 tmp + os.replace），与项目/模型配置同一原子写口。
 """
 
@@ -12,10 +13,13 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from logging import getLogger
 from pathlib import Path
 from typing import Any
 
 from aitester.storage import ConfigStorageError, FileJsonConfigRepository
+
+logger = getLogger(__name__)
 
 SESSION_ID_RE = re.compile(r"^sess_[0-9a-f]{8}$")
 TITLE_MAX = 16
@@ -86,7 +90,7 @@ class _Index:
 
 
 class SessionStore:
-    """会话目录的唯一读写者；index 重写由一把锁串行化（路由 sync def 跑在线程池）。"""
+    """本类只在单进程内加锁串行读写会话目录；跨进程共用同一目录不受支持（见 README 单进程约束）。"""
 
     def __init__(self, root: Path) -> None:
         self._root = Path(root)
@@ -99,7 +103,9 @@ class SessionStore:
         try:
             raw = self._repo.load()
         except ConfigStorageError:
-            # index 坏了必须自愈：交互层在 app 启动时就构造本 store，崩不得；下次写盘自然修复
+            # 自愈返回空索引前先把坏文件留档：下一次写盘会整文件覆盖，用户全部会话从列表消失
+            # 且不可恢复，而正文其实原地躺着——留档是本期唯一的救济窗口
+            self._archive_broken_index()
             return _Index()
         if not isinstance(raw, dict):
             return _Index()
@@ -115,19 +121,38 @@ class SessionStore:
             agent_id = str(item.get("agent_id") or "")
             if not agent_id:
                 continue
-            created = int(item.get("created_at") or 0)
-            sessions.append({
-                "id": sid,
-                "agent_id": agent_id,
-                "title": str(item.get("title") or DEFAULT_TITLE)[:TITLE_MAX * 4] or DEFAULT_TITLE,
-                "created_at": created,
-                "updated_at": int(item.get("updated_at") or created) or created,
-                "message_count": max(0, int(item.get("message_count") or 0)),
-            })
+            try:
+                created = int(item.get("created_at") or 0)
+                record = {
+                    "id": sid,
+                    "agent_id": agent_id,
+                    "title": str(item.get("title") or DEFAULT_TITLE)[:TITLE_MAX * 4] or DEFAULT_TITLE,
+                    "created_at": created,
+                    "updated_at": int(item.get("updated_at") or created) or created,
+                    "message_count": max(0, int(item.get("message_count") or 0)),
+                }
+            except (ValueError, TypeError):
+                # 坏一行丢一行：字段类型坏但 JSON 合法时，_load_index 跑在 create_app 导入期，
+                # 不吞掉就会让整进程起不来（main.py 模块级 app = create_app()）
+                continue
+            sessions.append(record)
         return _Index(sessions=sessions)
 
+    def _archive_broken_index(self) -> None:
+        """把不可解析的 index.json 改名为 index.json.bad-<ms>；best-effort，改名失败也不再抛。"""
+        src = self._root / "index.json"
+        if not src.exists():
+            # 文件不存在时 repo.load 回 None、不走 ConfigStorageError，首次启动不落到这里
+            return
+        bad = src.with_name(f"index.json.bad-{_now_ms()}")
+        try:
+            src.rename(bad)
+        except OSError:
+            return  # 留档只是尽力而为，改名失败绝不能反过来把启动打断
+        logger.warning("会话索引不可解析，已留档 %s，本次以空索引启动", bad)
+
     def _save_index(self) -> None:
-        # 调用方必须持锁；jsonl 是消息真相，index 损坏可由 messages() 兜底重建计数
+        # 调用方必须持锁；索引丢了正文还在，但本期不提供从 .jsonl 重建索引的路径，故坏索引先留档
         self._repo.save({"version": 1, "sessions": self._index.sessions})
 
     def _path(self, session_id: str) -> Path:
@@ -219,6 +244,8 @@ class SessionStore:
             if record is None:
                 return False
             self._index.sessions.remove(record)
+            # 先写索引再 unlink 是刻意顺序：宁可留下可回收的孤儿 .jsonl，也不留指向不存在文件的
+            # 悬空行——后者会让列表里冒出一条点开就坏的会话，孤儿正文事后还能清
             self._save_index()
             self._path(session_id).unlink(missing_ok=True)
             return True

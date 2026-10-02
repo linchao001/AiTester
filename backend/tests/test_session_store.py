@@ -171,3 +171,41 @@ def test_store_survives_reinstantiation(tmp_path) -> None:
     got = reopened.get(sid)
     assert got is not None and got.title == "问题" and got.message_count == 2
     assert [m.content for m in reopened.messages(sid)] == ["问题", "答"]
+
+
+def test_bad_field_type_drops_only_that_row(tmp_path) -> None:
+    """字段类型坏但 JSON 合法的一行只丢该行：坏一行不能拖垮整份 index，更不能让 create_app 在导入期崩。"""
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True)
+    good = {
+        "id": "sess_0a1b2c3d", "agent_id": "case_design", "title": "好的",
+        "created_at": 1, "updated_at": 2, "message_count": 1,
+    }
+    bad_created = {**good, "id": "sess_11112222", "created_at": "昨天"}
+    bad_count = {**good, "id": "sess_33334444", "message_count": ["x"]}
+    (root / "index.json").write_text(
+        json.dumps({"version": 1, "sessions": [good, bad_created, bad_count]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    store = SessionStore(root)  # 构造不抛
+    assert [s.id for s in store.list("case_design")] == ["sess_0a1b2c3d"]  # 合法行全在
+    assert store.get("sess_11112222") is None  # created_at 坏 → 丢
+    assert store.get("sess_33334444") is None  # message_count 坏 → 丢
+
+
+def test_corrupt_index_archives_and_keeps_jsonl(tmp_path) -> None:
+    """坏索引自愈前先留档 index.json.bad-*，正文 .jsonl 原地不动（留档是本期唯一救济手段）。"""
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True)
+    (root / "index.json").write_text("{ not json", encoding="utf-8")
+    body = root / "sess_0a1b2c3d.jsonl"
+    body.write_text('{"role":"user","content":"原始正文","ts":1}\n', encoding="utf-8")
+    before = body.read_text(encoding="utf-8")
+
+    store = SessionStore(root)
+    assert store.list("case_design") == []
+    archived = list(root.glob("index.json.bad-*"))
+    assert len(archived) == 1  # 坏文件被改名留档
+    assert not (root / "index.json").exists()  # 改名即移走原文件
+    assert body.read_text(encoding="utf-8") == before  # 正文文件不受影响
