@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 import reme
 
+from aitester.config import Settings
 from aitester.services.kb.manager import KbUnavailableError, RemeKbManager
 
 
@@ -247,3 +248,13 @@ def test_concurrent_same_key_starts_exactly_one_application(tmp_path, monkeypatc
         assert mgr._apps[("p1", "a1")] is constructed[0]
     finally:
         mgr.close_all()
+
+
+def test_kb_root_dir_and_workspace_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv("REME_KNOWLEDGE_BASES_DIR", raising=False)
+    m = RemeKbManager(
+        settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"), kb_id="zhb_kb"),
+        data_dir=tmp_path,
+    )
+    assert m.kb_root_dir == (tmp_path / "bases" / "zhb_kb").resolve()
+    assert m.workspace_dir("default", "kb_assistant") == tmp_path / "workspaces" / "default" / "kb_assistant"

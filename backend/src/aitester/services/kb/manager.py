@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from aitester.services.kb.config import KbConfig, build_reme_config
+from aitester.services.kb.paths import resolve_kb_root
 
 DEFAULT_PROJECT = "default"
 DEFAULT_CONSOLE_AGENT = "console"
@@ -41,6 +42,14 @@ class RemeKbManager:
         """settings.kb_enabled 的真实开关；与 is_started 不同，不受启停生命周期影响。"""
         return bool(getattr(self._settings, "kb_enabled", False))
 
+    @property
+    def kb_root_dir(self) -> Path:
+        """共享 KB 实体目录（browse 接口与草案工具共用的唯一真相根）。"""
+        return resolve_kb_root(self._settings)
+
+    def workspace_dir(self, project_id: str, agent_id: str) -> Path:
+        return self._data_dir / "workspaces" / project_id / agent_id
+
     def start(self) -> None:
         if not getattr(self._settings, "kb_enabled", False) or self._started:
             return
@@ -66,7 +75,7 @@ class RemeKbManager:
     def _kb_config(self, project_id: str, agent_id: str) -> KbConfig:
         s = self._settings
         return KbConfig(
-            workspace_dir=str(self._data_dir / "workspaces" / project_id / agent_id),
+            workspace_dir=str(self.workspace_dir(project_id, agent_id)),
             kb_id=s.kb_id,
             kb_bases_dir=s.kb_bases_dir,
             create_missing=s.kb_create_missing,

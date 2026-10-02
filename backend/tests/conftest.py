@@ -4,8 +4,10 @@
 
 import pytest
 
-# 对应 aitester/config.py 的 Settings 字段（pydantic-settings 默认按大写字段名读环境变量）
-_SETTINGS_ENV_VARS = ("HOST", "PORT", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY")
+# 对应 aitester/config.py 的 Settings 字段（pydantic-settings 默认按大写字段名读环境变量）；
+# REME_KNOWLEDGE_BASES_DIR 非 Settings 字段，但 kb/paths.py 的三级判据会直读该进程环境变量，
+# 机器上若导出过该变量会让"家目录默认"分支断言翻红，故一并清理。
+_SETTINGS_ENV_VARS = ("HOST", "PORT", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "REME_KNOWLEDGE_BASES_DIR")
 
 
 @pytest.fixture(autouse=True)
