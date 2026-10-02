@@ -119,3 +119,11 @@ def test_capabilities_view_unchanged(tmp_path):
         j = c.get("/api/capabilities").json()
     assert [a["id"] for a in j["agents"]] == ["case_design"]
     assert "prepare_kb_write" not in {t["id"] for t in j["tools"]}  # 设置页工具表保持不可见
+
+
+def test_is_platform_agent_only_covers_platform_catalog() -> None:
+    from aitester.agents import is_platform_agent
+
+    assert is_platform_agent("kb_assistant") is True   # 平台内置：不进能力配置/下拉
+    assert is_platform_agent("case_design") is False   # 项目智能体：走落盘与会话列表
+    assert is_platform_agent("ghost") is False         # 未知 id 不是「平台」，未知由 find_agent 负责拒

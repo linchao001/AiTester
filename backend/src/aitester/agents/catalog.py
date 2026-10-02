@@ -64,6 +64,11 @@ KB_ASSISTANT_SPEC = AgentSpec(
 PLATFORM_AGENT_CATALOG: tuple[AgentSpec, ...] = (KB_ASSISTANT_SPEC,)
 
 
+def is_platform_agent(agent_id: str) -> bool:
+    """平台功能智能体唯一判据：会话闭环据此决定「落不落盘」（spec 裁定）。"""
+    return any(spec.id == agent_id for spec in PLATFORM_AGENT_CATALOG)
+
+
 def find_agent(agent_id: str) -> AgentSpec | None:
     for spec in (*AGENT_CATALOG, *PLATFORM_AGENT_CATALOG):
         if spec.id == agent_id:

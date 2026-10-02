@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from logging import getLogger
 from typing import Any
 
-from aitester.agents import PLATFORM_AGENT_CATALOG, find_agent
+from aitester.agents import find_agent, is_platform_agent
 from aitester.adapters.llm import LlmProvider
 from aitester.adapters.tools import build_default_registry
 from aitester.adapters.tools.base import AiTooler
@@ -57,7 +57,7 @@ class AgentRuntime:
 
         # 平台功能智能体短路：必须在任何能力配置读取之前（spec 裁定②）——
         # kb_assistant 不在 DEFAULT_AGENT_STATE，走 _agent_state 会误抛 ConfigNotFoundError。
-        if spec.id in {s.id for s in PLATFORM_AGENT_CATALOG}:
+        if is_platform_agent(spec.id):
             return self._build_platform_agent(spec, session_id, provider_override)
 
         provider: LlmProvider
