@@ -71,3 +71,51 @@ def test_missing_prompt_file_raises_with_path(tmp_path: Path, monkeypatch: pytes
     with pytest.raises(FileNotFoundError) as exc_info:
         _load_prompt("case_design")
     assert "case_design.md" in str(exc_info.value)
+
+
+def test_kb_assistant_is_platform_agent():
+    from aitester.agents import AGENT_CATALOG, PLATFORM_AGENT_CATALOG, find_agent
+    spec = find_agent("kb_assistant")
+    assert spec is not None
+    assert spec.name == "知识库助手"
+    assert spec.default_tool_ids == ("read", "grep_search", "glob_search", "knowledge_search", "prepare_kb_write")
+    assert all(s.id != "kb_assistant" for s in AGENT_CATALOG)      # 不进能力配置目录
+    assert [s.id for s in PLATFORM_AGENT_CATALOG] == ["kb_assistant"]
+
+
+# tests/ 无 __init__.py，`from tests.test_kb_api import ...` 路径不通，
+# 按 test_kb_browse.py 先例原样复制 _RecordingKbManager（断言本身保持简报原文）。
+def test_capabilities_view_unchanged(tmp_path):
+    # GET /api/capabilities 的 agents 仍只有 case_design（形态同 test_kb_api.py:28-35）
+    from types import SimpleNamespace  # noqa: F401
+    from fastapi.testclient import TestClient
+    from aitester.config import Settings
+    from aitester.main import create_app
+
+    class _RecordingKbManager:
+        def __init__(self, exc=None):
+            self.calls: list[tuple[str, dict]] = []
+            self.exc = exc
+
+        def start(self):
+            pass
+
+        def close_all(self, timeout: float = 30.0):
+            pass
+
+        async def run_job(self, name, *, project_id="default", agent_id="console", **kwargs):
+            if self.exc is not None:
+                raise self.exc
+            self.calls.append((name, kwargs))
+            return SimpleNamespace(success=True, answer="ok", metadata={"echo": name})
+
+    app = create_app(
+        model_config_path=tmp_path / "m.json",
+        capability_config_path=tmp_path / "c.json",
+        settings=Settings(_env_file=None),
+        kb_manager=_RecordingKbManager(),
+    )
+    with TestClient(app) as c:
+        j = c.get("/api/capabilities").json()
+    assert [a["id"] for a in j["agents"]] == ["case_design"]
+    assert "prepare_kb_write" not in {t["id"] for t in j["tools"]}  # 设置页工具表保持不可见

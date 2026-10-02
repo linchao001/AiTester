@@ -8,7 +8,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-from aitester.agents import find_agent
+from aitester.agents import PLATFORM_AGENT_CATALOG, find_agent
 from aitester.adapters.llm import LlmProvider
 from aitester.adapters.tools import build_default_registry
 from aitester.adapters.tools.base import AiTooler
@@ -52,6 +52,11 @@ class AgentRuntime:
         if spec is None:
             raise ConfigNotFoundError(f"未知智能体「{agent_id}」")
 
+        # 平台功能智能体短路：必须在任何能力配置读取之前（spec 裁定②）——
+        # kb_assistant 不在 DEFAULT_AGENT_STATE，走 _agent_state 会误抛 ConfigNotFoundError。
+        if spec.id in {s.id for s in PLATFORM_AGENT_CATALOG}:
+            return self._build_platform_agent(spec, session_id, provider_override)
+
         provider: LlmProvider
         if provider_override is not None:
             provider = provider_override  # 注入即短路，不解析模型（测试缝与内部调用同一入口）
@@ -79,5 +84,40 @@ class AgentRuntime:
             system_prompt=spec.prompt,
             provider=provider,
             tools=tools,
+            build_graph=get_graph_builder(spec.graph_builder),
+        )
+
+    def _build_platform_agent(
+        self, spec, session_id: str, provider_override: LlmProvider | None
+    ) -> AgentInstance:
+        """平台功能智能体：强制绑定 spec.default_tool_ids，不读能力配置勾选状态。
+
+        工具面天然按「清单 ∩ 实际可注册集合」收敛（spec 裁定②）：kb 关闭/未注入时
+        knowledge_search / prepare_kb_write 不在注册表，get_many 取交集只剩三件套。
+        cwd 固定 default 项目的 workspace 目录（实例池键 ("default", spec.id)，
+        会话记忆键 f"{spec.id}:{session_id}" 与守卫键同构），reme junction 由实例首启挂载。
+        """
+        provider: LlmProvider = (
+            provider_override
+            if provider_override is not None
+            else self._model_config.build_provider(self._model_config.default_uid)
+        )
+        cwd = "."
+        if self._kb is not None:
+            workspace = self._kb.workspace_dir("default", spec.id)
+            workspace.mkdir(parents=True, exist_ok=True)
+            cwd = str(workspace)
+        registry = build_default_registry(
+            cwd=cwd,
+            session_id=f"{spec.id}:{session_id}",
+            observed=self._observations,
+            kb=self._kb,
+            agent_id=spec.id,
+        )
+        return AgentInstance(
+            agent_id=spec.id,
+            system_prompt=spec.prompt,
+            provider=provider,
+            tools=registry.get_many(list(spec.default_tool_ids)),
             build_graph=get_graph_builder(spec.graph_builder),
         )

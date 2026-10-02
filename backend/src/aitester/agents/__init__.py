@@ -3,7 +3,9 @@
 from aitester.agents.catalog import (
     AGENT_CATALOG,
     DEFAULT_AGENT_STATE,
+    KB_ASSISTANT_SPEC,
     LEGACY_AGENT_IDS,
+    PLATFORM_AGENT_CATALOG,
     find_agent,
 )
 from aitester.agents.spec import AgentSpec
@@ -11,7 +13,9 @@ from aitester.agents.spec import AgentSpec
 __all__ = [
     "AGENT_CATALOG",
     "DEFAULT_AGENT_STATE",
+    "KB_ASSISTANT_SPEC",
     "LEGACY_AGENT_IDS",
+    "PLATFORM_AGENT_CATALOG",
     "AgentSpec",
     "find_agent",
 ]

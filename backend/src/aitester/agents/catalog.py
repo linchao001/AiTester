@@ -44,9 +44,28 @@ DEFAULT_AGENT_STATE: dict[str, dict[str, Any]] = {
 
 LEGACY_AGENT_IDS: dict[str, str] = {"a1": "case_design"}
 
+KB_ASSISTANT_SPEC = AgentSpec(
+    id="kb_assistant",
+    icon="📚",
+    name="知识库助手",
+    desc="知识库页内置助手：检索共享知识库、生成写入草案，用户确认后才落盘。",
+    prompt=_load_prompt("kb_assistant"),
+    default_tool_ids=(
+        "read",
+        "grep_search",
+        "glob_search",
+        "knowledge_search",
+        "prepare_kb_write",
+    ),
+)
+
+# 平台功能智能体：刻意不进 AGENT_CATALOG/DEFAULT_AGENT_STATE——能力配置、设置页、
+# 聊天页下拉因此不可见；工具面由 AgentRuntime 强制绑定（spec 裁定②，勿改成走勾选）。
+PLATFORM_AGENT_CATALOG: tuple[AgentSpec, ...] = (KB_ASSISTANT_SPEC,)
+
 
 def find_agent(agent_id: str) -> AgentSpec | None:
-    for spec in AGENT_CATALOG:
+    for spec in (*AGENT_CATALOG, *PLATFORM_AGENT_CATALOG):
         if spec.id == agent_id:
             return spec
     return None

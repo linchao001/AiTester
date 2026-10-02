@@ -174,3 +174,40 @@ def test_instances_are_independent_objects(tmp_path: Path) -> None:
     assert a.tools and len(a.tools) == len(b.tools)
     assert [t.tool_id() for t in a.tools] == [t.tool_id() for t in b.tools]
     assert all(x is not y for x, y in zip(a.tools, b.tools))  # 工具对象也每次新建，不跨请求复用
+
+
+def test_kb_assistant_forced_binding_ignores_capability(tmp_path: Path) -> None:
+    # 公共件均已在模块顶部导入，直接复用（简报「该文件已有的构造 helper 复用」）
+    s = Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"))
+    model = ModelConfigService(FileJsonConfigRepository(tmp_path / "m.json"), s)
+    cap = CapabilityConfigService(FileJsonConfigRepository(tmp_path / "c.json"), model)
+
+    class _StubKb:
+        is_enabled = True
+        kb_root_dir = tmp_path / "bases" / "zhb_kb"
+        def workspace_dir(self, project_id, agent_id):
+            return tmp_path / "workspaces" / project_id / agent_id
+        def run_job_sync(self, *a, **kw):  # pragma: no cover
+            raise AssertionError
+
+    runtime = AgentRuntime(cap, model, FileObservationStore(), kb=_StubKb())
+    inst = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
+    assert [t.name for t in inst.tools] == [
+        "read", "grep_search", "glob_search", "knowledge_search", "prepare_kb_write"]
+    read_tool = inst.tools[0]
+    assert str(read_tool.cwd) == str(tmp_path / "workspaces" / "default" / "kb_assistant")
+    # 不受能力勾选管辖：case_design 工具集清空也不影响 kb_assistant
+    cap.set_agent_tools("case_design", [])
+    inst2 = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
+    assert len(inst2.tools) == 5
+
+
+def test_kb_assistant_unregistered_kb_degrades(tmp_path: Path) -> None:
+    # 与上一用例同构（Settings/Model/Capability 三段式），仅 kb=None —— 工具面退化为三件套
+    s = Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"))
+    model = ModelConfigService(FileJsonConfigRepository(tmp_path / "m.json"), s)
+    cap = CapabilityConfigService(FileJsonConfigRepository(tmp_path / "c.json"), model)
+
+    runtime = AgentRuntime(cap, model, FileObservationStore(), kb=None)
+    inst = runtime.build("kb_assistant", "s", provider_override=MockProvider())
+    assert [t.name for t in inst.tools] == ["read", "grep_search", "glob_search"]
