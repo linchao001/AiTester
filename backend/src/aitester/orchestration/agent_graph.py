@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any, Callable
 
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
@@ -71,18 +72,41 @@ def run_graph(
     tools: list[AiTooler],
     messages: list[BaseMessage],
 ) -> dict[str, Any]:
-    """按指定拓扑执行一轮，返回 {reply, tool_traces, drafts}。"""
+    """按指定拓扑执行一轮，返回 {reply, tool_traces, drafts}。
+
+    tool_traces 每项为 {tool, result, ok, round, detail}：ok/round/detail 是 UI 过程块
+    的契约字段，services/chat.py 按严格取键消费，缺字段即 KeyError（不兜默认防假绿）。
+    """
     graph = build(provider, tools)
     result = graph.invoke({"messages": messages})
 
     reply = ""
     tool_traces: list[dict[str, Any]] = []
     drafts: list[dict[str, Any]] = []
+    calls_by_id: dict[str, dict[str, Any]] = {}
+    round_no = 0
     for msg in result["messages"]:
-        if isinstance(msg, AIMessage) and not msg.tool_calls and msg.content:
-            reply = str(msg.content)
+        if isinstance(msg, AIMessage):
+            if msg.tool_calls:
+                round_no += 1  # 一轮 agent↔tools = 一条带 tool_calls 的 AIMessage
+                for call in msg.tool_calls:
+                    calls_by_id[str(call.get("id"))] = call
+            elif msg.content:
+                reply = str(msg.content)
+            continue
         if isinstance(msg, ToolMessage):
-            tool_traces.append({"tool": msg.name or "", "result": str(msg.content)})
+            call = calls_by_id.get(str(msg.tool_call_id), {})
+            try:
+                detail = json.dumps(call.get("args") or {}, ensure_ascii=False)[:80]
+            except (TypeError, ValueError):
+                detail = str(call.get("args"))[:80]  # 非常规 args（非 JSON 可序列化）不退化成报错，UI 只截一行
+            tool_traces.append({
+                "tool": msg.name or "",
+                "result": str(msg.content),
+                "ok": str(getattr(msg, "status", "success")) != "error",
+                "round": round_no,
+                "detail": detail,
+            })
             # prepare_kb_write 的草案走 artifact 通道（模型不可见），只发给 UI 确认
             if msg.name == "prepare_kb_write" and getattr(msg, "artifact", None):
                 drafts.append(msg.artifact)

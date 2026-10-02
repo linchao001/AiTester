@@ -67,13 +67,13 @@ class ChatService:
             drafts = result.get("drafts", [])
             for tt in result["tool_traces"]:
                 trace.append(f"tool:{tt['tool']}")
-            # result 字段最大 50KB，绝不外传给 UI；Task 5 前 run_graph 尚无 ok/round/detail，缺省兜住防 KeyError
+            # result 字段最大 50KB，绝不外传给 UI
             steps = [
                 {
                     "tool": tt["tool"],
-                    "ok": tt.get("ok", True),
-                    "round": tt.get("round", 0),
-                    "detail": tt.get("detail", ""),
+                    "ok": tt["ok"],
+                    "round": tt["round"],
+                    "detail": tt["detail"],
                 }
                 for tt in result["tool_traces"]
             ]

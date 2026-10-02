@@ -285,3 +285,32 @@ def test_history_is_trimmed_to_last_history_max(tmp_path) -> None:
     assert contents[-2] == "答44"
     assert contents[-1] == "新问题"
     assert len(store.messages(sid)) == 92  # 磁盘保留全量（本轮 user+assistant 已追加）
+
+
+def test_send_stores_failed_tool_step(tmp_path) -> None:
+    """ok=False 必须原样落到持久化的 steps：缺省兜底会把失败工具伪装成成功。"""
+    from langchain_core.messages import ToolMessage
+
+    expected = {"tool": "read", "ok": False, "round": 1,
+                "detail": '{"file_path": "missing.txt"}'}
+
+    class _FakeGraph:
+        def invoke(self, state):
+            return {"messages": [
+                AIMessage(content="", tool_calls=[{"name": "read", "args": {
+                    "file_path": "missing.txt"}, "id": "c1", "type": "tool_call"}]),
+                ToolMessage(content="工具执行失败", tool_call_id="c1", name="read",
+                            status="error"),
+                AIMessage(content="读取失败"),
+            ]}
+
+    store = SessionStore(tmp_path / "sessions")
+    svc = ChatService(provider=MockProvider(), sessions=store)
+    svc.agent_runtime = SimpleNamespace(
+        build=lambda agent_id, session_id, provider_override=None: AgentInstance(
+            agent_id=agent_id, system_prompt="p", provider=MockProvider(), tools=[],
+            build_graph=lambda provider, tools: _FakeGraph()))
+    result = svc.send("", "读文件", "case_design")
+    assert result["steps"] == [expected]
+    stored = store.messages(result["session_id"])
+    assert stored[1].steps == [expected]  # 落盘的不只是内存返回值
