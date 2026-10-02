@@ -99,6 +99,8 @@ async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
     }
     throw new ApiError(detail, resp.status, body);
   }
+  // 204 无响应体（DELETE /api/projects/{id}）：先短路，否则 resp.json() 抛「Unexpected end of JSON input」
+  if (resp.status === 204) return null as T;
   return (await resp.json()) as T;
 }
 
@@ -274,4 +276,43 @@ export function chatSend(sessionId: string, message: string, agentId: string): P
   return apiFetch<SendResponse>("/api/chat/send", {
     method: "POST", headers: JSON_HEADERS,
     body: JSON.stringify({ session_id: sessionId, message, agent_id: agentId }) });
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  desc: string;
+  dir: string;
+  agents: string[];
+  kb: string;
+  session_count: number;
+}
+
+export interface ProjectsResponse {
+  projects: Project[];
+}
+
+export interface ProjectFormValues {
+  name: string;
+  desc: string;
+  dir: string;
+  agents: string[];
+}
+
+export function getProjects(): Promise<ProjectsResponse> {
+  return apiFetch<ProjectsResponse>("/api/projects");
+}
+
+export function postProject(values: ProjectFormValues): Promise<Project> {
+  return apiFetch<Project>("/api/projects", {
+    method: "POST", headers: JSON_HEADERS, body: JSON.stringify(values) });
+}
+
+export function putProject(id: string, values: ProjectFormValues): Promise<Project> {
+  return apiFetch<Project>(`/api/projects/${id}`, {
+    method: "PUT", headers: JSON_HEADERS, body: JSON.stringify(values) });
+}
+
+export function deleteProject(id: string): Promise<null> {
+  return apiFetch<null>(`/api/projects/${id}`, { method: "DELETE" });
 }
