@@ -63,6 +63,7 @@ export default function App() {
               health={health}
               healthError={healthError}
               onOpenSettings={() => setSettingsOpen(true)}
+              onRetryHealth={refreshHealth}
             />
           }
         />

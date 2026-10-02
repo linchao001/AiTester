@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { flushSync } from "react-dom";
 import {
   ApiError,
   chatSend,
@@ -21,9 +20,10 @@ interface Props {
   health: HealthResponse | null;
   healthError: string | null;
   onOpenSettings: () => void;
+  onRetryHealth: () => void;   // healthError 归 App 持有（App.tsx:21-28），本页不自愈，重试必须打回 App
 }
 
-export default function ChatPage({ health, healthError, onOpenSettings }: Props) {
+export default function ChatPage({ health, healthError, onOpenSettings, onRetryHealth }: Props) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [agentId, setAgentId] = useState("");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -32,6 +32,8 @@ export default function ChatPage({ health, healthError, onOpenSettings }: Props)
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);            // 与 KbPage 同款同步重入锁（不依赖重渲染时序）
+  const openSeq = useRef(0);                // 开会话的「最新一次点击」序号
+  const loadingRef = useRef(false);         // 会话正文在途：此时发送会写进另一条会话，必须挡在 guard 之后
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [query, setQuery] = useState("");
@@ -89,14 +91,23 @@ export default function ChatPage({ health, healthError, onOpenSettings }: Props)
   useEffect(() => () => { window.clearTimeout(toastTimer.current); }, []);
 
   const openSession = useCallback(async (id: string | null) => {
+    const seq = ++openSeq.current;                    // 只认最新一次点击，慢响应不得覆盖后点的会话
     setActiveId(id);
     if (!id) { setMessages([]); return; }
+    loadingRef.current = true;
     try {
       const j = await getSessionMessages(id);
+      if (seq !== openSeq.current) return;
       setMessages(j.messages);
     } catch (err) {
+      if (seq !== openSeq.current) return;
+      // 加载失败就退回「新会话」：留着 activeId 会让页头挂着那条会话的标题、正文却是欢迎态，
+      // 此时发送等于悄悄续写那条没加载出来的会话
+      setActiveId(null);
       setMessages([]);
       toast(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      if (seq === openSeq.current) loadingRef.current = false;
     }
   }, [toast]);
 
@@ -104,6 +115,7 @@ export default function ChatPage({ health, healthError, onOpenSettings }: Props)
     // 无 health 即 /api/health 还没成功过（App 启动时拉），此时发送必失败，先给可见提示
     if (!health) { toast("后端未就绪，请稍候或重试"); return false; }
     if (busyRef.current) { toast("上一条消息还在执行，请稍候"); return false; }
+    if (loadingRef.current) { toast("会话还在加载，请稍候"); return false; }
     return true;
   }, [health, toast]);
 
@@ -151,6 +163,8 @@ export default function ChatPage({ health, healthError, onOpenSettings }: Props)
     if (!window.confirm(`删除会话「${row?.title ?? id}」？删除后不可恢复。`)) return;
     try {
       await deleteChatSession(id);
+      // 先就地摘掉这一行：整表刷新失败时侧栏也不会留着一条已删的会话
+      setSessions((prev) => prev.filter((s) => s.id !== id));
       toast(`已删除会话「${row?.title ?? id}」`);
       const rows = await reloadSessions();
       if (activeId === id) void openSession(rows.length ? rows[0].id : null);
@@ -170,17 +184,24 @@ export default function ChatPage({ health, healthError, onOpenSettings }: Props)
 
   const agent = agents.find((a) => a.id === agentId);
 
+  // healthError 只有 App 的 refreshHealth 成功才会清（App.tsx:20-27），本页自己拉不动它，
+  // 所以两个错误态的重试都同时打回 App 与本页，否则后端恢复后仍永久停在「后端未就绪」
+  const retryAll = useCallback(() => {
+    onRetryHealth();
+    void reloadMeta();
+  }, [onRetryHealth, reloadMeta]);
+
   if (error) {
     return (
       <div className="page">
-        <p className="p-empty">加载失败：{error} <button className="mini-btn" onClick={() => void reloadMeta()}>重试</button></p>
+        <p className="p-empty">加载失败：{error} <button className="mini-btn" onClick={retryAll}>重试</button></p>
       </div>
     );
   }
   if (healthError) {
     return (
       <div className="page">
-        <p className="p-empty">后端未就绪：{healthError} <button className="mini-btn" onClick={() => void reloadMeta()}>重试</button></p>
+        <p className="p-empty">后端未就绪：{healthError} <button className="mini-btn" onClick={retryAll}>重试</button></p>
       </div>
     );
   }
@@ -195,7 +216,7 @@ export default function ChatPage({ health, healthError, onOpenSettings }: Props)
         query={query}
         busy={busy}
         collapsed={collapsed}
-        onAgentChange={(id) => { if (!guard()) return; setAgentId(id); void openSession(null); }}
+        onAgentChange={(id) => { if (!guard()) return; setAgentId(id); setSessions([]); void openSession(null); }}
         onQueryChange={setQuery}
         onNew={newSession}
         onSelect={(id) => { if (!guard()) return; void openSession(id); }}
@@ -225,14 +246,9 @@ export default function ChatPage({ health, healthError, onOpenSettings }: Props)
           busy={busy}
           onCopy={(t) => void copy(t)}
           onChip={(t) => {
-            // chip 只填值 + 聚焦、绝不自动发送；setInput 要 flushSync 落 DOM 后才能按 Composer 同款算法量出自增高
-            flushSync(() => setInput(t));
-            const el = inputRef.current;
-            if (el) {
-              el.focus();
-              el.style.height = "auto";
-              el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-            }
+            // chip 只填值 + 聚焦，绝不自动发送；自增高交给 Composer 按 input 变化统一量
+            setInput(t);
+            inputRef.current?.focus();
           }}
         />
         <Composer

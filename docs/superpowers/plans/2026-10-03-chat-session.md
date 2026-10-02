@@ -2039,11 +2039,14 @@ git commit -m "feat(chat-ui): 消息流（真实 mdRender 排版）与输入区�
 
 **Files:**
 - Rewrite: `frontend/src/pages/ChatPage.tsx`
+- Modify: `frontend/src/App.tsx`（评审后：`/chat` 路由多传 `onRetryHealth`，见 Step 1b 第 1 条）
+- Modify: `frontend/src/pages/chat/Composer.tsx`（评审后：自增高收进组件自己的 effect，见 Step 1b 第 5 条）
+- Delete: `frontend/src/components/PlaceholderPage.tsx`（ChatPage 改写后零引用）
 - Test: `npm run build` + 起本地 dev 由用户走查
 
 **Interfaces:**
 - Consumes: Task 7 API 函数、Task 9/10 组件、`AgentInfo.effective_uid`（`client.ts:66-67`）与 `ModelsResponse`
-- Produces: 完整 `/chat` 页；`App.tsx` 现有 `<ChatPage health healthError onOpenSettings />` 三 props 保持不变（`App.tsx:62-66`）
+- Produces: 完整 `/chat` 页；`App.tsx` 的 `<ChatPage health healthError onOpenSettings onRetryHealth />`（4 props，第 4 个是评审后补的，原写「三 props 保持不变」已被 Step 1b 推翻）
 
 - [ ] **Step 1: 实现装配**
 
@@ -2296,6 +2299,20 @@ export default function ChatPage({ health, healthError, onOpenSettings }: Props)
 }
 ```
 
+- [ ] **Step 1b: 评审后落地（控制端下手，代码以仓内为准）**
+
+Task 11 评审提出 4 项 Important + 若干 Minor，落地如下（都改本步的草稿代码，不改已入库组件的对外契约，除第 5 条）：
+
+1. **错误态出路**：`healthError` 只有 App 的 `refreshHealth` 成功才会清，本页拉不动它 → `ChatPage` 多一个必填 prop `onRetryHealth`（App 传 `refreshHealth`），两个错误态的「重试」统一走 `retryAll = onRetryHealth() + reloadMeta()`。**这条推翻了本任务 Interfaces 里「App.tsx 三 props 保持不变」的写法**（`App.tsx` 现传 4 个）。
+2. **开会话的最新点击优先**：`openSeq` 序号 + `loadingRef`，慢响应不得覆盖后点的会话；`guard()` 增加「会话还在加载，请稍候」，防止在途加载期间发送把消息写进另一条会话。
+3. **加载失败退回新会话**：`openSession` 的 catch 里 `setActiveId(null)`，不留「页头挂着那条会话、正文却是欢迎态、一发送就悄悄续写它」的状态。
+4. **切智能体立刻清 `sessions`**：`onAgentChange` 加 `setSessions([])`。后端 `chat.py` 不校验会话归属，旧 agent 的行在整表刷新落地前仍可点，点进去就是往别人的会话里续写。
+5. **自增高收进 `Composer`**：`useEffect` 改为每次 `input` 变化都量（`auto` → `min(scrollHeight,160)`），`onChange` 里那段量高删掉。这样 chip 填值、失败回填、发送清空三条路径共用一套，`ChatPage.onChip` 退回「`setInput` + `focus`」，不再需要 `react-dom` 的 `flushSync`。
+6. **删除就地摘行**：`deleteChatSession` 成功后先 `setSessions(prev => prev.filter(...))` 再刷整表，整表刷新失败也不会留一条已删的行。
+7. **`PlaceholderPage.tsx` 删除**：ChatPage 改写后它零引用，是死组件。
+
+未采纳（附理由）：`reloadMeta` 以 `agentId` 为 dep 导致挂载拉两遍——这次重拉正是「切智能体后刷新 `systemPrompt`/生效模型」的机制，拆开会引入新的时序 bug；非 `ApiError` 时 `String(err)` 把英文 `Failed to fetch` 送进 toast——`App.tsx:27` 早就这么写，KB/项目两页同口径，属跨页既存形态，本期不动（留给后续统一收口）。
+
 - [ ] **Step 2: 构建门禁**
 
 Run: `cd frontend && npm run build`
@@ -2379,6 +2396,10 @@ Expected: 打印两条 user + 两条 assistant 消息（`[mock] …`），断言
 - 重启后端进程 → 会话与全部消息仍在，点开可见（本片核心承诺）
 - 第二轮模型能引用第一轮内容
 - 搜索过滤、新建会话（清空搜索 + 回欢迎态）、删除会话（原生确认 → 行消失 + jsonl 文件消失）
+- 错误态出路：后端未就绪/加载失败页的「重试」按钮点下去真能恢复（`retryAll` 同时打回 App 的 `refreshHealth` 与本页 `reloadMeta`）
+- 在途加载守门：连点两条会话、或在加载时按 Enter 发送，不串会话、不把消息写进另一条（`openSeq`/`loadingRef`）
+- 切智能体：侧栏立刻清空再回填，不留上一个智能体的旧行；切失败 toast「会话还在加载，请稍候」
+- 输入框回填：发送失败后长文本要按 Composer 自增高铺开，不停在 2 行内滚
 - 过程块显示真实工具序列与成败；无工具时整块不出现
 - 上下文百分比随对话增长变化（≥70 warn / ≥90 hot + tooltip 补「建议新建会话」）
 - busy 期间 textarea/发送/新建/切换/删除全部禁用，重复发送不生效

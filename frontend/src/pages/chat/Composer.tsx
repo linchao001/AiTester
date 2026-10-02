@@ -26,10 +26,13 @@ export default function Composer(p: Props) {
       + (usage.pct >= 90 ? "：已接近上限，建议新建会话" : "")
     : "未配置可用模型，无法估算上下文占用";
   const canSend = p.input.trim().length > 0 && !p.busy;
-  // 高度写在 style 上，发送后 input 清空需显回落，否则框体停在 160px（原型 :1437 同款收口）
+  // 自增高只在这里做：打字、chip 填值、失败回填都只改 input，清空时同样要显回落，
+  // 否则框体停在 160px（原型 :1437 的封顶口径）
   useEffect(() => {
     const el = p.inputRef.current;
-    if (el && !p.input) el.style.height = "auto";
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [p.input, p.inputRef]);
 
   return (
@@ -42,13 +45,7 @@ export default function Composer(p: Props) {
           disabled={p.busy}
           placeholder="例如：根据这份需求生成测试用例"
           title="Enter 发送 · Shift+Enter 换行"
-          onChange={(e) => {
-            p.onInput(e.target.value);
-            // 原型 :1423 的自适应高度：随输入长高，封顶 160px
-            const el = e.currentTarget;
-            el.style.height = "auto";
-            el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-          }}
+          onChange={(e) => p.onInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (canSend) p.onSubmit(); } }}
         />
         <div className="bar">
