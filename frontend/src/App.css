@@ -349,6 +349,7 @@
   .p-desc{color:var(--text-2);font-size:12.5px;max-width:240px}
   .p-dir{font:11.5px Consolas,monospace;color:#5c554b;background:#f7f3ec;border-radius:6px;padding:2px 7px;display:inline-block;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
   .p-table .p-name{cursor:default}
+  .p-table .p-name:hover{color:var(--text)}
   .p-kb{display:inline-block;background:#eef3fb;color:#2f5496;border-radius:6px;padding:1px 8px;font-size:11.5px;font-weight:700}
   .p-none{color:#c9bfb0}
   .p-empty{max-width:1080px;margin:0 auto 12px;font-size:12.5px;color:var(--text-2)}
