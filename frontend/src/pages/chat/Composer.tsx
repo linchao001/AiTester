@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { fmtK } from "../../utils";
 import { contextUsage } from "./utils";
 
 interface Props {
@@ -21,7 +22,7 @@ export default function Composer(p: Props) {
   const usage = contextUsage({ systemPrompt: p.systemPrompt, history: p.messages, input: p.input, cap: p.cap });
   const cls = `ctx-meter${usage.pct >= 90 ? " hot" : usage.pct >= 70 ? " warn" : ""}`;
   const tip = usage.cap
-    ? `上下文占用约 ${usage.used} / ${usage.cap} tokens（按「${p.modelLabel}」的最大上下文估算，含系统提示词 + 历史消息 + 当前输入）`
+    ? `上下文占用约 ${fmtK(usage.used)} / ${fmtK(usage.cap)} tokens（按「${p.modelLabel}」的最大上下文估算，含系统提示词 + 历史消息 + 当前输入）`
       + (usage.pct >= 90 ? "：已接近上限，建议新建会话" : "")
     : "未配置可用模型，无法估算上下文占用";
   const canSend = p.input.trim().length > 0 && !p.busy;
