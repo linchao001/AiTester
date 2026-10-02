@@ -141,10 +141,10 @@ def test_update_immutable_dir_and_kb_idempotent(svc):
 
 
 def test_update_accepts_uncleaned_same_dir(svc):
-    # 冻结判据比的是清洗后的值：客户端整体提交可能带回尾分隔符，不得误判成「修改了目录」
-    p = _mk(svc, dir_="D:/work/projects/order/")
+    # 冻结判据比的是清洗后的值：喂带尾分隔符的原值，裸串比较会误判成「修改了目录」
+    p = _mk(svc)
     assert svc.update(p["id"], name=p["name"], desc=p["desc"], agents=p["agents"],
-                      dir_="D:/work/projects/order").get("dir") == p["dir"]
+                      dir_=p["dir"] + "///")["dir"] == p["dir"]
 
 
 def test_update_does_not_revalidate_frozen_dir(tmp_path):
