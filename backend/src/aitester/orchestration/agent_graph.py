@@ -71,19 +71,23 @@ def run_graph(
     tools: list[AiTooler],
     messages: list[BaseMessage],
 ) -> dict[str, Any]:
-    """按指定拓扑执行一轮，返回 {reply, tool_traces}。"""
+    """按指定拓扑执行一轮，返回 {reply, tool_traces, drafts}。"""
     graph = build(provider, tools)
     result = graph.invoke({"messages": messages})
 
     reply = ""
     tool_traces: list[dict[str, Any]] = []
+    drafts: list[dict[str, Any]] = []
     for msg in result["messages"]:
         if isinstance(msg, AIMessage) and not msg.tool_calls and msg.content:
             reply = str(msg.content)
         if isinstance(msg, ToolMessage):
             tool_traces.append({"tool": msg.name or "", "result": str(msg.content)})
+            # prepare_kb_write 的草案走 artifact 通道（模型不可见），只发给 UI 确认
+            if msg.name == "prepare_kb_write" and getattr(msg, "artifact", None):
+                drafts.append(msg.artifact)
 
-    return {"reply": reply, "tool_traces": tool_traces}
+    return {"reply": reply, "tool_traces": tool_traces, "drafts": drafts}
 
 
 def run_agent(

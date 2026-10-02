@@ -142,3 +142,28 @@ def test_send_without_usable_default_raises_actionable_config_error(tmp_path) ->
     with pytest.raises(ProviderConfigError) as exc_info:
         svc.send("s1", "hi", "case_design")
     assert "设置 · 模型设置" in exc_info.value.detail
+
+
+def test_send_passes_drafts_through():
+    from types import SimpleNamespace
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    draft = {"op": "create", "path": "_inbox/n.md", "abs_display": "P", "summary": "s",
+             "content": "c", "base": None, "mtime": 0}
+
+    class _FakeGraph:
+        def invoke(self, state):
+            return {"messages": [
+                AIMessage(content="", tool_calls=[{"name": "prepare_kb_write", "args": {}, "id": "c1", "type": "tool_call"}]),
+                ToolMessage(content="Draft ready", tool_call_id="c1", name="prepare_kb_write", artifact=draft),
+                AIMessage(content="草案已生成"),
+            ]}
+
+    from aitester.services.agent_runtime import AgentInstance
+    runtime = SimpleNamespace(build=lambda aid, sid, provider_override=None: AgentInstance(
+        agent_id=aid, system_prompt="p", provider=MockProvider(), tools=[],
+        build_graph=lambda provider, tools: _FakeGraph()))
+    service = ChatService(agent_runtime=runtime)
+    out = service.send("kb-console", "记一笔", "case_design")
+    assert out["drafts"] == [draft]
+    assert out["reply"] == "草案已生成"

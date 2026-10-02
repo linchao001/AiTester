@@ -224,3 +224,20 @@ def test_run_graph_on_react_matches_run_agent(tmp_path: Path) -> None:
     )
     assert by_graph["reply"] == by_helper["reply"] == "已写入"
     assert [t["tool"] for t in by_graph["tool_traces"]] == ["write"]
+
+
+def test_run_graph_collects_kb_drafts(tmp_path):
+    from aitester.adapters.tools.kb_tools import PrepareKbWriteTool
+    (tmp_path / "_inbox").mkdir()
+    tools = [PrepareKbWriteTool(kb_root=tmp_path)]
+    script = [
+        AIMessage(content="", tool_calls=[{"name": "prepare_kb_write", "args": {
+            "op": "create", "path": "_inbox/n.md", "content": "# N", "summary": "新建"},
+            "id": "c1", "type": "tool_call"}]),
+        AIMessage(content="草案已生成，请点确认"),
+    ]
+    result = run_agent(ScriptedProvider(script), tools, [HumanMessage(content="记一笔")])
+    assert result["drafts"][0]["path"] == "_inbox/n.md"
+    assert result["drafts"][0]["op"] == "create"
+    assert not (tmp_path / "_inbox" / "n.md").exists()
+    assert [t["tool"] for t in result["tool_traces"]] == ["prepare_kb_write"]

@@ -19,10 +19,21 @@ class SendRequest(BaseModel):
     agent_id: str = "case_design"
 
 
+class KbDraft(BaseModel):
+    op: str
+    path: str
+    abs_display: str
+    summary: str = ""
+    content: str
+    base: str | None = None
+    mtime: int = 0
+
+
 class SendResponse(BaseModel):
     reply: str
     trace: list[str]
     model: str
+    drafts: list[KbDraft] = []
 
 
 class ModelInfo(BaseModel):

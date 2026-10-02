@@ -65,6 +65,7 @@ def chat_send(req: SendRequest, request: Request) -> SendResponse:
         reply=result["reply"],
         trace=["interaction"] + result["trace"],
         model=result["model"],
+        drafts=result.get("drafts", []),
     )
 
 

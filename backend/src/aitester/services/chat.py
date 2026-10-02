@@ -41,6 +41,7 @@ class ChatService:
         tools: list[AiTooler] | None = None,
     ) -> dict[str, Any]:
         trace: list[str] = ["services"]
+        drafts: list = []
 
         history = self.memory.recall(key)
         messages = self.context.build(system_prompt, history, message)
@@ -52,6 +53,7 @@ class ChatService:
         else:
             result = run_graph(build, provider, tools or [], _to_langchain_messages(messages))
             reply = result["reply"]
+            drafts = result.get("drafts", [])
             for tt in result["tool_traces"]:
                 trace.append(f"tool:{tt['tool']}")
 
@@ -62,7 +64,7 @@ class ChatService:
         self.repo.put(f"session:{key}", {"session_id": key, "last_reply": reply})
         trace.append("storage")
 
-        return {"reply": reply, "trace": trace, "model": provider.model_ref}
+        return {"reply": reply, "trace": trace, "model": provider.model_ref, "drafts": drafts}
 
     def echo(self, session_id: str, message: str) -> dict[str, Any]:
         """七层 trace 回归链路：永远走 mock，与真实 provider 配置无关。"""

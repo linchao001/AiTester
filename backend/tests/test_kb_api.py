@@ -82,3 +82,27 @@ def test_kb_get_bases(tmp_path):
     with _client(tmp_path, kb) as client:
         assert client.get("/api/kb/bases").status_code == 200
     assert kb.calls == [("list_knowledge_bases", {})]
+
+
+def test_chat_send_returns_drafts(tmp_path):
+    app = create_app(
+        model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
+        settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
+    app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid: {
+        "reply": "r", "trace": ["services"], "model": "m",
+        "drafts": [{"op": "create", "path": "a.md", "abs_display": "P",
+                     "summary": "s", "content": "c", "base": None, "mtime": 0}]})
+    with TestClient(app) as c:
+        j = c.post("/api/chat/send", json={"message": "写点什么"}).json()
+    assert j["drafts"][0]["path"] == "a.md"
+
+
+def test_chat_send_drafts_defaults_empty(tmp_path):
+    app = create_app(
+        model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
+        settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
+    app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid: {
+        "reply": "r", "trace": ["services"], "model": "m"})  # 旧形态返回：无 drafts 键
+    with TestClient(app) as c:
+        j = c.post("/api/chat/send", json={"message": "echo 我"}).json()
+    assert j["drafts"] == []  # 向后兼容：SendResponse 默认空列表
