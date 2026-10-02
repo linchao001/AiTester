@@ -1602,12 +1602,12 @@ export function groupSessions(
     .filter((g) => g.items.length > 0);
 }
 
-/** 会话行与 meta 共用：今天只显 HH:MM，更早补 M月D日（原型 now() 的口径按日历日收敛）。 */
+/** 会话行与 meta 共用：今天只显 HH:MM，更早补 M月D日（原型 now() 恒带日期且补零，此处按日历日收敛成偏离）。 */
 export function fmtTime(ts: number, now = Date.now()): string {
   const d = new Date(ts);
   const p = (n: number) => String(n).padStart(2, "0");
   const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
-  return daysSince(ts, now) === 0 ? hm : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+  return daysSince(ts, now) <= 0 ? hm : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
 }
 ```
 
@@ -1616,11 +1616,51 @@ export function fmtTime(ts: number, now = Date.now()): string {
 Run: `cd frontend && npm run build`
 Expected: PASS（`build` 脚本是 `tsc && vite build`，类型错即红）
 
-**本任务没有单元测试，这是明写的取舍**：项目前端无测试框架（spec「测试策略」段已裁定门禁是 build + 真机走查）。这三个纯函数的行为在 Task 11 Step 4 走查项里逐条验：分组是否把今天下午的会话归进「今天」、`fmtTime` 跨天是否补 `M月D日`、ctx 百分比是否随对话增长并在 ≥70/≥90 变色。若走查发现分组边界不对，回到本文件 `daysSince` 修，不要在选择器里凑。
+**本任务没有单元测试，这是明写的取舍**：项目前端无测试框架（spec「测试策略」段已裁定门禁是 build + 真机走查）。但这三个纯函数里有**日历日边界**这种类型检查抓不到的逻辑（UTC+8 下午的会话必须归「今天」），所以用一个**跑完即删**的临时断言脚本自查一次——`frontend/package.json` 是 `"type": "module"`，Node 24 的类型剥离能直接 import 这个 `.ts`（`utils.ts` 只用 `import type`，无运行时依赖）。
 
-- [ ] **Step 3: Commit**
+新建 `frontend/tmp_task8_check.mts`（**不进 git**，Step 4 前删掉）：
+
+```ts
+import assert from "node:assert/strict";
+import { contextUsage, estTokens, fmtTime, groupSessions } from "./src/pages/chat/utils.ts";
+import type { ChatSession } from "./src/api/client.ts";
+
+const mk = (id: string, updated_at: number): ChatSession =>
+  ({ id, agent_id: "case_design", title: id, created_at: updated_at, updated_at, message_count: 1 });
+
+// 固定到 UTC+8 的 2026-10-03 15:00 本地时刻，避免脚本随运行时刻漂移
+const now = new Date(2026, 9, 3, 15, 0, 0).getTime();
+const DAY = 86_400_000;
+
+assert.equal(estTokens("生成登录用例"), 6);            // 全 CJK：1 token/字
+assert.equal(estTokens("abcdefgh"), 2);                // 非 CJK：4 字符/词元
+
+// 分组边界：今天下午、整 6 天前（仍在 7 天内）、整 8 天前（更早）
+const groups = groupSessions([mk("今天", now - 5 * 3600_000), mk("六天前", now - 6 * DAY), mk("八天前", now - 8 * DAY)], now);
+assert.deepEqual(groups.map((g) => g.label), ["今天", "7 天内", "更早"]);
+assert.deepEqual(groupSessions([], now), []);          // 空组不出标题
+
+// fmtTime：今天只显 HH:MM，跨天补 M月D日
+assert.equal(fmtTime(now - 60_000, now), "14:59");
+assert.equal(fmtTime(now - DAY, now), "10月2日 15:00");
+// 与 groupSessions 的 `d <= 0` 同口径：客户端时钟落后于服务端、ts 落到「明天」也只显 HH:MM，不得显示 10月4日
+assert.equal(fmtTime(new Date(2026, 9, 4, 0, 0, 30).getTime(), now), "00:00");
+assert.deepEqual(groupSessions([mk("未来", new Date(2026, 9, 4, 0, 0, 30).getTime())], now).map((g) => g.label), ["今天"]);
+
+// 上下文占用：cap 为 0 不除零；pct 封顶 100（注意 "p" 按 1/4 词元四舍五入为 0）
+assert.deepEqual(contextUsage({ systemPrompt: "p", history: [{ content: "一" }], input: "", cap: 0 }), { used: 1, cap: 0, pct: 0 });
+assert.equal(contextUsage({ systemPrompt: "p", history: [{ content: "生成登录用例" }], input: "再来一条", cap: 10 }).pct, 100);
+
+console.log("task8 assertions OK");
+```
+
+Run: `cd frontend && node --experimental-strip-types tmp_task8_check.mts`
+Expected: 打印 `task8 assertions OK`（若抛 AssertionError，就地修 `utils.ts` 再跑；分组不对只改 `daysSince`，不许在选择器里凑）。
+
+- [ ] **Step 4: 删临时脚本并提交**
 
 ```bash
+rm frontend/tmp_task8_check.mts
 git add frontend/src/pages/chat/utils.ts
 git commit -m "feat(chat-ui): 会话分组、时间格式化与上下文估算纯函数"
 ```
@@ -1750,28 +1790,42 @@ git commit -m "feat(chat-ui): 会话侧栏（智能体门控、搜索、分组�
 
 ---
 
-### Task 10: `MessageList` + `Composer` + 一行 CSS
+### Task 10: `MessageList` + `Composer` + 两段 CSS
 
 **Files:**
 - Create: `frontend/src/pages/chat/MessageList.tsx`
 - Create: `frontend/src/pages/chat/Composer.tsx`
-- Modify: `frontend/src/App.css`（`:133` 之后插入一行）
+- Modify: `frontend/src/App.css`（两处插入：1a 在 `.msg.agent .body b{color:#111}` 之后、1b 在 `details.thinking[open] summary{margin-bottom:6px}` 之后；一律按内容定位，不认行号）
 - Test: `cd frontend && npm run build` 门禁 + Task 11 真机走查
 
 **Interfaces:**
 - Consumes: `ChatMessage`/`ChatStep`（Task 7）、`mdRender`（`frontend/src/pages/kb/utils.ts`）、`contextUsage`/`fmtTime`（Task 8）
 - Produces: `<MessageList messages agentName busy onCopy onChip />`、`<Composer input busy modelLabel cap systemPrompt messages onInput onSubmit onToast />`
 
-- [ ] **Step 1: 补 CSS（缺这条回复整段不可见）**
+- [ ] **Step 1: 补 CSS（两处，缺一处就不对）**
 
-`App.css` 在 `.msg.agent .body b{color:#111}`（`:133`）之后插入：
+**1a. 消息正文显示规则**（缺这条回复整段不可见）。`App.css` 在 `.msg.agent .body b{color:#111}`（`:133`）之后插入：
 
 ```css
-  /* .md-preview 默认为 display:none（工作区编辑器专用排版），气泡内复用必须显打开、抹掉其内边距并还回聊天字号 */
+  /* .md-preview 默认为 display:none（工作区编辑器专用排版），气泡内复用必须显打开、抹掉其内边距并还回聊天字号；
+     另需归零 .md-preview ul/ol 的 padding-left:20px —— 那是工作区缩进，而聊天列表靠 li::before 圆点定行首（全局 *{padding:0} 本无缩进） */
   .msg.agent .body.md-preview{display:block;padding:0;font-size:14px}
+  .msg.agent .body.md-preview ul,.msg.agent .body.md-preview ol{padding-left:0}
 ```
 
-三项都必要，不是随手加：`display:block` 对抗 `.md-preview{display:none}`（`App.css:276`）、`padding:0` 对抗其工作区专属 `padding:16px 22px`、`font-size:14px` 对抗其 `font-size:13px`（聊天正文按原型是 `body{font-size:14px}`，`prototype/index.html:27`；`.msg.agent .body` 自身不带 font-size）。**这条规则不是自创形态**：仓内已有同一件事的先例——`App.css:526` 的 `.kb-msg .md-preview{display:block;padding:0;font-size:12.5px;line-height:1.7}`（KB 助手气泡复用工作区排版时把字号还给它自己的 12.5px），这里按同样套路还给聊天的 14px。其余属性（`flex:1;overflow-y:auto`）在无高度约束的气泡里不生效，故不覆盖。
+四项都必要，不是随手加：`display:block` 对抗 `.md-preview{display:none}`、`padding:0` 对抗其工作区专属 `padding:16px 22px`、`font-size:14px` 对抗其 `font-size:13px`（聊天正文按原型是 `body{font-size:14px}`，`prototype/index.html:27`；`.msg.agent .body` 自身不带 font-size），第四条对抗 `.md-preview ul,.md-preview ol{padding-left:20px}`——聊天的列表是 `list-style:none` + `li::before` 圆点自己定行首（全局 `*{padding:0}` 下本无缩进），留着那 20px 会比原型多一截缩进。**这条规则不是自创形态**：仓内已有同一件事的先例——`.kb-msg .md-preview{display:block;padding:0;font-size:12.5px;line-height:1.7}`（KB 助手气泡复用工作区排版时把字号还给它自己的 12.5px），这里按同样套路还给聊天的 14px。已核实的沿用取舍（走查时按此口径看，不算新偏离）：`flex:1;overflow-y:auto` 在无高度约束的气泡里不生效；`color:#33302a`（比 `--text` 略淡）与 `.md-preview h1..h4/code/pre/table` 的排版**会**在气泡内生效，与 `.kb-msg` 先例同一取舍。
+
+**1b. 过程块逐行排版**（原型没有这个状态，必须新写规则并在提交说明里讲清）。`App.css` 在 `details.thinking[open] summary{margin-bottom:6px}`（`:143`）之后插入：
+
+```css
+  /* 原型的 thinking 只有整段文本（渲染在 prototype:1300，样式在 :143-147），没有「逐条工具调用」这一状态；
+     本期按裁定显示真实工具序列，故在既有 details.thinking 框内补逐行排版，次要文本色沿用框自身的 var(--text-2) */
+  .t-step{display:flex;align-items:baseline;gap:6px;padding:2px 0}
+  .t-step .n{flex:none;font-variant-numeric:tabular-nums}
+  .t-step .args{flex:1;min-width:0;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+```
+
+取证结论（写计划时逐条 grep 过）：`.t-step` / `.n` / `.args` 在 `prototype/index.html` 与 `frontend/src/App.css` **都不存在**——不补这三条，Step 2 的过程块会渲染成一串挤在一起的裸文本。容器不新增：`details.thinking` 的虚线框、底色、12.5px 与 `color:var(--text-2)` 全部沿用原型，序号与参数串直接继承该淡色，**不引入新的色值**。
 
 - [ ] **Step 2: MessageList**
 
@@ -1908,7 +1962,7 @@ export default function Composer(p: Props) {
   const usage = contextUsage({ systemPrompt: p.systemPrompt, history: p.messages, input: p.input, cap: p.cap });
   const cls = `ctx-meter${usage.pct >= 90 ? " hot" : usage.pct >= 70 ? " warn" : ""}`;
   const tip = usage.cap
-    ? `上下文占用约 ${usage.used} / ${usage.cap} tokens（按「${p.modelLabel}」的最大上下文估算，含系统提示词 + 历史消息 + 当前输入）`
+    ? `上下文占用约 ${fmtK(usage.used)} / ${fmtK(usage.cap)} tokens（按「${p.modelLabel}」的最大上下文估算，含系统提示词 + 历史消息 + 当前输入）`
       + (usage.pct >= 90 ? "：已接近上限，建议新建会话" : "")
     : "未配置可用模型，无法估算上下文占用";
   const canSend = p.input.trim().length > 0 && !p.busy;

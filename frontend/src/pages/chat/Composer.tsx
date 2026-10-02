@@ -5,7 +5,7 @@ import { contextUsage } from "./utils";
 interface Props {
   input: string;
   busy: boolean;
-  modelLabel: string;      // 只用于上下文 tooltip（原型 :1341 口径）；无可用模型传「未配置模型」
+  modelLabel: string;      // 只用于上下文 tooltip（原型 :1418）；无可用模型传「未配置模型」（原型 :1332）
   cap: number;             // 上下文上限（ModelInfo.context），0 表示不可估算
   systemPrompt: string;
   messages: { content: string }[];
