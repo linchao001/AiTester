@@ -2315,6 +2315,8 @@ Task 11 评审两轮共提出 4 项 Important + 1 项控制端自引入的 Criti
    - `listSeq` 守 `reloadSessions`：整表响应回来时只对「最新一次请求」生效，慢响应不得把旧智能体的行覆盖回侧栏（stale 分支仍 `return j.sessions` 供调用方，但不 `setSessions`）。
    - `mutRef` 锁 `remove` 的两段 `await`：删除尾部会自动开会话并抢 `openSeq`，此时点别的智能体/另一条会话正好落在交叉点上，`guard()` 里加「上一个操作还在执行，请稍候」。
    - `retryAll` 补 `void reloadSessions()`：错误态点「重试」只恢复了 `reloadMeta`，侧栏仍是空的，用户会以为重试没生效。
+9. **第 2 轮 scoped 复审的 Minor（commit `27288a1`）**：错误页两个提前 `return` 会把 `reloadSessions` 的失败 toast 丢掉——后端宕机时点「重试」，若只有侧栏补拉失败，用户就只看到页面纹丝不动。`.toast` 本就是 `position:fixed`（`App.css:321-326`），所以把 toast 抽成 `toastEl` 挂进三个 return 分支即可，不影响任何排版。
+
 
 未采纳（附理由）：`reloadMeta` 以 `agentId` 为 dep 导致挂载拉两遍——这次重拉正是「切智能体后刷新 `systemPrompt`/生效模型」的机制，拆开会引入新的时序 bug；非 `ApiError` 时 `String(err)` 把英文 `Failed to fetch` 送进 toast——`App.tsx:27` 早就这么写，KB/项目两页同口径，属跨页既存形态，本期不动（留给后续统一收口）。
 
