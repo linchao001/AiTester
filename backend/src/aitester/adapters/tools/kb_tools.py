@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
+from langchain_core.tools import ToolException
 from pydantic import BaseModel, Field
 
 from aitester.adapters.tools.base import AiTooler
@@ -68,3 +70,57 @@ class KbSaveTool(AiTooler):
         head = "Saved to knowledge base" if resp.success else "Knowledge base save failed"
         body = resp.answer if isinstance(resp.answer, str) else json.dumps(resp.answer, ensure_ascii=False, default=str)
         return f"{head}: {body}"
+
+
+class PrepareKbWriteInput(BaseModel):
+    op: Literal["create", "modify"] = Field(
+        description="create: new file; modify: overwrite an existing file after user confirmation.")
+    path: str = Field(
+        description="Markdown path relative to the knowledge-base root, e.g. '_inbox/note.md'. Only .md is accepted.")
+    content: str = Field(
+        description="Full file content after writing, frontmatter included.")
+    summary: str = Field(
+        description="One-line description of what this draft does, shown on the user's confirmation card.")
+
+
+class PrepareKbWriteTool(AiTooler):
+    name: str = "prepare_kb_write"
+    description: str = (
+        "Prepare a knowledge-base write as a user-confirmable draft. This tool never touches disk: "
+        "it only validates the target and returns a draft the user must confirm in the UI before "
+        "anything is saved. Use it for every knowledge-base write and never claim the write has "
+        "happened — say the user needs to confirm the draft card instead."
+    )
+    args_schema: type[BaseModel] = PrepareKbWriteInput
+    response_format: Literal["content", "content_and_artifact"] = "content_and_artifact"
+    kb_root: Path = Path(".")
+
+    def _run(self, op: str, path: str, content: str, summary: str) -> tuple[str, dict[str, Any]]:
+        rel = (path or "").strip().replace("\\", "/").lstrip("/")
+        if not rel or "\0" in rel:
+            raise ToolException("Invalid path: provide a non-empty path relative to the knowledge base root.")
+        if not rel.lower().endswith(".md"):
+            raise ToolException("Only Markdown (.md) files can be written to the knowledge base.")
+        root = Path(self.kb_root)
+        if not root.is_dir():
+            raise ToolException("Knowledge base root does not exist on disk yet.")
+        target = (root / rel).resolve()
+        if target != root and root not in target.parents:
+            raise ToolException("Invalid path: target escapes the knowledge base root.")
+        rel = target.relative_to(root).as_posix()
+        if op == "modify":
+            if not target.is_file():
+                raise ToolException(f"Cannot modify: {rel} does not exist; use op 'create' instead.")
+            base = target.read_text(encoding="utf-8", errors="replace")
+            mtime = int(target.stat().st_mtime_ns // 1_000_000)
+        else:
+            if target.exists():
+                raise ToolException(f"Cannot create: {rel} already exists; use op 'modify' or another name.")
+            if not target.parent.is_dir():
+                raise ToolException(f"Cannot create: parent directory of {rel} does not exist.")
+            base, mtime = None, 0
+        draft = {"op": op, "path": rel, "abs_display": str(target), "summary": summary,
+                 "content": content, "base": base, "mtime": mtime}
+        verb = "new file" if op == "create" else "modification"
+        return (f"Draft ready ({verb}, NOT yet written): {rel}. "
+                "Ask the user to confirm the draft card; nothing is saved until they confirm."), draft

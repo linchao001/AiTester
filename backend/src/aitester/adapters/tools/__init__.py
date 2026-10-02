@@ -1,5 +1,7 @@
 """接入层-外部工具适配：工具抽象、注册表与内置工具实现。"""
 
+from pathlib import Path
+
 from aitester.adapters.tools.base import AiTooler
 from aitester.adapters.tools.command_tools import COMMAND_TOOLS, BashTool, PwshTool
 from aitester.adapters.tools.file_tools import (
@@ -9,7 +11,7 @@ from aitester.adapters.tools.file_tools import (
     ReadTool,
     WriteTool,
 )
-from aitester.adapters.tools.kb_tools import KbSaveTool, KbSearchTool
+from aitester.adapters.tools.kb_tools import KbSaveTool, KbSearchTool, PrepareKbWriteTool
 from aitester.adapters.tools.registry import ToolRegistry
 from aitester.adapters.tools.web_tools import WebSearchTool
 
@@ -40,6 +42,7 @@ def build_default_registry(
     if kb is not None and getattr(kb, "is_enabled", True):
         registry.register(KbSearchTool(kb=kb, agent_id=agent_id))
         registry.register(KbSaveTool(kb=kb, agent_id=agent_id))
+        registry.register(PrepareKbWriteTool(kb_root=Path(kb.kb_root_dir)))
     return registry
 
 
@@ -54,6 +57,7 @@ __all__ = [
     "KbSaveTool",
     "KbSearchTool",
     "PwshTool",
+    "PrepareKbWriteTool",
     "ReadTool",
     "ToolRegistry",
     "WebSearchTool",
