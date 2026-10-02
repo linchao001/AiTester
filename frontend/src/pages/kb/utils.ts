@@ -65,19 +65,31 @@ export const wsIcon = (name: string): string =>
       : /\.xlsx?$/.test(name) ? "📊"
         : "📄";
 
-/** 原型 :1612-1618 —— 行内语法（code/b/i/链接）。 */
+/** href scheme 白名单：带 scheme: 前缀只放行 http/https/mailto，其余（相对路径/锚链接）原样通过。
+    中文注释：view 态经 dangerouslySetInnerHTML 挂载本模块产物，javascript:/data: 之类 scheme 可直接成
+    为可点击脚本链接；渲染器现转为生产可用，必须在 href 构造处收口。 */
+function hrefSafe(u: string): boolean {
+  if (u.startsWith("//")) return false; // 协议相对链接会跳出本站，不属于「相对/锚链接」
+  const m = /^[A-Za-z][A-Za-z0-9+.-]*:/.exec(u);
+  return !m || /^(https?:|mailto:)/i.test(m[0]);
+}
+
+/** 原型 :1612-1618 —— 行内语法（code/b/i/链接）。scheme 不在白名单的链接降级为纯文本（见 hrefSafe 注释）。 */
 function mdInline(t: string): string {
   return t
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
     .replace(/\*([^*]+)\*/g, "<i>$1</i>")
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_all, text: string, url: string) =>
+      hrefSafe(url) ? `<a href="${url}" target="_blank" rel="noopener">${text}</a>` : text);
 }
 
 /** 原型 :1619-1649 —— 轻量 Markdown 渲染（先整体转义再按行组装 HTML 串）。
     与原型逐行等价；输出为 HTML 串，React 侧用 dangerouslySetInnerHTML 挂载。 */
 export function mdRender(src: string): string {
-  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // 相对原型补 escape `"`：整体转义串会进入 mdInline 拼进 href="…"，
+  // 不转义引号时 URL 里的 " 可截断属性注入事件处理器（carry-over 修复）。
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const lines = esc(src || "").split(/\r?\n/);
   const out: string[] = [];
   let i = 0;

@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { kbSearchFiles, kbTree, type KbBrowseItem, type KbSearchHit } from "../api/client";
+import {
+  ApiError,
+  kbPostFile, kbPutFile, kbReadFile, kbSearchFiles, kbTree,
+  type KbBrowseItem, type KbSearchHit, type KbWriteResponse,
+} from "../api/client";
 import KbTreePane from "./kb/KbTreePane";
+import KbEditorPane from "./kb/KbEditorPane";
+import { KB_BUCKETS, kbDirOf, kbDisp, kbJoin, kbSlug } from "./kb/utils";
 
 /** Task 9/10 消费：中栏文档状态（原型 KB 对象 :2342-2345 的文档部分）。 */
 export interface KbDocState {
@@ -108,8 +114,150 @@ export default function KbPage() {
     loadKids(rel).catch((e: Error) => toast(e.message));
   }, [loadKids, toast]);
 
-  /** Task 8 仅高亮选中行；文档载入/父级展开属 Task 9（中栏）范围。 */
-  const onOpenFile = useCallback((rel: string) => setActiveRel(rel), []);
+  // —— 中栏文档状态（Task 9；原型 KB.path/content/disk/mtime/mode 的 React 化）——
+  const [doc, setDoc] = useState<KbDocState | null>(null);
+  const docRef = useRef(doc);
+  docRef.current = doc;
+
+  /** 原型 kbOpen :2427-2447 —— 读盘载入；非 force 且有未保存修改先确认放弃。
+      docRef 同步写（同 kidsRef 模式）：紧随其后的 kbWrite/进编辑态不依赖重渲染时序。 */
+  const kbOpen = useCallback(async (rel: string, force: boolean): Promise<boolean> => {
+    const cur = docRef.current;
+    if (!force && cur && cur.content !== cur.disk) {
+      if (!window.confirm("当前文件有未保存的修改，放弃并切换？")) return false;
+    }
+    let j;
+    try { j = await kbReadFile(rel); }
+    catch (err) { toast(err instanceof Error ? err.message : String(err)); return false; }
+    const next: KbDocState = {
+      rel: j.rel, name: j.name, ext: j.ext,
+      content: j.content, disk: j.content, mtime: j.mtime, mode: "view",
+    };
+    docRef.current = next; setDoc(next);
+    setActiveRel(rel);
+    // 原型 :2436-2437 —— 父目录未展开则自动展开并拉取
+    const parent = kbDirOf(j.rel);
+    if (parent && !expandedRef.current[parent]) {
+      expandedRef.current = { ...expandedRef.current, [parent]: true };
+      setExpanded(expandedRef.current);
+      loadKids(parent).catch(() => {});
+    }
+    return true;
+  }, [loadKids, toast]);
+
+  /** brief Step 2 kbWrite 原样转写；Task 10 草案卡确认复用同一函数（409 自动重载语义统一）。
+      原型 doc?.mtime 的闭包读取改为 docRef（避免 setTimeout/异步链路拿旧值）。 */
+  const kbWrite = useCallback(async (
+    rel: string, content: string, mode: "PUT" | "POST", mtime?: number,
+  ): Promise<KbWriteResponse | null> => {
+    try {
+      const j = mode === "PUT"
+        ? await kbPutFile(rel, content, mtime !== undefined ? mtime : docRef.current?.mtime ?? 0)
+        : await kbPostFile(rel, content);
+      if (rel === docRef.current?.rel) {
+        const next = { ...(docRef.current as KbDocState), content: j ? content : docRef.current!.content, disk: content, mtime: j.mtime };
+        docRef.current = next; setDoc(next);
+      }
+      // 目录刷新：kids 删除 rel 所在目录缓存再重拉（原型 kbWrite 尾部同款 :2494-2496）
+      const dir = kbDirOf(rel);
+      kidsRef.current = { ...kidsRef.current };
+      delete kidsRef.current[dir];
+      setKids(kidsRef.current);
+      if (dir && !expandedRef.current[dir]) {
+        expandedRef.current = { ...expandedRef.current, [dir]: true };
+        setExpanded(expandedRef.current);
+      }
+      loadKids(dir).catch(() => {});
+      toast(`已写入 ${j.rel} · 索引自动收敛后可被检索（约数十秒）`);
+      return j;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409 && mode === "PUT") {
+        toast("文件在别处被改过，已重新载入磁盘最新内容（未保存的修改已丢弃）");
+        void kbOpen(rel, true);
+        return null;
+      }
+      toast(err instanceof Error ? err.message : String(err));
+      return null;
+    }
+  }, [kbOpen, loadKids, toast]);
+
+  const onOpenFile = useCallback((rel: string) => { void kbOpen(rel, false); }, [kbOpen]);
+
+  const dirty = doc !== null && doc.content !== doc.disk;
+
+  // —— 中栏回调：确认弹窗文案逐字照原型 :2501-2516（window.confirm，plan-mandated）——
+  const onMode = useCallback((m: "view" | "edit") => {
+    // textarea 受控（onEditContent 实时回收），edit→view 无原型「先取 area.value」的额外步骤
+    const cur = docRef.current;
+    if (!cur) return;
+    const next = { ...cur, mode: m };
+    docRef.current = next; setDoc(next);
+  }, []);
+  const onEditContent = useCallback((v: string) => {
+    const cur = docRef.current;
+    if (!cur) return;
+    const next = { ...cur, content: v };
+    docRef.current = next; setDoc(next);
+  }, []);
+  const onSave = useCallback(() => {
+    const cur = docRef.current;
+    if (!cur) return;
+    if (cur.content === cur.disk) { toast("没有需要保存的修改"); return; }
+    if (!window.confirm(`确认写入磁盘？\n\n${kbDisp(rootRef.current, cur.rel)}\n\n这是知识库真实文件，保存会直接覆盖。`)) return;
+    void kbWrite(cur.rel, cur.content, "PUT");
+  }, [kbWrite, toast]);
+  const onDiscard = useCallback(() => {
+    const cur = docRef.current;
+    if (!cur) return;
+    if (cur.content === cur.disk) { toast("没有未保存的修改"); return; }
+    if (!window.confirm("放弃未保存的修改，恢复成磁盘内容？")) return;
+    const next = { ...cur, content: cur.disk };
+    docRef.current = next; setDoc(next); toast("已恢复磁盘内容");
+  }, [toast]);
+  const onReload = useCallback(() => {
+    const cur = docRef.current;
+    if (!cur) return;
+    if (cur.content !== cur.disk && !window.confirm("有未保存修改，重新载入会丢弃它们，继续？")) return;
+    void kbOpen(cur.rel, true).then((ok) => { if (ok) toast("已从磁盘重新载入"); });
+  }, [kbOpen, toast]);
+
+  // —— 新建笔记弹窗（原型 openKbNew + btnKbNewCreate :2518-2553；#kbNewMask → 状态驱动条件渲染）——
+  const [newNoteOpen, setNewNoteOpen] = useState(false);
+  const [nfTitle, setNfTitle] = useState("");
+  const [nfDir, setNfDir] = useState("");
+  const [nfName, setNfName] = useState("");
+  const [nfDesc, setNfDesc] = useState("");
+  const [nfTip, setNfTip] = useState("");
+  const openNewNote = useCallback(() => {
+    // 原型 :2521-2522 —— 目录默认当前打开文件的父目录或 _inbox
+    const cur = docRef.current;
+    setNfDir(cur ? (kbDirOf(cur.rel) || "_inbox") : "_inbox");
+    setNfTitle(""); setNfName(""); setNfDesc(""); setNfTip("");
+    setNewNoteOpen(true);
+  }, []);
+  const onNfTitleChange = useCallback((v: string) => {
+    // 原型 :2534 —— 标题 → kbSlug 自动文件名（补 .md）；改动即清 tip
+    const n = kbSlug(v);
+    setNfTitle(v); setNfName(n ? `${n}.md` : ""); setNfTip("");
+  }, []);
+  const pickBucket = useCallback((b: string) => { setNfDir(b); setNfTip(""); }, []);
+  const createNote = useCallback(async () => {
+    const title = nfTitle.trim();
+    const dir = nfDir.trim().replace(/^\/+|\/+$/g, "");
+    let name = nfName.trim();
+    if (!title) { setNfTip("请填写标题"); return; }
+    if (!dir) { setNfTip("请填写所在目录"); return; }
+    if (!name) name = `${kbSlug(title)}.md`;
+    if (!/\.[A-Za-z0-9]+$/.test(name)) name += ".md";
+    const rel = kbJoin(dir, name);
+    const desc = nfDesc.trim();
+    // 模板 frontmatter 全文照原型 :2548；updated_by_agent 按 plan 改为 aitester_kb_assistant（原型串为 aitester_ui）
+    const content = `---\nname: "${title}"\ndescription: "${desc || title}"\nbucket: ${dir}\nstatus: draft\nconfidence: 0.5\nupdated_by_agent: aitester_kb_assistant\nupdated_at: ${new Date().toISOString()}\n---\n\n# ${title}\n\n${desc || "一句话说明这条知识是什么。"}\n\n## 背景\n\n- \n\n## 结论\n\n- \n`;
+    const j = await kbWrite(rel, content, "POST");
+    if (!j) { setNfTip("创建失败，见右上角提示"); return; }
+    setNewNoteOpen(false);
+    if (await kbOpen(rel, true)) onMode("edit"); // 原型 :2552 —— 开新档并进编辑态
+  }, [kbOpen, kbWrite, nfDesc, nfDir, nfName, nfTitle, onMode]);
 
   // —— 搜索：300ms 防抖 + 序号防竞态（原型 :2716-2727 kbSearchSeq；间隔 260→300ms 按 brief）——
   const [query, setQuery] = useState("");
@@ -196,19 +344,20 @@ export default function KbPage() {
         </aside>
         <div className="resizer" id="kbResizer" title="拖拽调整目录树宽度"></div>
 
-        <section className="kb-main">
-          <div className="kb-head">
-            {/* 恢复钮按裁定带文字标签；原型放在中栏头部（:709/:718），侧栏收起后唯一可见位置 */}
-            {sideHidden && <button className="mini-btn" id="btnKbSideShow" title="显示目录树" onClick={() => setSideHidden(false)}>📁 目录</button>}
-            <div className="kb-crumbs">未打开文件</div>
-            <div className="spacer"></div>
-            {chatHidden && <button className="mini-btn" id="btnKbChatShow" title="显示知识库助手" onClick={() => setChatHidden(false)}>💬 助手</button>}
-          </div>
-          {/* Task 9 填充：kb-meta / 预览 / 编辑 / 底部操作栏；本任务仅占位空壳（原型初始空态 :722） */}
-          <div className="kb-doc">
-            <div className="kb-empty"><span className="big">📚</span><span>左侧选择知识库文件；中间渲染或编辑，右侧可让助手帮你改。</span></div>
-          </div>
-        </section>
+        {/* Task 9：中栏编辑组件接管 section.kb-main；恢复钮经插槽回传（原型 :709/:718 在同一 kb-head 内） */}
+        <KbEditorPane
+          doc={doc}
+          dirty={dirty}
+          root={root}
+          headLeading={sideHidden ? <button className="mini-btn" id="btnKbSideShow" title="显示目录树" onClick={() => setSideHidden(false)}>📁 目录</button> : undefined}
+          headTrailing={chatHidden ? <button className="mini-btn" id="btnKbChatShow" title="显示知识库助手" onClick={() => setChatHidden(false)}>💬 助手</button> : undefined}
+          onMode={onMode}
+          onEditContent={onEditContent}
+          onSave={onSave}
+          onDiscard={onDiscard}
+          onReload={onReload}
+          onNewNote={openNewNote}
+        />
 
         <div className="resizer" id="kbChatResizer" title="拖拽调整助手宽度"></div>
         <aside className="kb-chat">
@@ -221,6 +370,51 @@ export default function KbPage() {
           <div className="kb-msgs"></div>
         </aside>
       </div>
+      {/* 新建笔记弹窗：原型 :754-785 #kbNewMask（React 状态驱动条件渲染，类名逐字保留） */}
+      {newNoteOpen && (
+        <div className="mask" onClick={(e) => { if (e.target === e.currentTarget) setNewNoteOpen(false); }}>
+          <div className="modal" role="dialog" aria-modal="true" style={{ width: 520 }}>
+            <div className="m-head">＋ 新建知识库笔记<div className="spacer"></div>
+              <button className="icon-btn" title="关闭" onClick={() => setNewNoteOpen(false)}>✕</button>
+            </div>
+            <div className="m-body">
+              <div className="field">
+                <label htmlFor="kbfTitle">标题 <span className="req">*</span></label>
+                <input type="text" id="kbfTitle" autoFocus placeholder="例如：结算金额舍入规则"
+                  value={nfTitle} onChange={(e) => onNfTitleChange(e.target.value)} />
+              </div>
+              <div className="field">
+                <label>所在目录 <span className="req">*</span></label>
+                <input type="text" id="kbfDir" spellCheck={false} placeholder="test/test_cases"
+                  value={nfDir} onChange={(e) => { setNfDir(e.target.value); setNfTip(""); }} />
+                {/* 原型 :2524 —— 七桶快捷 chips，选中态 .on 跟随当前目录值 */}
+                <div className="kb-bucket" id="kbfBuckets">
+                  {KB_BUCKETS.map((b) => (
+                    <button key={b} className={`mini-btn${b === nfDir ? " on" : ""}`} onClick={() => pickBucket(b)}>{b}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="field">
+                <label htmlFor="kbfName">文件名 <span className="req">*</span></label>
+                <input type="text" id="kbfName" spellCheck={false} placeholder="自动生成，可修改"
+                  value={nfName} onChange={(e) => { setNfName(e.target.value); setNfTip(""); }} />
+              </div>
+              <div className="field">
+                <label htmlFor="kbfDesc">描述</label>
+                <input type="text" id="kbfDesc" placeholder="一句话说明这条知识是什么"
+                  value={nfDesc} onChange={(e) => { setNfDesc(e.target.value); setNfTip(""); }} />
+              </div>
+            </div>
+            <div className="m-foot">
+              {/* 原型 kbNewTip :2532 —— 「已」开头显绿色，其余红色 */}
+              <span className="m-tip" style={nfTip ? { color: nfTip.startsWith("已") ? "var(--ok)" : "var(--fail)" } : undefined}>{nfTip}</span>
+              <div className="spacer"></div>
+              <button className="mini-btn" onClick={() => setNewNoteOpen(false)}>取消</button>
+              <button className="btn-primary" style={{ height: 34 }} onClick={() => void createNote()}>创建并写入</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className={`toast${toastMsg ? " show" : ""}`}>{toastMsg}</div>
     </>
   );
