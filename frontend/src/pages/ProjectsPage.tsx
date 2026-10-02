@@ -121,7 +121,7 @@ export default function ProjectsPage() {
         />
       )}
       <p className="p-tip">
-        提示：项目与智能体是多对多关系——此处勾选的智能体即聊天页「当前智能体」的可选范围；
+        提示：此处勾选的智能体即该项目启用的智能体（聊天页按项目过滤将在后续专项接入）；
         本地文件目录与知识库配置在项目创建后不可修改。
       </p>
       {toastMsg && <div className="toast show">{toastMsg}</div>}

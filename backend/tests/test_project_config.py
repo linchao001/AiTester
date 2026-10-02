@@ -140,6 +140,13 @@ def test_update_immutable_dir_and_kb_idempotent(svc):
     assert after_dir_reject == p and after_kb_reject == p
 
 
+def test_update_accepts_uncleaned_same_dir(svc):
+    # 冻结判据比的是清洗后的值：客户端整体提交可能带回尾分隔符，不得误判成「修改了目录」
+    p = _mk(svc, dir_="D:/work/projects/order/")
+    assert svc.update(p["id"], name=p["name"], desc=p["desc"], agents=p["agents"],
+                      dir_="D:/work/projects/order").get("dir") == p["dir"]
+
+
 def test_update_does_not_revalidate_frozen_dir(tmp_path):
     # 读侧自愈可能留下非绝对路径的历史 dir：编辑不得因此被「目录必须是绝对路径」锁死
     repo = FileJsonConfigRepository(tmp_path / "projects.json")
