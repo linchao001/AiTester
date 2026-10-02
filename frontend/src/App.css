@@ -145,7 +145,7 @@
   }
   details.thinking summary{cursor:pointer;font-weight:600;color:#6d6459}
   details.thinking[open] summary{margin-bottom:6px}
-  /* 原型的 thinking 只有整段文本（渲染在 prototype:1300，样式在 :143-147），没有「逐条工具调用」这一状态；
+  /* 原型的 thinking 只有整段文本（渲染在 prototype:1300，样式在 :143-148），没有「逐条工具调用」这一状态；
      本期按裁定显示真实工具序列，故在既有 details.thinking 框内补逐行排版，次要文本色沿用框自身的 var(--text-2) */
   .t-step{display:flex;align-items:baseline;gap:6px;padding:2px 0}
   .t-step .n{flex:none;font-variant-numeric:tabular-nums}
