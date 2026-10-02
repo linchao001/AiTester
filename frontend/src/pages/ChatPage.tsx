@@ -199,10 +199,15 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     void reloadSessions();   // 失败前 agentId 可能已经有值，effect 不会再触发整表拉取，重试必须把侧栏一起补回来
   }, [onRetryHealth, reloadMeta, reloadSessions]);
 
+  // toast 是 fixed 定位，三个 return 分支都要挂：错误页的「重试」若只失败在拉整表上，
+  // 这条是用户唯一的可见结果，只挂主布局会被提前 return 丢掉
+  const toastEl = toastMsg ? <div className="toast show">{toastMsg}</div> : null;
+
   if (error) {
     return (
       <div className="page">
         <p className="p-empty">加载失败：{error} <button className="mini-btn" onClick={retryAll}>重试</button></p>
+        {toastEl}
       </div>
     );
   }
@@ -210,6 +215,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     return (
       <div className="page">
         <p className="p-empty">后端未就绪：{healthError} <button className="mini-btn" onClick={retryAll}>重试</button></p>
+        {toastEl}
       </div>
     );
   }
@@ -272,7 +278,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
           onToast={toast}
         />
       </main>
-      {toastMsg && <div className="toast show">{toastMsg}</div>}
+      {toastEl}
     </div>
   );
 }
