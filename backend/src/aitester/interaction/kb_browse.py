@@ -11,7 +11,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from aitester.services.kb.paths import resolve_kb_root
 
@@ -197,3 +199,52 @@ def browse_scan(request: Request, path: str = "", limit: int = 800, md: str = "1
         if len(docs) >= limit:
             break
     return {"root": str(root), "scanned": len(docs), "truncated": len(docs) >= limit, "docs": docs}
+
+
+class KbBrowseWriteBody(BaseModel):
+    content: str = Field(description="文件全文")
+
+
+@router.put("/file")
+def browse_put(request: Request, path: str = Query(""), mtime: int = Query(0),
+               body: KbBrowseWriteBody = None) -> Any:
+    root = _root(request)
+    target = _resolve(root, path)
+    if not _is_text(target):
+        raise HTTPException(status_code=415, detail="只允许写入文本文件")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="文件不存在，请用新建接口")
+    if target.is_dir():
+        raise HTTPException(status_code=400, detail="是目录")
+    cur = int(target.stat().st_mtime_ns // 1_000_000)
+    if mtime and cur != mtime:
+        # 对齐 serve.js：乐观锁冲突不覆盖，回磁盘当前 mtime 供前端重载
+        return JSONResponse(status_code=409,
+                            content={"detail": "文件在页面打开后被外部修改，未覆盖", "mtime": cur})
+    data = body.content.encode("utf-8")
+    if len(data) > MAX_TEXT:
+        raise HTTPException(status_code=413, detail="内容过大")
+    target.write_bytes(data)
+    return {"rel": _rel_of(root, target), "size": len(data),
+            "mtime": int(target.stat().st_mtime_ns // 1_000_000)}
+
+
+@router.post("/file")
+def browse_post(request: Request, path: str = Query(""),
+                body: KbBrowseWriteBody = None) -> Any:
+    root = _root(request)
+    target = _resolve(root, path)
+    if not _is_text(target):
+        raise HTTPException(status_code=415, detail="只允许写入文本文件")
+    if target.exists():
+        raise HTTPException(status_code=409, detail="同名文件已存在，请换个名字")
+    if not target.parent.is_dir():
+        raise HTTPException(status_code=400, detail="父目录不存在")
+    data = body.content.encode("utf-8")
+    if len(data) > MAX_TEXT:
+        raise HTTPException(status_code=413, detail="内容过大")
+    target.write_bytes(data)
+    return JSONResponse(status_code=201, content={
+        "rel": _rel_of(root, target), "size": len(data),
+        "mtime": int(target.stat().st_mtime_ns // 1_000_000),
+    })

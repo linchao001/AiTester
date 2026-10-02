@@ -117,3 +117,49 @@ def test_browse_gate_503_and_missing_root_404(tmp_path, kb_root):
         assert c.get("/api/kb/browse/tree").status_code == 503
     with _client(tmp_path, tmp_path / "bases" / "ghost_kb") as c:
         assert c.get("/api/kb/browse/tree").status_code == 404
+
+
+def test_put_roundtrip_and_mtime(tmp_path, kb_root):
+    f = kb_root / "_inbox" / "n.md"
+    f.write_text("v1", encoding="utf-8")
+    with _client(tmp_path, kb_root) as c:
+        cur = int(f.stat().st_mtime_ns // 1_000_000)
+        r = c.put("/api/kb/browse/file", params={"path": "_inbox/n.md", "mtime": cur},
+                  json={"content": "v2"})
+        assert r.status_code == 200 and f.read_text(encoding="utf-8") == "v2"
+        assert r.json()["mtime"] >= cur and r.json()["size"] == 2
+
+
+def test_put_conflict_409_keeps_disk(tmp_path, kb_root):
+    f = kb_root / "_inbox" / "n.md"
+    f.write_text("disk", encoding="utf-8")
+    with _client(tmp_path, kb_root) as c:
+        r = c.put("/api/kb/browse/file", params={"path": "_inbox/n.md", "mtime": 1},
+                  json={"content": "mine"})
+        assert r.status_code == 409
+        assert r.json()["mtime"] == int(f.stat().st_mtime_ns // 1_000_000)
+        assert f.read_text(encoding="utf-8") == "disk"
+
+
+def test_put_guards(tmp_path, kb_root):
+    with _client(tmp_path, kb_root) as c:
+        assert c.put("/api/kb/browse/file", params={"path": "nope.md"},
+                     json={"content": "x"}).status_code == 404
+        assert c.put("/api/kb/browse/file", params={"path": "bin.exe"},
+                     json={"content": "x"}).status_code == 415
+        assert c.put("/api/kb/browse/file", params={"path": "business"},
+                     json={"content": "x"}).status_code == 400
+        assert c.put("/api/kb/browse/file", params={"path": "../x.md"},
+                     json={"content": "x"}).status_code == 403
+
+
+def test_post_create(tmp_path, kb_root):
+    with _client(tmp_path, kb_root) as c:
+        r = c.post("/api/kb/browse/file", params={"path": "_inbox/new.md"},
+                   json={"content": "# N\n"})
+        assert r.status_code == 201
+        assert (kb_root / "_inbox" / "new.md").read_text(encoding="utf-8") == "# N\n"
+        assert c.post("/api/kb/browse/file", params={"path": "_inbox/new.md"},
+                      json={"content": "x"}).status_code == 409
+        assert c.post("/api/kb/browse/file", params={"path": "ghost/x.md"},
+                      json={"content": "x"}).status_code == 400
