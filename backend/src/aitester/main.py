@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from aitester.adapters.tools import FileObservationStore
 from aitester.config import Settings, get_settings
+from aitester.interaction.kb_browse import router as kb_browse_router
 from aitester.interaction.router import router
 from aitester.services import CapabilityConfigService, ChatService
 from aitester.services.agent_runtime import AgentRuntime
@@ -47,6 +48,7 @@ def create_app(
 
     application = FastAPI(title="AiTester backend", lifespan=lifespan)
     application.state.kb_manager = kb
+    application.state.settings = s
     application.state.model_config = model_config
     application.state.capability_config = capability_config
     application.state.file_observations = FileObservationStore()
@@ -55,6 +57,7 @@ def create_app(
     )
     application.state.chat_service = ChatService(agent_runtime=application.state.agent_runtime)
     application.include_router(router)
+    application.include_router(kb_browse_router)
     return application
 
 

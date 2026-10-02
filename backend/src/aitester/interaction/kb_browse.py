@@ -1,0 +1,199 @@
+"""知识库文件浏览接口：逐条移植 prototype/serve.js:93-198 的六 handler 语义。
+
+错误体统一 FastAPI 的 detail 键（serve.js 用 error，这是唯一键名偏差）；
+状态码、文案、限额与 serve.js 一致。安全：路径锁死 KB 实体根内、隐藏目录/点文件
+不可见、仅白名单文本类型、2MB 上限。
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Request
+
+from aitester.services.kb.paths import resolve_kb_root
+
+router = APIRouter(prefix="/api/kb/browse")
+
+HIDDEN_DIRS = {".git", ".idea", ".vscode", ".locks", "__pycache__", "node_modules", ".obsidian"}
+HIDDEN_FILES = {".ds_store", "thumbs.db"}
+TEXT_EXT = {".md", ".markdown", ".txt", ".json", ".jsonl", ".py", ".js", ".ts", ".yaml", ".yml",
+            ".sql", ".sh", ".bat", ".ini", ".cfg", ".csv", ".html", ".css", ".xml", ".toml",
+            ".gitignore", ".log"}
+MAX_TEXT = 2 * 1024 * 1024
+SCAN_MD_MAX = 512 * 1024
+WALK_DEPTH = 12
+
+_FM_RE = re.compile(r"^---\r?\n([\s\S]*?)\r?\n---")
+_KV_RE = re.compile(r"^([A-Za-z0-9_\-.]+):\s*(.*)$")
+_NOISE_RE = re.compile(r"\.(pyc|pyo|pack|idx|rev|sample)$")
+
+
+def _root(request: Request) -> Path:
+    settings = request.app.state.settings
+    if not settings.kb_enabled:
+        raise HTTPException(status_code=503, detail="知识库未启用或未启动")
+    root = resolve_kb_root(settings)
+    if not root.is_dir():
+        raise HTTPException(status_code=404, detail="知识库实体目录不存在")
+    return root
+
+
+def _hidden(name: str) -> bool:
+    return (name in HIDDEN_DIRS or name.lower() in HIDDEN_FILES or name.startswith(".")
+            or bool(_NOISE_RE.search(name.lower())))
+
+
+def _resolve(root: Path, rel: str) -> Path:
+    """serve.js kbPath 平移：拒 NUL、越界（resolve 后必须锁在根内）、隐藏段命中一律 403。"""
+    if rel and "\0" in rel:
+        raise HTTPException(status_code=403, detail="路径超出知识库范围")
+    clean = rel.replace("\\", "/").lstrip("/")
+    root_r = root.resolve()
+    cand = (root_r / clean).resolve() if clean else root_r
+    if cand != root_r and root_r not in cand.parents:
+        raise HTTPException(status_code=403, detail="路径超出知识库范围")
+    if any(_hidden(seg) for seg in cand.relative_to(root_r).parts):
+        raise HTTPException(status_code=403, detail="路径超出知识库范围")
+    return cand
+
+
+def _rel_of(root: Path, abs: Path) -> str:
+    return abs.relative_to(root).as_posix()
+
+
+def _is_text(abs: Path) -> bool:
+    ext = abs.suffix.lower()
+    return ext in TEXT_EXT or ext == ""
+
+
+def _stat_d(p: Path) -> dict[str, Any]:
+    st = p.stat()
+    return {"size": st.st_size, "mtime": int(st.st_mtime_ns // 1_000_000)}
+
+
+def _parse_fm(text: str) -> dict[str, str] | None:
+    """只解析 frontmatter 顶层 key: value（serve.js parseFm 同款，够原型用）。"""
+    m = _FM_RE.match(text)
+    if not m:
+        return None
+    out: dict[str, str] = {}
+    for line in m.group(1).splitlines():
+        kv = _KV_RE.match(line)
+        if not kv:
+            continue
+        v = kv.group(2).strip()
+        if len(v) > 1 and v[0] == '"' and v[-1] == '"':
+            v = v[1:-1]
+        out[kv.group(1)] = v
+    return out
+
+
+def _walk_abs(root: Path, depth: int = 0) -> list[Path]:
+    out: list[Path] = []
+    stack = [(root, depth)]
+    while stack:
+        cur, d = stack.pop()
+        for e in sorted(cur.iterdir(), key=lambda e: e.name.lower()):
+            if _hidden(e.name):
+                continue
+            out.append(e)
+            if e.is_dir() and d + 1 < WALK_DEPTH:
+                stack.append((e, d + 1))
+    return out
+
+
+@router.get("/tree")
+def browse_tree(request: Request, path: str = "") -> dict[str, Any]:
+    root = _root(request)
+    target = _resolve(root, path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="目录不存在")
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="不是目录")
+    items = []
+    for e in target.iterdir():
+        if _hidden(e.name):
+            continue
+        info: dict[str, Any] = {"name": e.name, "rel": _rel_of(root, e), "dir": e.is_dir()}
+        try:
+            info.update(_stat_d(e))
+        except OSError:
+            info.update({"size": 0, "mtime": 0})
+        items.append(info)
+    # dirs-first；zh 序用 lower() 近似（Global Constraints 偏差②）
+    items.sort(key=lambda i: (not i["dir"], i["name"].lower()))
+    return {"root": str(root), "rel": _rel_of(root, target), "items": items}
+
+
+@router.get("/file")
+def browse_file(request: Request, path: str = "") -> dict[str, Any]:
+    root = _root(request)
+    target = _resolve(root, path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if target.is_dir():
+        raise HTTPException(status_code=400, detail="是目录，不是文件")
+    if not _is_text(target):
+        raise HTTPException(status_code=415, detail="暂不支持预览该文件类型")
+    st = target.stat()
+    if st.st_size > MAX_TEXT:
+        raise HTTPException(status_code=413, detail="文件超过 2MB，只读不加载")
+    return {
+        "rel": _rel_of(root, target), "name": target.name, "ext": target.suffix.lower(),
+        "content": target.read_text(encoding="utf-8", errors="replace"),
+        "size": st.st_size, "mtime": int(st.st_mtime_ns // 1_000_000), "editable": True,
+    }
+
+
+@router.get("/search")
+def browse_search(request: Request, q: str = "", limit: int = 120) -> dict[str, Any]:
+    root = _root(request)
+    kw = q.strip().lower()
+    if not kw:
+        return {"root": str(root), "total": 0, "truncated": False, "hits": []}
+    limit = max(1, min(limit, 400))
+    hits = []
+    for abs in _walk_abs(root):
+        if kw not in abs.name.lower():
+            continue
+        try:
+            info = {"name": abs.name, "rel": _rel_of(root, abs), "dir": abs.is_dir()}
+            info.update(_stat_d(abs))
+        except OSError:
+            continue
+        hits.append(info)
+        if len(hits) >= limit:
+            break
+    hits.sort(key=lambda h: h["rel"].lower())
+    return {"root": str(root), "total": len(hits), "truncated": len(hits) >= limit, "hits": hits}
+
+
+@router.get("/scan")
+def browse_scan(request: Request, path: str = "", limit: int = 800, md: str = "1") -> dict[str, Any]:
+    root = _root(request)
+    target = _resolve(root, path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="目录不存在")
+    limit = max(1, min(limit, 3000))
+    only_md = md != "0"
+    docs = []
+    for abs in _walk_abs(target):
+        if not abs.is_file():
+            continue
+        if only_md and abs.suffix.lower() != ".md":
+            continue
+        try:
+            st = abs.stat()
+        except OSError:
+            continue
+        if st.st_size > SCAN_MD_MAX:
+            continue
+        head = abs.read_text(encoding="utf-8", errors="replace")[:4000]
+        docs.append({"rel": _rel_of(root, abs), "name": abs.name, "size": st.st_size,
+                     "mtime": int(st.st_mtime_ns // 1_000_000), "fm": _parse_fm(head)})
+        if len(docs) >= limit:
+            break
+    return {"root": str(root), "scanned": len(docs), "truncated": len(docs) >= limit, "docs": docs}
