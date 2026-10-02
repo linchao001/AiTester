@@ -62,7 +62,10 @@ def test_create_returns_201_with_kb_alias_and_zero_sessions(client):
 
 
 def test_response_body_never_contains_real_kb_identity(client):
-    client.post("/api/projects", json=_body(client))
+    created = client.post("/api/projects", json=_body(client))
+    updated = client.put(f"/api/projects/{created.json()['id']}", json=_body(client))
+    assert "zhb" not in created.text.lower()
+    assert "zhb" not in updated.text.lower()
     assert "zhb" not in client.get("/api/projects").text.lower()
 
 
