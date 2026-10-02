@@ -145,10 +145,13 @@ def test_send_unknown_session_id_returns_404(tmp_path: Path) -> None:
 
 def test_messages_drops_malformed_persisted_steps(tmp_path: Path) -> None:
     # 裁定 3：手工编辑/旧格式的落盘 steps 行只丢痕迹，不整响应 500（容错仅在读路径）
+    # 覆盖两类畸形：非 dict 元素（"x"/null，落盘即 JSON 字符串/字面量 null）与缺必填键的 dict
     client, sid = _seed(tmp_path)
     client.app.state.sessions.append(
         sid, "assistant", "混合痕迹",
-        steps=[{"tool": "read"}, {"tool": "grep", "ok": False, "round": 2, "detail": "x"}])
-    body = client.get(f"/api/chat/sessions/{sid}/messages").json()
-    assert body["messages"][-1]["steps"] == [
+        steps=["x", {"tool": "read"}, None,
+               {"tool": "grep", "ok": False, "round": 2, "detail": "x"}])
+    r = client.get(f"/api/chat/sessions/{sid}/messages")
+    assert r.status_code == 200
+    assert r.json()["messages"][-1]["steps"] == [
         {"tool": "grep", "ok": False, "round": 2, "detail": "x"}]

@@ -33,17 +33,21 @@ def sessions_list(
     request: Request, agent_id: str = Query(min_length=1)
 ) -> SessionsResponse:
     # 未知或平台智能体 → 空列表 200：列表是「此处没有会话」，不是错误
+    # model_validate 而非 **vars：与读路径 steps 同款口径，Session 数据类日后多出字段也不会炸
     return SessionsResponse(
-        sessions=[SessionInfo(**vars(s)) for s in _store(request).list(agent_id)]
+        sessions=[
+            SessionInfo.model_validate(vars(s)) for s in _store(request).list(agent_id)
+        ]
     )
 
 
 def _to_message(m: ChatMessage) -> ChatMessageInfo:
-    # 只读路径容错（裁定 3）：手工编辑或旧格式的落盘行逐条丢弃 steps，不整响应 500
+    # 只读路径容错（裁定 3）：手工编辑或旧格式的落盘行逐条丢弃畸形 steps，不整响应 500，
+    # 其余合法消息照常返回；与 drafts 同款 model_validate 口径——非 dict 元素也归 ValidationError
     steps: list[StepInfo] = []
     for s in m.steps or []:
         try:
-            steps.append(StepInfo(**s))
+            steps.append(StepInfo.model_validate(s))
         except ValidationError:
             continue
     return ChatMessageInfo(
