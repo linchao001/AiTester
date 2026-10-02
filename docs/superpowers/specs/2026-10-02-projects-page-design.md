@@ -1,6 +1,6 @@
 # 项目管理页（项目 CRUD + 只读知识库配置）设计
 
-日期：2026-10-02　状态：待实施
+日期：2026-10-02　状态：已实施（commit 范围 `3500a6b..HEAD`，即 `git log` 中 projects 提交系列）
 参考原型：`prototype/index.html` 项目页 `:675-693`、项目弹窗 `:788-823`、数据形状 `:1064-1068`、`projBadges :1729`、`renderProjects :1736`、`openProjModal :1768-1783`、`ABS_PATH :1809`、`btnProjSave :1847-1878`、`delProject :1880-1891`
 
 ## 背景
@@ -58,20 +58,21 @@
 
 - `PROJECT_KB_DEFAULT = "kb"`
 - `registered_aliases() -> list[str]`（本期只有 `"kb"`）
-- `resolve_kb_id(alias: str) -> str` → `settings.kb_id`（即 `zhb_kb`）；未知别名抛 `UnknownKbAlias`
-- `resolve_kb_root_for(alias)` → `resolve_kb_bases_dir() / resolve_kb_id(alias)`
+- `resolve_kb_id(alias: str, settings: Any) -> str` → `settings.kb_id`（即 `zhb_kb`）；未知别名抛 `UnknownKbAlias`（`settings` 由调用方传入，避免 `config` 与 `services` 循环导入）
+- `resolve_kb_root_for(alias: str, settings: Any) -> Path` → `resolve_kb_bases_dir(settings) / resolve_kb_id(alias, settings)`
 
 本期**检索/写盘链路不改**（KB 全局单份裁定不变）：`/api/kb/browse/*` 与 reme 实例池继续用 `settings.kb_id`。别名层只承担三件事：项目 `kb` 字段的写时校验、`kb → zhb_kb` 的集中解析口径、后续多 KB 专项的接线点。禁止在任何 UI 文案或 API 响应里回显解析结果。
 
 ## 前端
 
-- `frontend/src/api/client.ts`：`Project` 接口 + `listProjects/createProject/updateProject/deleteProject`，沿用现有 `ApiError`（非 2xx 抛、detail 透出）。
+- `frontend/src/api/client.ts`：`Project` 接口 + `getProjects/postProject/putProject/deleteProject`（与既有 `getKbStatus/kbSave` 等命名口径一致），沿用现有 `ApiError`（非 2xx 抛、detail 透出）。
 - `ProjectsPage.tsx` 替换占位：
   - 页头「项目管理」+「共 N 个」+「＋ 新建项目」
-  - 表头：项目名称 / 描述 / 本地文件目录 / 智能体 / 知识库 / 会话数 / 操作（知识库列插在智能体后会话数前，值 `kb`）
+  - 表头：项目名称 / 描述 / 本地文件目录 / 启用智能体 / 知识库 / 会话数 / 操作（知识库列插在启用智能体后会话数前，值 `kb`）
   - 行操作：编辑、删除（`mini-btn danger`）；空列表出引导态
   - 弹窗四字段照原型（名称* / 描述 / 本地文件目录* + 浏览… / 启用智能体* 多选）+ **末行只读「知识库：`kb`」**，hint 中文「知识库配置默认且不可修改」；编辑态 `dir`、`kb` 均 `disabled`，`浏览…` 按钮编辑态隐藏（同原型 `:1776`）
-  - 校验顺序与文案照原型 `btnProjSave`：请填写项目名称 → 已存在同名项目 → 请填写本地文件目录 → 目录必须是绝对路径 → 请至少选择一个智能体；服务端 400 的 detail 覆盖到同一 tip 位
+  - 校验分两层：弹窗本地校验只做形态四连——请填写项目名称 → 请填写本地文件目录 → 目录必须是绝对路径 → 请至少选择一个智能体；同名判定刻意不放客户端（交服务端裁定，避免两处判据漂移）；服务端 400 的 detail 覆盖到同一 tip 位
+  - 服务端 `ProjectService.create` 判据顺序：名称/描述（空值与字数上限）→ 智能体（为空 → 平台内置不可启用 → 未知）→ 知识库别名 → 目录形态（`_validate_dir`，仅 create 调用，dir 冻结后编辑期不重复校验）→ 同名唯一（`_ensure_name_free`）；`update` 先查项目（未知 id → 404），再判冻结字段：编辑态 `dir`/`kb` 冻结——传与存量相同值放行、传不同值 400「本地文件目录/知识库配置创建后不可修改」，随后 `_validate`（用存量 `kb`）与同名判定（排除自身）
   - 删除走 `window.confirm`：`删除项目「x」？删除后不可恢复。`（与 `/kb` 页同款原生确认；注意原生 confirm 会挂 CDP 自动化，人工点击无碍）
   - 成功 toast：`已创建项目「x」` / `已保存项目「x」` / `已删除项目「x」`
 - 样式复用既有 modal/table/field/hint/row-acts 类；不引入新框架。折叠/显隐控件遵循同一套模式且必带文字标签。

@@ -69,6 +69,9 @@ uv run python -m aitester.main
   prepare_kb_write 五件，不随能力勾选变化；**助手零直写**——任何写盘必经「待写入草案」卡片，
   用户点「✓ 确认写入磁盘」后才经 browse POST/PUT 真正落盘；落盘后索引经 watch **约数十秒自动收敛**，
   无需手动重建；旧三区表单页已移除（`/api/kb/status|bases|search|save` 端点保留，工具与其余链路仍在用）
+- `GET/POST/PUT/DELETE /api/projects`（项目 CRUD，JSON 落盘；本地文件目录与知识库配置创建后不可修改）
+  项目字段由「名称 / 描述 / 本地文件目录 / 启用智能体 / 知识库」构成；知识库字段只存**别名 `kb` 且不可改**，
+  界面不回显底层知识库标识（集中解析只活在后端）；本期只落 CRUD——聊天页按项目隔离与会话数统计属后续专项
 - 测试：`uv run pytest`
 - 配置：复制 `.env.example` 为 `.env`（仅 HOST/PORT + 两个可选种子 Key）；
   运行期模型配置存 `backend/data/model_config.json`（gitignore，含密钥），
