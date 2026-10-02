@@ -63,7 +63,7 @@ export default function MessageList(p: Props) {
     <div className="messages" ref={box}>
       {p.messages.map((m, i) =>
         m.role === "user" ? (
-          <div className="msg user" key={i}>
+          <div className="msg user" key={`${m.ts}-${i}`}>
             <div>
               <div className="bubble">{m.content}</div>
               <div className="meta" style={{ justifyContent: "flex-end" }}>
@@ -72,7 +72,7 @@ export default function MessageList(p: Props) {
             </div>
           </div>
         ) : (
-          <div className="msg agent" key={i}>
+          <div className="msg agent" key={`${m.ts}-${i}`}>
             <div className="who"><span className="avatar">Ai</span>AiTester</div>
             <Steps steps={m.steps ?? []} />
             <div className="body md-preview" dangerouslySetInnerHTML={{ __html: mdRender(m.content) }} />

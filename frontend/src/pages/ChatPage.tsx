@@ -71,7 +71,11 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       setCap(hit ? hit.ctx : 0);
       setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // 迟到的旧失败不该把已经可用的页面整页打回错误页：只有在还没拿到任何智能体
+      // （页面还什么都不知道）时才占满屏错误，否则降级成 toast，已渲染的会话/输入照常可用
+      const msg = err instanceof Error ? err.message : String(err);
+      if (agents.length === 0) setError(msg);
+      else toast(msg);
     }
   }, [agentId]);
 
@@ -81,6 +85,9 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     try {
       const j = await getSessions(agentId);
       if (seq === listSeq.current) setSessions(j.sessions);
+      // stale 分支仍 return j.sessions：调用方拿到的行必属当前 agent——remove 自己的整表刷新必赢
+      // listSeq，而 send/retryAll 都被 mutRef 挡在 guard() 后面、切智能体也被挡，故返回的整表只可能
+      // 是当前智能体的；最坏情形也只是页头标题回落成「新会话」，不会串到别的 agent
       return j.sessions;
     } catch (err) {
       if (seq === listSeq.current) toast(err instanceof ApiError ? err.message : String(err));

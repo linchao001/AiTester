@@ -56,7 +56,11 @@ export default function SessionPane(p: Props) {
       <div className="session-list">
         {!groups.length && (
           <div className="empty-tip">
-            「{agent ? agent.name.replace("智能体", "") : p.agentId}」下暂无会话<br />点击「＋ 新建会话」开始
+            {keyword ? (
+              <>无匹配「{p.query.trim()}」的会话<br />换个关键词试试</>
+            ) : (
+              <>「{agent ? agent.name.replace("智能体", "") : p.agentId}」下暂无会话<br />点击「＋ 新建会话」开始</>
+            )}
           </div>
         )}
         {groups.map((g) => (
