@@ -167,3 +167,121 @@ def test_send_passes_drafts_through():
     out = service.send("kb-console", "记一笔", "case_design")
     assert out["drafts"] == [draft]
     assert out["reply"] == "草案已生成"
+
+
+from types import SimpleNamespace
+
+from aitester.memory import FileMemoryStore, InMemoryMemoryStore
+from aitester.orchestration.agent_graph import build_agent_graph
+from aitester.services.agent_runtime import AgentInstance
+from aitester.services.session_store import SessionStore, SessionStoreError
+
+
+def _sentinel_runtime():
+    """provider 解析与记忆选型互不相关：假 runtime 只把注入的 provider 原样回出来。
+
+    build_graph 用真实单节点拓扑（tools=[] 退化为直答）：裁剪断言要看进 prompt 的
+    langchain 消息对象，echo 路径（provider.complete，收 dict）抓不到。
+    """
+    return SimpleNamespace(build=lambda agent_id, session_id, provider_override=None:
+                           AgentInstance(agent_id=agent_id, system_prompt="p",
+                                         provider=provider_override or MockProvider(),
+                                         tools=[], build_graph=build_agent_graph))
+
+
+class _RecordingService(ChatService):
+    """抓 _complete 收到的 memory 实例：装配裁定（文件/进程内）只能在此处验。"""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.seen_memory: list[object] = []
+
+    def _complete(self, key, message, provider, system_prompt, build=None,
+                  tools=None, memory=None):
+        self.seen_memory.append(memory if memory is not None else self.memory)
+        return super()._complete(key, message, provider, system_prompt,
+                                 build=build, tools=tools, memory=memory)
+
+
+def test_send_with_empty_session_id_generates_sess_id(tmp_path) -> None:
+    svc = _RecordingService(provider=MockProvider(), sessions=SessionStore(tmp_path / "sessions"))
+    svc.agent_runtime = _sentinel_runtime()
+    result = svc.send("", "生成登录用例", "case_design")
+    assert result["session_id"].startswith("sess_")
+    assert result["title"] == "生成登录用例"
+    assert isinstance(svc.seen_memory[0], FileMemoryStore)  # 新会话走文件记忆
+
+
+def test_failed_send_leaves_no_session_on_disk(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    svc = ChatService(provider=MockProvider(), sessions=store)
+
+    def _boom(agent_id, session_id, provider_override=None):
+        raise ProviderConfigError("未配置模型")
+
+    svc.agent_runtime = SimpleNamespace(build=_boom)
+    with pytest.raises(ProviderConfigError):
+        svc.send("", "hi", "case_design")
+    assert store.list("case_design") == []  # 400 一次不得留 0 消息幽灵会话
+
+
+def test_send_with_temporary_key_stays_in_memory(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    svc = _RecordingService(provider=MockProvider(), sessions=store)
+    svc.agent_runtime = _sentinel_runtime()
+    result = svc.send("kb-console", "hi", "case_design")  # 非 sess_ 形态：临时键
+    assert result["session_id"] == "kb-console"
+    assert result["title"] == ""                          # 临时键不在索引里
+    assert isinstance(svc.seen_memory[0], InMemoryMemoryStore)
+    assert store.list("case_design") == []
+
+
+def test_send_with_unknown_sess_id_raises(tmp_path) -> None:
+    svc = ChatService(provider=MockProvider(), sessions=SessionStore(tmp_path / "sessions"))
+    svc.agent_runtime = _sentinel_runtime()
+    with pytest.raises(SessionStoreError) as exc_info:
+        svc.send("sess_deadbeef", "hi", "case_design")
+    assert exc_info.value.detail == "会话不存在或已被删除"
+
+
+def test_platform_agent_never_uses_file_memory(tmp_path) -> None:
+    svc = _RecordingService(provider=MockProvider(), sessions=SessionStore(tmp_path / "sessions"))
+    svc.agent_runtime = _sentinel_runtime()
+    svc.send("kb-console", "hi", "kb_assistant")
+    assert isinstance(svc.seen_memory[0], InMemoryMemoryStore)
+
+
+def test_history_is_trimmed_to_last_history_max(tmp_path) -> None:
+    seen: list[list] = []
+
+    class _SpyProvider:
+        name = "spy"
+        model_ref = "spy/model"
+
+        def complete(self, messages):
+            return "[spy]"
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke_messages(self, messages):
+            seen.append(list(messages))
+            return AIMessage(content="[spy] 收到")
+
+    store = SessionStore(tmp_path / "sessions")
+    sid = store.new_id()
+    store.create(sid, "case_design", "标题")
+    for i in range(45):
+        store.append(sid, "user", f"问{i}")
+        store.append(sid, "assistant", f"答{i}")
+    svc = ChatService(provider=_SpyProvider(), sessions=store)
+    svc.agent_runtime = _sentinel_runtime()
+    svc.send(sid, "新问题", "case_design")
+    contents = [m.content for m in seen[0]]
+    # 90 条历史只取最近 40 条进 prompt：[system] + 40 + [本轮 user]
+    assert len(contents) == 42
+    assert contents[0] == "p"          # AgentInstance.system_prompt
+    assert contents[1] == "问25"        # 90 条里的第 51 条，更早的 50 条进不了 prompt
+    assert contents[-2] == "答44"
+    assert contents[-1] == "新问题"
+    assert len(store.messages(sid)) == 92  # 磁盘保留全量（本轮 user+assistant 已追加）

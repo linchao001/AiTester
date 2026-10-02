@@ -13,6 +13,7 @@ from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.kb.manager import RemeKbManager
 from aitester.services.model_config import ModelConfigService
 from aitester.services.project_config import ProjectService
+from aitester.services.session_store import SessionStore
 from aitester.storage import FileJsonConfigRepository
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -24,6 +25,7 @@ def create_app(
     projects_path: Path | None = None,
     settings: Settings | None = None,
     kb_manager=None,
+    sessions_dir: Path | None = None,
 ) -> FastAPI:
     s = settings or get_settings()
     model_config = ModelConfigService(
@@ -62,7 +64,11 @@ def create_app(
     application.state.agent_runtime = AgentRuntime(
         capability_config, model_config, application.state.file_observations, kb=kb
     )
-    application.state.chat_service = ChatService(agent_runtime=application.state.agent_runtime)
+    sessions = SessionStore(sessions_dir or DATA_DIR / "sessions")
+    application.state.sessions = sessions
+    application.state.chat_service = ChatService(
+        agent_runtime=application.state.agent_runtime, sessions=sessions
+    )
     application.include_router(router)
     application.include_router(kb_browse_router)
     application.include_router(projects_router)
