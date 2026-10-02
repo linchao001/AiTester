@@ -159,3 +159,36 @@ class KbResponse(BaseModel):
     success: bool
     answer: Any = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProjectInfo(BaseModel):
+    """项目条目：kb 只回别名，真实知识库 id 与实体路径不外泄。"""
+
+    id: str
+    name: str
+    desc: str
+    dir: str
+    agents: list[str]
+    kb: str
+    session_count: int = 0
+
+
+class ProjectsResponse(BaseModel):
+    projects: list[ProjectInfo]
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str
+    desc: str = ""
+    dir: str
+    agents: list[str]
+    kb: str | None = None
+
+
+class ProjectUpdateRequest(BaseModel):
+    name: str
+    desc: str = ""
+    agents: list[str]
+    # 不可改字段：不传即不改，传了必须与原值相同（判等在服务层）
+    dir: str | None = None
+    kb: str | None = None

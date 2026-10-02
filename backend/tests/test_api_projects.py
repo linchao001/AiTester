@@ -1,0 +1,133 @@
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi.testclient import TestClient
+
+from aitester.config import Settings
+from aitester.main import create_app
+
+
+# 与 test_kb_browse.py 同款：项目端点不碰 reme，注入假 manager 免起真实实例
+class _NoopKbManager:
+    def start(self):
+        pass
+
+    def close_all(self, timeout: float = 30.0):
+        pass
+
+    async def run_job(self, name, *, project_id="default", agent_id="console", **kwargs):
+        return SimpleNamespace(success=True, answer="ok", metadata={})
+
+    def run_job_sync(self, name, *, project_id="default", agent_id="console", **kwargs):
+        return SimpleNamespace(success=True, answer="ok", metadata={})
+
+
+@pytest.fixture()
+def client(tmp_path: Path) -> TestClient:
+    app = create_app(
+        model_config_path=tmp_path / "m.json",
+        capability_config_path=tmp_path / "c.json",
+        projects_path=tmp_path / "projects.json",
+        settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
+        kb_manager=_NoopKbManager(),
+    )
+    return TestClient(app)
+
+
+def _body(client, **over):
+    payload = {
+        "name": "订单系统",
+        "desc": "交易链路",
+        "dir": "D:/work/projects/order",
+        "agents": ["case_design"],
+    }
+    payload.update(over)
+    return payload
+
+
+def test_list_is_empty_json_array(client):
+    resp = client.get("/api/projects")
+    assert resp.status_code == 200
+    assert resp.json() == {"projects": []}
+
+
+def test_create_returns_201_with_kb_alias_and_zero_sessions(client):
+    resp = client.post("/api/projects", json=_body(client))
+    assert resp.status_code == 201
+    p = resp.json()
+    assert p["kb"] == "kb" and p["session_count"] == 0
+    assert set(p) == {"id", "name", "desc", "dir", "agents", "kb", "session_count"}
+    assert client.get("/api/projects").json()["projects"][0]["id"] == p["id"]
+
+
+def test_response_body_never_contains_real_kb_identity(client):
+    client.post("/api/projects", json=_body(client))
+    assert "zhb" not in client.get("/api/projects").text.lower()
+
+
+def test_create_persists_to_injected_path_not_data_dir(client, tmp_path):
+    client.post("/api/projects", json=_body(client))
+    assert (tmp_path / "projects.json").exists()
+    assert "订单系统" in (tmp_path / "projects.json").read_text(encoding="utf-8")
+
+
+def test_validation_maps_to_400_with_chinese_detail(client):
+    assert client.post("/api/projects", json=_body(client, name="  ")).status_code == 400
+    bad = client.post("/api/projects", json=_body(client, dir="work/order"))
+    assert bad.status_code == 400 and "绝对路径" in bad.json()["detail"]
+    agents = client.post("/api/projects", json=_body(client, agents=["kb_assistant"]))
+    assert agents.status_code == 400 and "不可启用" in agents.json()["detail"]
+    kb = client.post("/api/projects", json=_body(client, kb="zhb_kb"))
+    assert kb.status_code == 400 and "未知知识库" in kb.json()["detail"]
+
+
+def test_duplicate_name_rejected(client):
+    assert client.post("/api/projects", json=_body(client)).status_code == 201
+    dup = client.post("/api/projects", json=_body(client, dir="D:/work/other"))
+    assert dup.status_code == 400 and "同名项目" in dup.json()["detail"]
+
+
+def test_update_immutable_fields_and_unknown_id(client):
+    pid = client.post("/api/projects", json=_body(client)).json()["id"]
+    ok = client.put(f"/api/projects/{pid}", json=_body(client, name="支付中心"))
+    assert ok.status_code == 200 and ok.json()["name"] == "支付中心"
+    # 不带 dir/kb 也合法（不传即不改）
+    assert client.put(f"/api/projects/{pid}", json={
+        "name": "支付中心", "desc": "", "agents": ["case_design"]}).status_code == 200
+    clash = client.put(f"/api/projects/{pid}", json=_body(client, dir="E:/x"))
+    assert clash.status_code == 400 and "本地文件目录" in clash.json()["detail"]
+    kb = client.put(f"/api/projects/{pid}", json=_body(client, kb="other"))
+    assert kb.status_code == 400 and "知识库配置" in kb.json()["detail"]
+    ghost = client.put("/api/projects/proj_00000000", json=_body(client, name="幽灵"))
+    assert ghost.status_code == 404 and "未知项目" in ghost.json()["detail"]
+
+
+def test_delete_204_then_last_project_protected(client):
+    a = client.post("/api/projects", json=_body(client)).json()["id"]
+    b = client.post("/api/projects", json=_body(client, name="会员中心", dir="D:/work/m")).json()["id"]
+    assert client.delete(f"/api/projects/{b}").status_code == 204
+    assert client.delete(f"/api/projects/{b}").status_code == 404
+    last = client.delete(f"/api/projects/{a}")
+    assert last.status_code == 400 and "至少需要保留 1 个项目" in last.json()["detail"]
+
+
+def test_unknown_project_id_404(client):
+    assert client.delete("/api/projects/proj_deadbeef").status_code == 404
+    assert client.put("/api/projects/proj_deadbeef", json=_body(client)).status_code == 404
+
+
+def test_malformed_project_items_self_heal_on_read(tmp_path):
+    (tmp_path / "projects.json").write_text(
+        '{"version":1,"projects":[{"id":"evil","name":"坏","dir":"D:/x","agents":["ghost"],"kb":"nope"}]}',
+        encoding="utf-8")
+    app = create_app(
+        model_config_path=tmp_path / "m.json",
+        capability_config_path=tmp_path / "c.json",
+        projects_path=tmp_path / "projects.json",
+        settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
+        kb_manager=_NoopKbManager(),
+    )
+    row = TestClient(app).get("/api/projects").json()["projects"][0]
+    assert row["id"].startswith("proj_") and row["kb"] == "kb"
+    assert row["agents"] == ["case_design"]

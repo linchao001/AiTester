@@ -6,11 +6,13 @@ from fastapi import FastAPI
 from aitester.adapters.tools import FileObservationStore
 from aitester.config import Settings, get_settings
 from aitester.interaction.kb_browse import router as kb_browse_router
+from aitester.interaction.projects import router as projects_router
 from aitester.interaction.router import router
 from aitester.services import CapabilityConfigService, ChatService
 from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.kb.manager import RemeKbManager
 from aitester.services.model_config import ModelConfigService
+from aitester.services.project_config import ProjectService
 from aitester.storage import FileJsonConfigRepository
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -19,6 +21,7 @@ DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 def create_app(
     model_config_path: Path | None = None,
     capability_config_path: Path | None = None,
+    projects_path: Path | None = None,
     settings: Settings | None = None,
     kb_manager=None,
 ) -> FastAPI:
@@ -31,6 +34,9 @@ def create_app(
             capability_config_path or DATA_DIR / "capability_config.json"
         ),
         model_config,
+    )
+    project_config = ProjectService(
+        FileJsonConfigRepository(projects_path or DATA_DIR / "projects.json")
     )
     kb = (
         kb_manager
@@ -51,6 +57,7 @@ def create_app(
     application.state.settings = s
     application.state.model_config = model_config
     application.state.capability_config = capability_config
+    application.state.project_config = project_config
     application.state.file_observations = FileObservationStore()
     application.state.agent_runtime = AgentRuntime(
         capability_config, model_config, application.state.file_observations, kb=kb
@@ -58,6 +65,7 @@ def create_app(
     application.state.chat_service = ChatService(agent_runtime=application.state.agent_runtime)
     application.include_router(router)
     application.include_router(kb_browse_router)
+    application.include_router(projects_router)
     return application
 
 
