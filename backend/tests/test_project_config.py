@@ -43,6 +43,9 @@ def test_create_rejects_blank_and_overlong_fields(svc):
     first = _mk(svc)
     with pytest.raises(ProjectConfigError, match="请填写项目名称"):
         _mk(svc, name="   ")
+    # 校验顺序：名称先于目录形态（空名 + 相对路径不得报「目录必须是绝对路径」）
+    with pytest.raises(ProjectConfigError, match="请填写项目名称"):
+        _mk(svc, name="   ", dir_="relative/path")
     with pytest.raises(ProjectConfigError, match="已存在同名项目"):
         _mk(svc, name=first["name"])
     with pytest.raises(ProjectConfigError, match=f"不能超过 {NAME_MAX} 字"):
