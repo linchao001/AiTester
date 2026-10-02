@@ -10,7 +10,7 @@
 ## 用户裁定（2026-10-02，逐条确认）
 
 1. **范围 = 仅项目 CRUD**：本期不动聊天链路——`SendRequest` 不加 `project_id`、工具 `cwd` 仍恒 `"."`、会话键仍是 `agent_id:session_id`。聊天页按项目隔离留给后续专项。
-2. **知识库为默认不可改配置，且 UI 脱敏**：界面只显示别名 `kb`，**任何位置都不得出现 `zhb` 字样或 reme 实体根路径**；`kb → zhb_kb` 的映射只活在后端。
+2. **知识库为默认不可改配置，且 UI 脱敏**：**界面**任何位置都不得出现 `zhb` 字样或 reme 实体根路径，只显示别名 `kb`；`kb → zhb_kb` 的映射只活在后端。脱敏口径止于 UI——**API 响应层不做脱敏**（2026-10-02 用户裁定）：`/api/kb/*` 的 `root`/`abs_display` 继续回真实路径，那是前端渲染与调试需要的既有契约，不算遗漏。`/api/projects` 侧的 `kb` 字段本就是别名，不含真实标识属设计结果，非额外收敛动作。
 3. **dir 服务端只校验绝对路径**：不扫描磁盘、不校验存在性、不自动建目录；`浏览…` 保持原型语义（浏览器 Folder Picker 只能拿到文件夹名，用于拼接）。
 
 ## 控制端裁定（用户未逐一指定、按既有裁定与原型口径补齐）
@@ -61,7 +61,7 @@
 - `resolve_kb_id(alias: str, settings: Any) -> str` → `settings.kb_id`（即 `zhb_kb`）；未知别名抛 `UnknownKbAlias`（`settings` 由调用方传入，避免 `config` 与 `services` 循环导入）
 - `resolve_kb_root_for(alias: str, settings: Any) -> Path` → `resolve_kb_bases_dir(settings) / resolve_kb_id(alias, settings)`
 
-本期**检索/写盘链路不改**（KB 全局单份裁定不变）：`/api/kb/browse/*` 与 reme 实例池继续用 `settings.kb_id`。别名层只承担三件事：项目 `kb` 字段的写时校验、`kb → zhb_kb` 的集中解析口径、后续多 KB 专项的接线点。禁止在任何 UI 文案或 API 响应里回显解析结果。
+本期**检索/写盘链路不改**（KB 全局单份裁定不变）：`/api/kb/browse/*` 与 reme 实例池继续用 `settings.kb_id`。别名层只承担三件事：项目 `kb` 字段的写时校验、`kb → zhb_kb` 的集中解析口径、后续多 KB 专项的接线点。禁止在**任何 UI 文案**里回显解析结果（实体根路径由展示层用别名 `kb` 拼；API 响应层按裁定②不收敛）。
 
 ## 前端
 
