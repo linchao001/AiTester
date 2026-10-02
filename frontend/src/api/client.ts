@@ -73,17 +73,31 @@ export interface CapabilityResponse {
   agents: AgentInfo[];
 }
 
+/** 带 HTTP 状态码与解析后响应体的 API 错误（Error 子类，旧 catch 路径兼容）。 */
+export class ApiError extends Error {
+  status: number;
+  data: unknown;
+  constructor(message: string, status: number, data: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.data = data;
+  }
+}
+
 async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(url, init);
   if (!resp.ok) {
     let detail = `请求失败: HTTP ${resp.status}`;
+    let body: unknown = null;
     try {
-      const body = (await resp.json()) as { detail?: unknown };
-      if (typeof body.detail === "string") detail = body.detail;
+      const parsed = (await resp.json()) as { detail?: unknown };
+      body = parsed;
+      if (typeof parsed.detail === "string") detail = parsed.detail;
     } catch {
-      // 响应体不是 JSON 时保留默认错误文案
+      // 响应体不是 JSON 时保留默认错误文案，body 为 null
     }
-    throw new Error(detail);
+    throw new ApiError(detail, resp.status, body);
   }
   return (await resp.json()) as T;
 }
@@ -203,4 +217,61 @@ export function kbSave(title: string, content: string, bucket: string): Promise<
     headers: JSON_HEADERS,
     body: JSON.stringify({ title, content, bucket }),
   });
+}
+
+export interface KbBrowseItem { name: string; rel: string; dir: boolean; size: number; mtime: number }
+export interface KbTreeResponse { root: string; rel: string; items: KbBrowseItem[] }
+export interface KbFileResponse { rel: string; name: string; ext: string; content: string; size: number; mtime: number; editable: boolean }
+export interface KbSearchHit { name: string; rel: string; dir: boolean; size: number; mtime: number }
+export interface KbSearchResponse { root: string; total: number; truncated: boolean; hits: KbSearchHit[] }
+export interface KbScanDoc { rel: string; name: string; size: number; mtime: number; fm: Record<string, string> | null }
+export interface KbScanResponse { root: string; scanned: number; truncated: boolean; docs: KbScanDoc[] }
+export interface KbWriteResponse { rel: string; size: number; mtime: number }
+
+const browseApi = (sub: string, params: Record<string, string | number>) =>
+  `/api/kb/browse/${sub}?${new URLSearchParams(
+    Object.entries(params).map(([k, v]) => [k, String(v)])).toString()}`;
+
+export function kbTree(path: string): Promise<KbTreeResponse> {
+  return apiFetch<KbTreeResponse>(browseApi("tree", { path }));
+}
+export function kbReadFile(path: string): Promise<KbFileResponse> {
+  return apiFetch<KbFileResponse>(browseApi("file", { path }));
+}
+export function kbSearchFiles(q: string, limit = 120): Promise<KbSearchResponse> {
+  return apiFetch<KbSearchResponse>(browseApi("search", { q, limit }));
+}
+export function kbScanFiles(path: string, limit = 800, md = true): Promise<KbScanResponse> {
+  return apiFetch<KbScanResponse>(browseApi("scan", { path, limit, md: md ? "1" : "0" }));
+}
+export function kbPutFile(path: string, content: string, mtime: number): Promise<KbWriteResponse> {
+  return apiFetch<KbWriteResponse>(browseApi("file", { path, mtime }), {
+    method: "PUT", headers: JSON_HEADERS, body: JSON.stringify({ content }) });
+}
+export function kbPostFile(path: string, content: string): Promise<KbWriteResponse> {
+  return apiFetch<KbWriteResponse>(browseApi("file", { path }), {
+    method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ content }) });
+}
+
+export interface KbDraft {
+  op: "create" | "modify";
+  path: string;
+  abs_display: string;
+  summary: string;
+  content: string;
+  base: string | null;
+  mtime: number;
+}
+
+export interface SendResponse {
+  reply: string;
+  trace: string[];
+  model: string;
+  drafts: KbDraft[];
+}
+
+export function chatSend(sessionId: string, message: string, agentId: string): Promise<SendResponse> {
+  return apiFetch<SendResponse>("/api/chat/send", {
+    method: "POST", headers: JSON_HEADERS,
+    body: JSON.stringify({ session_id: sessionId, message, agent_id: agentId }) });
 }
