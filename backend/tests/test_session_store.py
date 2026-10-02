@@ -1,0 +1,124 @@
+import json
+
+import pytest
+
+from aitester.services.session_store import (
+    ChatMessage,
+    Session,
+    SessionStore,
+    SessionStoreError,
+    is_session_id,
+)
+
+
+def _store(tmp_path):
+    return SessionStore(tmp_path / "sessions")
+
+
+def test_new_id_matches_form_and_is_unique(tmp_path) -> None:
+    store = _store(tmp_path)
+    ids = {store.new_id() for _ in range(50)}
+    assert len(ids) == 50
+    assert all(is_session_id(i) for i in ids)
+
+
+def test_is_session_id_rejects_other_forms() -> None:
+    assert is_session_id("sess_0a1b2c3d") is True
+    for bad in ("sess_0A1B2C3D", "sess_0a1b2c", "kb-console", "default", "", "proj_7e29a494"):
+        assert is_session_id(bad) is False, bad
+
+
+def test_create_derives_title_from_first_message(tmp_path) -> None:
+    store = _store(tmp_path)
+    sid = store.new_id()
+    sess = store.create(sid, "case_design", "  第一行很长的问题\n第二行不要进标题  ")
+    assert sess.id == sid and sess.agent_id == "case_design"
+    # 换行转空格后取前 16 字（spec:2026-10-03-chat-session-design.md:46 与 TITLE_MAX=16 一致）
+    assert sess.title == "第一行很长的问题 第二行不要进标"
+    assert len(sess.title) == 16
+    assert sess.message_count == 0
+
+
+def test_title_falls_back_when_first_message_blank(tmp_path) -> None:
+    store = _store(tmp_path)
+    assert store.create(store.new_id(), "case_design", "  \n  ").title == "新会话"
+
+
+def test_create_is_idempotent_for_existing_id(tmp_path) -> None:
+    store = _store(tmp_path)
+    sid = store.new_id()
+    first = store.create(sid, "case_design", "原始问题")
+    again = store.create(sid, "case_design", "另一个问题")
+    assert again.title == first.title  # 已存在只返回既有，绝不覆盖标题
+    assert [s.id for s in store.list("case_design")] == [sid]
+
+
+def test_append_bumps_count_updates_and_appends_jsonl(tmp_path) -> None:
+    store = _store(tmp_path)
+    sid = store.new_id()
+    store.create(sid, "case_design", "问题")
+    store.append(sid, "user", "问题")
+    store.append(sid, "assistant", "答", steps=[{"tool": "read", "ok": True, "round": 1, "detail": "{}"}])
+    msgs = store.messages(sid)
+    assert [m.role for m in msgs] == ["user", "assistant"]
+    assert msgs[1].steps == [{"tool": "read", "ok": True, "round": 1, "detail": "{}"}]
+    assert msgs[0].steps is None
+    got = store.get(sid)
+    assert got.message_count == 2 and got.updated_at >= msgs[-1].ts
+    lines = (tmp_path / "sessions" / f"{sid}.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[1])["content"] == "答"
+
+
+def test_append_unknown_session_raises_actionable(tmp_path) -> None:
+    store = _store(tmp_path)
+    with pytest.raises(SessionStoreError) as exc_info:
+        store.append("sess_deadbeef", "user", "hi")
+    assert exc_info.value.detail == "会话不存在或已被删除"
+
+
+def test_list_sorts_by_updated_at_desc_and_scopes_by_agent(tmp_path) -> None:
+    store = _store(tmp_path)
+    a = store.create(store.new_id(), "case_design", "A")
+    b = store.create(store.new_id(), "case_design", "B")
+    store.append(b.id, "user", "B 又说话了")
+    assert [s.id for s in store.list("case_design")] == [b.id, a.id]
+    assert store.list("ghost") == []
+
+
+def test_delete_removes_index_entry_and_file(tmp_path) -> None:
+    store = _store(tmp_path)
+    sid = store.new_id()
+    store.create(sid, "case_design", "问题")
+    store.append(sid, "user", "问题")
+    path = tmp_path / "sessions" / f"{sid}.jsonl"
+    assert path.exists()
+    assert store.delete(sid) is True
+    assert store.get(sid) is None and store.messages(sid) == []
+    assert not path.exists()
+    assert store.delete(sid) is False  # 二次删除明确返回 False，路由据此 404
+
+
+def test_index_file_shape_is_versioned_and_ignores_orphans(tmp_path) -> None:
+    root = tmp_path / "sessions"
+    store = SessionStore(root)
+    sid = store.new_id()
+    store.create(sid, "case_design", "问题")
+    index = json.loads((root / "index.json").read_text(encoding="utf-8"))
+    assert index["version"] == 1
+    assert index["sessions"][0]["id"] == sid
+    assert set(index["sessions"][0]) == {
+        "id", "agent_id", "title", "created_at", "updated_at", "message_count"
+    }
+
+
+def test_store_survives_reinstantiation(tmp_path) -> None:
+    store = _store(tmp_path)
+    sid = store.new_id()
+    store.create(sid, "case_design", "问题")
+    store.append(sid, "user", "问题")
+    store.append(sid, "assistant", "答")
+    reopened = _store(tmp_path)
+    got = reopened.get(sid)
+    assert got is not None and got.title == "问题" and got.message_count == 2
+    assert [m.content for m in reopened.messages(sid)] == ["问题", "答"]
