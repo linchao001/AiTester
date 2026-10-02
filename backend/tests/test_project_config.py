@@ -62,6 +62,9 @@ def test_dir_must_be_absolute_any_shape(svc):
 def test_dir_strips_trailing_separators_but_keeps_root(svc):
     assert _mk(svc, name="尾斜杠", dir_="D:/work/a///")["dir"] == "D:/work/a"
     assert _mk(svc, name="纯根", dir_="D:/")["dir"] == "D:/"
+    # 家目录根与裸盘符同病：剥尾分隔符塌成 `~` 会被 ABS_PATH 拒，须回退原输入形态
+    assert _mk(svc, name="家目录正斜杠", dir_="~/")["dir"] == "~/"
+    assert _mk(svc, name="家目录反斜杠", dir_="~\\")["dir"] == "~\\"
 
 
 def test_dir_overlong_rejected(svc):
@@ -102,22 +105,36 @@ def test_get_unknown_id_raises_404_style(svc):
 
 def test_update_name_desc_agents_only(svc):
     p = _mk(svc)
-    got = svc.update(p["id"], name="支付中心", desc="", agents=visible_agent_ids())
+    ids = visible_agent_ids()
+    got = svc.update(p["id"], name="支付中心", desc="", agents=list(ids))
     assert got["name"] == "支付中心" and got["desc"] == ""
+    # 可见目录当前只有 1 个智能体，白名单内不存在「换成另一个」的取值，
+    # 故 agents 只锁「返回等于传入」，再用非法 id 锁编辑链路同样过白名单校验
+    assert len(ids) == 1
+    assert got["agents"] == ids
+    with pytest.raises(ProjectConfigError, match="未知智能体"):
+        svc.update(p["id"], name="支付中心", desc="", agents=[*ids, "ghost"])
     # 同名仍然唯一（排除自身后可用）
     _mk(svc, name="会员中心")
     with pytest.raises(ProjectConfigError, match="已存在同名项目"):
-        svc.update(p["id"], name="会员中心", desc="", agents=visible_agent_ids())
+        svc.update(p["id"], name="会员中心", desc="", agents=ids)
 
 
 def test_update_immutable_dir_and_kb_idempotent(svc):
     p = _mk(svc)
+    # 幂等路径：整体提交原值要原样返回整个对象，不只是 id 对上
     assert svc.update(p["id"], name=p["name"], desc=p["desc"], agents=p["agents"],
-                      dir_=p["dir"], kb=p["kb"])["id"] == p["id"]
+                      dir_=p["dir"], kb=p["kb"]) == p
     with pytest.raises(ProjectConfigError, match="本地文件目录创建后不可修改"):
         svc.update(p["id"], name=p["name"], desc=p["desc"], agents=p["agents"], dir_="E:/other")
+    # 被拒的调用不得部分改写
+    after_dir_reject = svc.get(p["id"])
+    assert after_dir_reject["dir"] == p["dir"] and after_dir_reject["kb"] == p["kb"]
     with pytest.raises(ProjectConfigError, match="知识库配置创建后不可修改"):
         svc.update(p["id"], name=p["name"], desc=p["desc"], agents=p["agents"], kb="other")
+    after_kb_reject = svc.get(p["id"])
+    assert after_kb_reject["dir"] == p["dir"] and after_kb_reject["kb"] == p["kb"]
+    assert after_dir_reject == p and after_kb_reject == p
 
 
 def test_update_does_not_revalidate_frozen_dir(tmp_path):

@@ -48,11 +48,11 @@ def _new_id(existing: list[dict[str, Any]]) -> str:
 
 
 def _clean_dir(dir_: str) -> str:
-    """剥尾部分隔符（原型同款），但纯根路径不能剥坏：`/` 不剥成空串、`D:/` 不剥成 `D:`。"""
+    """剥尾部分隔符（原型同款），但纯根路径不能剥坏：`/` 不剥成空串、`D:/` 不剥成 `D:`、`~/` 不剥成 `~`。"""
     value = (dir_ or "").strip()
     stripped = re.sub(r"[\\/]+$", "", value)
-    if not stripped or re.fullmatch(r"[A-Za-z]:", stripped):
-        # 剥完塌成空串或裸盘符时保留原输入形态，交由 ABS_PATH 判定
+    if not stripped or re.fullmatch(r"[A-Za-z]:|~", stripped):
+        # 剥完塌成空串、裸盘符或裸 `~` 时保留原输入形态，交由 ABS_PATH 判定
         return value
     return stripped
 
@@ -178,9 +178,9 @@ class ProjectService:
         agents: list[str],
         kb: str = PROJECT_KB_DEFAULT,
     ) -> dict[str, Any]:
-        # 顺序照原型 btnProjSave：名称/描述 → 目录 → 智能体 → 知识库别名
-        clean_dir = _validate_dir(dir_)
+        # 校验顺序照数据模型从前往后：名称/描述 → 智能体 → 知识库别名 → 目录形态 → 同名唯一
         clean = _validate(name=name, desc=desc, agents=agents, kb=kb)
+        clean_dir = _validate_dir(dir_)
         self._ensure_name_free(clean["name"], None)
         record = {"id": _new_id(self._config["projects"]), **clean, "dir": clean_dir}
         self._config["projects"].append(record)
