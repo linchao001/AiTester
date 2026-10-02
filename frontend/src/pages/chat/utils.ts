@@ -46,10 +46,10 @@ export function groupSessions(
     .filter((g) => g.items.length > 0);
 }
 
-/** 会话行与 meta 共用：今天只显 HH:MM，更早补 M月D日（原型 now() 的口径按日历日收敛）。 */
+/** 会话行与 meta 共用：今天只显 HH:MM，更早补 M月D日（原型 now() 恒带日期且补零，此处按日历日收敛成偏离）。 */
 export function fmtTime(ts: number, now = Date.now()): string {
   const d = new Date(ts);
   const p = (n: number) => String(n).padStart(2, "0");
   const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
-  return daysSince(ts, now) === 0 ? hm : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+  return daysSince(ts, now) <= 0 ? hm : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
 }
