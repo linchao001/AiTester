@@ -2,16 +2,16 @@ import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage
 
-from aitester.agents import find_agent
 from aitester.adapters.llm import MockProvider, ProviderError
 from aitester.adapters.llm.probe import ProbeError
+from aitester.agents import find_agent
 from aitester.config import Settings
 from aitester.main import app, create_app
 from aitester.services import model_config
 from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.chat import ChatService
-from langchain_core.messages import AIMessage
 
 client = TestClient(app)
 
@@ -34,6 +34,8 @@ def _isolated_client(
     application = create_app(
         model_config_path=tmp_path / name,
         capability_config_path=tmp_path / cap_name,
+        projects_path=tmp_path / "p.json",
+        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     return TestClient(application)
@@ -69,6 +71,7 @@ def test_send_uses_injected_provider_and_reports_model(tmp_path: Path) -> None:
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
+        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     assert isinstance(application.state.agent_runtime, AgentRuntime)
@@ -89,6 +92,7 @@ def test_send_with_unknown_agent_returns_404(tmp_path: Path) -> None:
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
+        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     application.state.chat_service = ChatService(
@@ -105,10 +109,13 @@ def test_send_with_legacy_agent_id_returns_404(tmp_path: Path) -> None:
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
+        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     application.state.chat_service = ChatService(
-        provider=MockProvider(), agent_runtime=application.state.agent_runtime
+        provider=MockProvider(),
+        agent_runtime=application.state.agent_runtime,
+        sessions=application.state.sessions,
     )
     resp = TestClient(application).post(
         "/api/chat/send", json={"message": "hi", "agent_id": "a1"}
@@ -137,6 +144,7 @@ def test_send_uses_agent_prompt_and_default_agent_id(tmp_path: Path) -> None:
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
+        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     application.state.chat_service = ChatService(
@@ -174,10 +182,13 @@ def test_send_upstream_failure_returns_502(tmp_path: Path) -> None:
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
+        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     application.state.chat_service = ChatService(
-        provider=FailingProvider(), agent_runtime=application.state.agent_runtime
+        provider=FailingProvider(),
+        agent_runtime=application.state.agent_runtime,
+        sessions=application.state.sessions,
     )
     resp = TestClient(application).post("/api/chat/send", json={"message": "hi"})
     assert resp.status_code == 502
@@ -188,11 +199,13 @@ def test_chat_service_is_per_app_instance(tmp_path: Path) -> None:
     app_a = create_app(
         model_config_path=tmp_path / "a.json",
         capability_config_path=tmp_path / "a.cap.json",
+        sessions_dir=tmp_path / "sessions-a",
         settings=Settings(_env_file=None),
     )
     app_b = create_app(
         model_config_path=tmp_path / "b.json",
         capability_config_path=tmp_path / "b.cap.json",
+        sessions_dir=tmp_path / "sessions-b",
         settings=Settings(_env_file=None),
     )
     client_a, client_b = TestClient(app_a), TestClient(app_b)

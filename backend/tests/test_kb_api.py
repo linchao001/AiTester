@@ -29,6 +29,7 @@ def _client(tmp_path, kb):
     app = create_app(
         model_config_path=tmp_path / "models.json",
         capability_config_path=tmp_path / "caps.json",
+        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None, kb_embedding_api_key=""),
         kb_manager=kb,
     )
@@ -87,9 +88,11 @@ def test_kb_get_bases(tmp_path):
 def test_chat_send_returns_drafts(tmp_path):
     app = create_app(
         model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
+        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
     app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid: {
         "reply": "r", "trace": ["services"], "model": "m",
+        "session_id": "", "title": "", "steps": [],
         "drafts": [{"op": "create", "path": "a.md", "abs_display": "P",
                      "summary": "s", "content": "c", "base": None, "mtime": 0}]})
     with TestClient(app) as c:
@@ -100,7 +103,9 @@ def test_chat_send_returns_drafts(tmp_path):
 def test_chat_send_drafts_defaults_empty(tmp_path):
     app = create_app(
         model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
+        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
+    # 保留旧形态返回（无 session_id/title/steps 键）：验 SendResponse 默认值兜底
     app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid: {
         "reply": "r", "trace": ["services"], "model": "m"})  # 旧形态返回：无 drafts 键
     with TestClient(app) as c:
@@ -112,11 +117,13 @@ def test_chat_send_skips_malformed_drafts(tmp_path):
     # 终审项 5：缺必填键/非 dict 的畸形草案逐条跳过，不整响应 500，回复不丢
     app = create_app(
         model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
+        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
     valid = {"op": "create", "path": "a.md", "abs_display": "P",
              "summary": "s", "content": "c", "base": None, "mtime": 0}
     app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid: {
         "reply": "回复还在", "trace": ["services"], "model": "m",
+        "session_id": "", "title": "", "steps": [],
         "drafts": [valid, {"op": "create"}, "garbage", None]})
     with TestClient(app) as c:
         r = c.post("/api/chat/send", json={"message": "写点什么"})

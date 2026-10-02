@@ -22,6 +22,7 @@ from aitester.interaction.schemas import (
     ProviderTestResponse,
     SendRequest,
     SendResponse,
+    StepInfo,
     ToolEnabledUpdate,
 )
 from aitester.services import ChatService
@@ -31,6 +32,7 @@ from aitester.services.capability_config import (
 )
 from aitester.services.kb.manager import KbUnavailableError
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
+from aitester.services.session_store import SessionStoreError
 
 router = APIRouter(prefix="/api")
 
@@ -59,6 +61,8 @@ def chat_send(req: SendRequest, request: Request) -> SendResponse:
         result = service.send(req.session_id, req.message, req.agent_id)
     except ConfigNotFoundError as exc:
         raise HTTPException(status_code=404, detail=exc.detail) from exc
+    except SessionStoreError as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
     except ProviderConfigError as exc:
         raise HTTPException(status_code=400, detail=exc.detail) from exc
     except ProviderError as exc:
@@ -71,11 +75,17 @@ def chat_send(req: SendRequest, request: Request) -> SendResponse:
             drafts.append(KbDraft.model_validate(d))
         except ValidationError:
             continue
+    # steps 严格构造、不做逐条容错：send 的 steps 恒为本轮 run_graph 新产物，
+    # 此处若畸形是装配 bug，须响亮失败（裁定 3：落盘行容错只留在读路径 sessions.py）
+    steps = [StepInfo(**s) for s in result.get("steps", [])]
     return SendResponse(
         reply=result["reply"],
         trace=["interaction"] + result["trace"],
         model=result["model"],
         drafts=drafts,
+        session_id=str(result.get("session_id", "")),
+        title=str(result.get("title", "")),
+        steps=steps,
     )
 
 

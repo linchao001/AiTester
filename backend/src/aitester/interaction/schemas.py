@@ -14,7 +14,8 @@ class EchoResponse(BaseModel):
 
 
 class SendRequest(BaseModel):
-    session_id: str = "default"
+    # 空串 = 服务端新建会话；sess_* 续写；其余形态按临时键处理（chat.py 三态判据）
+    session_id: str = ""
     message: str = Field(min_length=1)
     agent_id: str = "case_design"
 
@@ -29,11 +30,22 @@ class KbDraft(BaseModel):
     mtime: int = 0
 
 
+class StepInfo(BaseModel):
+    tool: str
+    ok: bool
+    round: int
+    detail: str
+
+
 class SendResponse(BaseModel):
     reply: str
     trace: list[str]
     model: str
     drafts: list[KbDraft] = []
+    # 默认值不可省：既有测试用 SimpleNamespace 替身返回缺键 dict，靠默认兜住旧形态
+    session_id: str = ""
+    title: str = ""
+    steps: list[StepInfo] = []
 
 
 class ModelInfo(BaseModel):
@@ -192,3 +204,28 @@ class ProjectUpdateRequest(BaseModel):
     # 不可改字段：不传即不改，传了必须与原值相同（判等在服务层）
     dir: str | None = None
     kb: str | None = None
+
+
+class SessionInfo(BaseModel):
+    id: str
+    agent_id: str
+    title: str
+    created_at: int
+    updated_at: int
+    message_count: int
+
+
+class SessionsResponse(BaseModel):
+    sessions: list[SessionInfo]
+
+
+class ChatMessageInfo(BaseModel):
+    role: str
+    content: str
+    ts: int
+    steps: list[StepInfo] | None = None
+
+
+class SessionMessagesResponse(BaseModel):
+    session_id: str
+    messages: list[ChatMessageInfo]

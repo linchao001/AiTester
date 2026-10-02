@@ -8,6 +8,7 @@ from aitester.config import Settings, get_settings
 from aitester.interaction.kb_browse import router as kb_browse_router
 from aitester.interaction.projects import router as projects_router
 from aitester.interaction.router import router
+from aitester.interaction.sessions import router as sessions_router
 from aitester.services import CapabilityConfigService, ChatService
 from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.kb.manager import RemeKbManager
@@ -72,6 +73,7 @@ def create_app(
     application.include_router(router)
     application.include_router(kb_browse_router)
     application.include_router(projects_router)
+    application.include_router(sessions_router)
     return application
 
 
