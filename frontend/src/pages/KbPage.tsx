@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ApiError,
-  kbPostFile, kbPutFile, kbReadFile, kbSearchFiles, kbTree,
-  type KbBrowseItem, type KbSearchHit, type KbWriteResponse,
+  chatSend, kbPostFile, kbPutFile, kbReadFile, kbSearchFiles, kbTree,
+  type KbBrowseItem, type KbDraft, type KbSearchHit, type KbWriteResponse,
 } from "../api/client";
 import KbTreePane from "./kb/KbTreePane";
 import KbEditorPane from "./kb/KbEditorPane";
+import KbAssistantPane, { type KbChatMsg } from "./kb/KbAssistantPane";
+import { type KbDraftState } from "./kb/KbDraftCard";
 import { KB_BUCKETS, kbDirOf, kbDisp, kbJoin, kbSlug } from "./kb/utils";
 
 /** Task 9/10 消费：中栏文档状态（原型 KB 对象 :2342-2345 的文档部分）。 */
@@ -285,6 +287,69 @@ export default function KbPage() {
   }, []);
   useEffect(() => () => { window.clearTimeout(searchTimer.current); window.clearTimeout(toastTimer.current); }, []);
 
+  // —— 助手栏（Task 10：原型 kbAsk/kbSay/kbDraftCard :2556-2596/:2675-2689 的接线；
+  //     真实 LLM 链路走 /api/chat/send，本任务门禁仅 build，不起对话）——
+  const [msgs, setMsgs] = useState<KbChatMsg[]>([]);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false); // 原型 KB.busy 的同步重入锁（不依赖重渲染时序）
+
+  /** 原型 :2682-2685 —— 用最新回复（+逐条 pending 草案卡 / 错误行）替换「思考中…」占位气泡。
+      逆序找最后一条 pending ai 消息；防御性：占位缺失则追加新气泡。 */
+  const replaceLastAi = useCallback((text: string, drafts: KbDraft[], error = false) => {
+    setMsgs((prev) => {
+      const next = [...prev];
+      const msg: KbChatMsg = {
+        who: "ai", text,
+        error: error || undefined,
+        drafts: drafts.length ? drafts.map((d) => ({ draft: d, state: "pending" as const })) : undefined,
+      };
+      let i = next.length - 1;
+      while (i >= 0 && !(next[i].who === "ai" && next[i].pending)) i--;
+      if (i >= 0) next[i] = msg; else next.push(msg);
+      return next;
+    });
+  }, []);
+
+  /** brief Step 3 ask 原样转写：session_id/agent_id 固定值不可改（后端记忆键 kb_assistant:kb-console）。 */
+  const ask = useCallback(async (text: string) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setMsgs((prev) => [...prev, { who: "me", text }, { who: "ai", text: "思考中…", pending: true }]);
+    try {
+      const resp = await chatSend("kb-console", text, "kb_assistant");
+      replaceLastAi(resp.reply, resp.drafts ?? []);
+    } catch (err) {
+      replaceLastAi(err instanceof Error ? err.message : String(err), [], true);
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }, [replaceLastAi]);
+
+  /** 草案态迁移：drafts 内嵌于消息（原型卡片挂在 ai 气泡内），以 (消息下标, 草案下标) 定位。 */
+  const setDraftState = useCallback((mi: number, di: number, state: KbDraftState, writtenAt?: number) => {
+    setMsgs((prev) => prev.map((m, i) => (i !== mi || !m.drafts) ? m : {
+      ...m,
+      drafts: m.drafts.map((e, j) => (j !== di ? e : { ...e, state, writtenAt: writtenAt ?? e.writtenAt })),
+    }));
+  }, []);
+
+  /** brief Step 3 confirmDraft：确认文案逐字（abs_display 用后端返回的展示路径）；
+      setDraftState("writing") 在 await 前同步迁移——「✓ 确认写入磁盘」双击第二击时按钮已不渲染，无重复写盘窗口。
+      d.mtime 必带（PUT 基线；不带基线是已知 plan 限制，不得复现）。 */
+  const confirmDraft = useCallback(async (mi: number, di: number, d: KbDraft) => {
+    if (!window.confirm(`确认写入知识库磁盘？\n${d.op === "create" ? "新建" : "覆盖"}：${d.abs_display}`)) return;
+    setDraftState(mi, di, "writing");
+    const j = await kbWrite(d.path, d.content, d.op === "create" ? "POST" : "PUT", d.mtime);
+    if (!j) { setDraftState(mi, di, "failed"); return; } // 409 已在 kbWrite 内 toast+重载，不二次弹窗
+    setDraftState(mi, di, "done", j.mtime);
+  }, [kbWrite, setDraftState]);
+
+  const cancelDraft = useCallback((mi: number, di: number) => {
+    setDraftState(mi, di, "canceled");
+  }, [setDraftState]);
+
   // —— 双 resizer：拖拽写 --kbw/--kbc（原型 :2708-2715，夹持范围按裁定放宽）——
   useEffect(() => {
     const layout = layoutRef.current;
@@ -360,15 +425,16 @@ export default function KbPage() {
         />
 
         <div className="resizer" id="kbChatResizer" title="拖拽调整助手宽度"></div>
-        <aside className="kb-chat">
-          <div className="kb-chat-head">🤖 知识库助手<div className="spacer"></div>
-            {/* 原型初始 zhb_kb，root 载入后换实体目录名（kbLoadDir :2381） */}
-            <span className="scope">{root ? root.split(/[\\/]/).pop() : "zhb_kb"}</span>
-            <button className="icon-btn" title="隐藏助手" onClick={() => setChatHidden(true)}>»</button>
-          </div>
-          {/* Task 10 填充：消息流 / 快捷指令 / 输入区；本任务仅占位空壳 */}
-          <div className="kb-msgs"></div>
-        </aside>
+        {/* Task 10：助手栏整列迁入 KbAssistantPane（head/消息流/快捷指令/输入区，原型 :737-750） */}
+        <KbAssistantPane
+          messages={msgs}
+          busy={busy}
+          root={root}
+          onHide={() => setChatHidden(true)}
+          onAsk={(t) => void ask(t)}
+          onConfirmDraft={(mi, di, d) => void confirmDraft(mi, di, d)}
+          onCancelDraft={cancelDraft}
+        />
       </div>
       {/* 新建笔记弹窗：原型 :754-785 #kbNewMask（React 状态驱动条件渲染，类名逐字保留） */}
       {newNoteOpen && (
