@@ -23,7 +23,7 @@ export interface KbChatMsg {
 export interface KbAssistantPaneProps {
   messages: KbChatMsg[];
   busy: boolean;
-  /** 右栏 scope 徽标：KB 根目录名（原型 :2381，root 未载入回退 zhb_kb）。 */
+  /** 右栏 scope 徽标：界面知识库根名（恒为别名，原型 :2381 处读 KB 根目录名）。 */
   root: string;
   onHide: () => void;
   onAsk: (text: string) => void;
@@ -73,7 +73,7 @@ export default function KbAssistantPane({
   return (
     <aside className="kb-chat">
       <div className="kb-chat-head">🤖 知识库助手<div className="spacer"></div>
-        <span className="scope">{root ? root.split(/[\\/]/).pop() : "zhb_kb"}</span>
+        <span className="scope">{root}</span>
         <button className="icon-btn" title="隐藏助手" onClick={onHide}>»</button>
       </div>
       <div className="kb-msgs" ref={msgsRef}>

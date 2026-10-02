@@ -1,5 +1,5 @@
 import type { KbDraft } from "../../api/client";
-import { escapeHtml, fmtSize, fmtTime, kbBytes, kbDiffHtml } from "./utils";
+import { escapeHtml, fmtSize, fmtTime, kbBytes, kbDiffHtml, kbDisp } from "./utils";
 
 /** 草案卡写盘状态机（Task 10 固定契约）：pending 可确认/取消，writing 锁按钮，终态 done/canceled/failed。 */
 export type KbDraftState = "pending" | "writing" | "done" | "canceled" | "failed";
@@ -41,7 +41,7 @@ export default function KbDraftCard({ draft, state, writtenAt, onConfirm, onCanc
         <div className="spacer"></div>
         <span className="d-state">{stateLabel}</span>
       </div>
-      <div className="d-path">{draft.abs_display}</div>
+      <div className="d-path">{kbDisp(draft.path)}</div>
       {/* create 草案缺 summary 时的兜底文案（brief Step 1，逐字） */}
       <div className="d-sum">{draft.summary || "新建文件，不改动任何原始笔记"}</div>
       {/* diff 行内 span 已由 escapeHtml/kbDiffHtml 收口，仅 .add/.del 结构 */}

@@ -15,9 +15,12 @@ export const kbDirOf = (p: string): string => (p.includes("/") ? p.slice(0, p.la
 /** 原型 :2348 —— 目录+文件名拼 rel。 */
 export const kbJoin = (d: string, n: string): string => (d ? `${d}/${n}` : n);
 
-/** 原型 :2350 —— 展示/确认文案用：rel 拼成 Windows 风格绝对路径。
-    原型读全局 KB.root，这里改为纯函数显式传 root（Task 9/10 调用签名：kbDisp(root, rel)）。 */
-export const kbDisp = (root: string, rel: string): string => `${root}\\${rel}`.replace(/[\\/]+/g, "\\");
+/** 界面上的知识库根名：脱敏裁定——真实知识库标识与实体根路径只活在后端，UI 一律用别名展示。 */
+export const KB_ALIAS = "kb";
+
+/** 原型 :2350 —— 展示/确认文案用：rel 拼成 Windows 风格路径。
+    原型读全局 KB.root，此处根段固定用界面别名（脱敏裁定：实体根路径不进 UI）。 */
+export const kbDisp = (rel: string): string => `${KB_ALIAS}\\${rel}`.replace(/[\\/]+/g, "\\");
 
 /** 原型 :2352 —— YYYY-MM-DD。 */
 export const kbToday = (): string => new Date().toISOString().slice(0, 10);

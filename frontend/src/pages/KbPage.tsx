@@ -8,7 +8,7 @@ import KbTreePane from "./kb/KbTreePane";
 import KbEditorPane from "./kb/KbEditorPane";
 import KbAssistantPane, { type KbChatMsg } from "./kb/KbAssistantPane";
 import { type KbDraftState } from "./kb/KbDraftCard";
-import { KB_BUCKETS, kbDirOf, kbDisp, kbJoin, kbSlug } from "./kb/utils";
+import { KB_ALIAS, KB_BUCKETS, kbDirOf, kbDisp, kbJoin, kbSlug } from "./kb/utils";
 
 /** Task 9/10 消费：中栏文档状态（原型 KB 对象 :2342-2345 的文档部分）。 */
 export interface KbDocState {
@@ -72,7 +72,8 @@ export default function KbPage() {
   }, []);
 
   // —— 树数据加载（原型 KB.kids/expanded/root + kbLoadDir :2378-2385，缓存留在本页）——
-  const [root, setRoot] = useState("");
+  // 展示根名恒为别名：后端 browse 响应里的实体根路径只用于服务端定位，不进 UI（脱敏裁定）
+  const root = KB_ALIAS;
   const [kids, setKids] = useState<Record<string, KbBrowseItem[]>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({ "": true });
   const [total, setTotal] = useState<number | null>(null);
@@ -80,16 +81,13 @@ export default function KbPage() {
   const [activeRel, setActiveRel] = useState("");
   const kidsRef = useRef(kids);
   const expandedRef = useRef(expanded);
-  const rootRef = useRef(root);
   kidsRef.current = kids;
   expandedRef.current = expanded;
-  rootRef.current = root;
 
-  /** 原型 kbLoadDir：kids 缺失才拉（懒加载=首次展开触发）；root 首次响应时落一次。 */
+  /** 原型 kbLoadDir：kids 缺失才拉（懒加载=首次展开触发）。 */
   const loadKids = useCallback(async (rel: string): Promise<KbBrowseItem[]> => {
     if (kidsRef.current[rel]) return kidsRef.current[rel];
     const j = await kbTree(rel);
-    if (!rootRef.current) { rootRef.current = j.root; setRoot(j.root); }
     kidsRef.current = { ...kidsRef.current, [rel]: j.items };
     setKids(kidsRef.current);
     if (rel === "") setTotal(j.items.length); // 计数 num：根条目数
@@ -212,7 +210,7 @@ export default function KbPage() {
     const cur = docRef.current;
     if (!cur) return;
     if (cur.content === cur.disk) { toast("没有需要保存的修改"); return; }
-    if (!window.confirm(`确认写入磁盘？\n\n${kbDisp(rootRef.current, cur.rel)}\n\n这是知识库真实文件，保存会直接覆盖。`)) return;
+    if (!window.confirm(`确认写入磁盘？\n\n${kbDisp(cur.rel)}\n\n这是知识库真实文件，保存会直接覆盖。`)) return;
     void kbWrite(cur.rel, cur.content, "PUT");
   }, [kbWrite, toast]);
   const onDiscard = useCallback(() => {
@@ -342,11 +340,11 @@ export default function KbPage() {
     }));
   }, []);
 
-  /** brief Step 3 confirmDraft：确认文案逐字（abs_display 用后端返回的展示路径）；
+  /** brief Step 3 confirmDraft：确认文案用界面别名路径（后端 abs_display 含实体根路径，不外显）；
       setDraftState("writing") 在 await 前同步迁移——「✓ 确认写入磁盘」双击第二击时按钮已不渲染，无重复写盘窗口。
       d.mtime 必带（PUT 基线；不带基线是已知 plan 限制，不得复现）。 */
   const confirmDraft = useCallback(async (mi: number, di: number, d: KbDraft) => {
-    if (!window.confirm(`确认写入知识库磁盘？\n${d.op === "create" ? "新建" : "覆盖"}：${d.abs_display}`)) return;
+    if (!window.confirm(`确认写入知识库磁盘？\n${d.op === "create" ? "新建" : "覆盖"}：${kbDisp(d.path)}`)) return;
     setDraftState(mi, di, "writing");
     const j = await kbWrite(d.path, d.content, d.op === "create" ? "POST" : "PUT", d.mtime);
     if (!j) { setDraftState(mi, di, "failed"); return; } // 409 已在 kbWrite 内 toast+重载，不二次弹窗
