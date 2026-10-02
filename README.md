@@ -81,6 +81,8 @@ uv run python -m aitester.main
   能力配置（智能体默认模型、携带工具、工具启停）存 `backend/data/capability_config.json`
   （同样 gitignore，不含密钥），首次启动自动生成种子：种子启用态由本机探测推导，
   跑不了的工具不会以启用态出厂
+- `backend/data/`（含 `sessions/`）由**单一后端进程**读写：同时起两个后端会互相看不见对方的会话，
+  且后写者会用自己内存里的索引整文件覆盖 `sessions/index.json`
 
 ## 前端（frontend/）
 

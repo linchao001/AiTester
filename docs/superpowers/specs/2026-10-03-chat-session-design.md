@@ -88,7 +88,7 @@ class FileMemoryStore:
     def recall(self, session_id: str) -> list[dict[str, str]]          # 未注册会话返回 []
 ```
 
-装配（`services/chat.py`）：`ChatService.__init__` 增可选 `sessions: SessionStore | None`。`send()` 里：非平台智能体且 `session_id` 为空 → `sessions.create(agent_id, message)`；记忆实现选择 = `sessions is not None and not is_platform_agent(agent_id)` → `FileMemoryStore`，否则沿用 `InMemoryMemoryStore`。**记忆按单次调用选，不写回 `self.memory`**：`_complete` 增可选参数 `memory: MemoryStore | None = None`（缺省仍取 `self.memory`），`send()` 把选中的实例传进去。理由：同一个 `ChatService` 进程内同时服务项目智能体与平台智能体，改实例态会让一次 `/chat` 之后污染 `/kb` 追问。平台智能体 + 空 `session_id` 的组合不建会话（平台智能体根本没有会话概念），按现状用传入键；`/kb` 页助手继续显式传 `kb-console`（`KbPage.tsx:325` 现即是），故其行为零变化。`_complete` 内 `history = self.memory.recall(key)` 之后紧跟 `history = history[-HISTORY_MAX:]`（`HISTORY_MAX = 40` 常量在此文件，注释写明「只截 prompt，磁盘保留全量」）。`create_app` 在装配处建 `SessionStore(sessions_dir)` 注入 `ChatService`（与 `projects_path` 同一条缝）。
+装配（`services/chat.py`）：`ChatService.__init__` 增可选 `sessions: SessionStore | None`。`send()` 里：非平台智能体且 `session_id` 为空 → `sessions.create(agent_id, message)`；记忆实现选择 = `sessions is not None and is_session_id(sid) and not is_platform_agent(agent_id)` → `FileMemoryStore`，否则沿用 `InMemoryMemoryStore`（终审期文字校正：代码 `chat.py:121-125` 还要求会话段是 `sess_*` 形态，缺它就会把 `kb-console` 这类临时键收进文件记忆）。**记忆按单次调用选，不写回 `self.memory`**：`_complete` 增可选参数 `memory: MemoryStore | None = None`（缺省仍取 `self.memory`），`send()` 把选中的实例传进去。理由：同一个 `ChatService` 进程内同时服务项目智能体与平台智能体，改实例态会让一次 `/chat` 之后污染 `/kb` 追问。平台智能体 + 空 `session_id` 的组合不建会话（平台智能体根本没有会话概念），按现状用传入键；`/kb` 页助手继续显式传 `kb-console`（`KbPage.tsx:325` 现即是），故其行为零变化。`_complete` 内 `history = self.memory.recall(key)` 之后紧跟 `history = history[-HISTORY_MAX:]`（`HISTORY_MAX = 40` 常量在此文件，注释写明「只截 prompt，磁盘保留全量」）。`create_app` 在装配处建 `SessionStore(sessions_dir)` 注入 `ChatService`（与 `projects_path` 同一条缝）。
 
 `orchestration/agent_graph.py::run_graph` 的 `tool_traces` 每项由 `{tool, result}` 扩为 `{tool, result, ok, round, detail}`：`ok` 取 `ToolMessage.status != "error"`（langgraph 错误分支显式置 `status="error"`，`prebuilt/tool_node.py:1011,1277`）；`round` 为第几轮 agent↔tools 循环（每遇到一条带 `tool_calls` 的 `AIMessage` 递增）；`detail` 按 `tool_call_id` 回指对应 `AIMessage.tool_calls` 取该调用的 args，`json.dumps` 后截断 80 字符。`result` 仍保留（草案与 trace 逻辑依赖它，不动）。
 
@@ -114,7 +114,7 @@ class FileMemoryStore:
 - **消息渲染**：正文 `<div className="body md-preview" dangerouslySetInnerHTML={{__html: mdRender(reply)}} />`。**必须补一条显示规则**（计划期取证）：`.md-preview{display:none}`（`App.css:276`）是为工作区编辑器准备的，只在 `.ws-editor.preview` 下才 `display:block`（`:277`）——聊天气泡里直接挂 `.md-preview` 会**整段不可见**。故 App.css 新增 `.msg.agent .body.md-preview{display:block;padding:0;font-size:14px}`（同时抹掉工作区专属 `padding:16px 22px`，并把其 13px 还回聊天的 14px；规则形态照仓内先例 `App.css:526` 的 `.kb-msg .md-preview`）。安全性已核：`mdRender` **先整体转义 `& < > "`**（`pages/kb/utils.ts:95`），模型输出里的原始 HTML 变不成可执行标签，链接另有 scheme 白名单（`utils.ts:74-78`）。
 - **过程块**：`<details className="thinking"><summary>🔧 执行过程</summary>` + 每条 `工具名 · 成功/失败 · detail`；`steps` 为空则整个块不渲染。
 - **meta 行**：`🗀 HH:MM`（非今天补 `M月D日`）+ `⧉` 复制（`navigator.clipboard`，失败 toast）。不放模型名/token/耗时（原型也没有）。
-- **上下文 meter**：照原型语义——`estTokens`（CJK≈1 token/字，其余 ÷4）估 系统提示词 + 历史消息 + 输入；`pct = used/cap`，`>=70` 加 `.warn`、`>=90` 加 `.hot` 并在 tooltip 追加「建议新建会话」；无可用模型显 `—` 并用原型 tooltip 原文 `未配置可用模型，无法估算上下文占用`。
+- **上下文 meter**：照原型语义——`estTokens`（CJK≈1 token/字，其余 ÷4）估 系统提示词 + 历史消息 + 输入；`pct = used/cap`，`>=70` 加 `.warn`、`>=90` 加 `.hot` 并在 tooltip 追加「建议新建会话」；无可用模型显 `—` 并用原型 tooltip 原文 `未配置可用模型，无法估算上下文占用`。注意 `estTokens` 按「全部可见历史」估，而 prompt 实带最近 40 条（`HISTORY_MAX`），别误读成按 prompt 实长估。
 - **侧栏构成**：只渲染「当前智能体」`.ctx-card`（原型 `:575-580`）；**「当前项目」card 整块不渲染**（原型 `:569-574`）——第 2 片才有项目维度，此处放出来即死控件。会话行不显示原型 `▶ Web` 标签（`:1279`，假数据）。
 - **欢迎态文案**（本期只有 `case_design`）：标题 `你好，我是 用例设计`（原型 `:1313` 口径，去「智能体」后缀）；副行 `发送消息即在此智能体开始新会话 · 会话保存在本机`（原型 `:1314` 是 `📁 项目 · 发送消息即在此项目开始新会话`，项目维度不在本期 → 改「智能体」并去 📁；数据落点路径从 UI 移到 README，UI 不裸露目录）。chip 保持原型「短标签 + 长指令」双截形态（`:1316-1319`）：`📋 根据需求生成测试用例`、`🧩 等价类与边界值补覆盖`、`🔌 接口用例设计`、`🐞 回归失败归因分析`——📋/🐞 及三条长指令（📋/🔌/🐞）逐字照搬原型，🧩/🔌 两条标签与 🧩 的指令按裁定 5 换成 `case_design` 范围内表述。点击只把长指令填进输入框并聚焦，绝不自动发送（原型 `:1322-1324`）。
 - **composer 构成**（原型 `:611-624`）：`.bar` 内只有 上下文 meter → 蓝 perm chip → `.spacer` → `↑` 发送。**模型 chip 在 chat-header**（原型 `:598`），不在 composer 内，此处不重复放；原型橙 chip（`:617`）是「📁 项目 · Agent 工作目录」，属项目维度 → 第 2 片再接，本期不渲染。textarea placeholder 取原型 `:614` 的可用片段 `例如：根据这份需求生成测试用例`（原型的 `↑↓ 浏览历史消息 · / 快捷指令` 两项能力本期都没有，写进 placeholder 即虚假承诺），键位提示移到 `title`。
@@ -164,3 +164,7 @@ class FileMemoryStore:
 - **磁盘无上限**：jsonl 只追加，本期不滚动不清理（整会话删除是唯一回收手段）。
 - **裁剪是读侧**：`HISTORY_MAX` 截断后模型看不到更早内容，这是刻意的成本取舍，UI 不承诺「模型记得全部历史」。
 - **并发交错**为已知限制（见控制端裁定「并发」条）。
+- **单进程假设**：`backend/data/sessions` 由单一后端进程读写，本期走查真实撞上——第二个进程列表为空并对同一 id 报 404；本期以文档约束（README 后端节）而非跨进程合并解决。
+- **会话归属校验**：`send` 对 `sess_*` 续写前判等 `stored.agent_id == agent_id` 是终审补上的洞（此前任何 `agent_id` 都能往别人的会话里写），第 2 片 `project_id` 进会话键时在此扩展为项目维度归属。
+- **上下文 meter 估算口径**：`estTokens` 估的是「全部可见历史」，而进 prompt 的只有最近 40 条（`HISTORY_MAX`），长会话重开可能显示 ≥90% 而实际未近上限——按「估算」口径保留，第 2 片连项目维度一并复核。
+- **坏索引自愈**：自愈前把不可解析的 `index.json` 留档为 `index.json.bad-<ms>`（正文 `.jsonl` 原地不动），本期不做从 `.jsonl` 重建索引的路径。
