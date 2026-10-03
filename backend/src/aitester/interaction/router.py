@@ -32,6 +32,7 @@ from aitester.services.capability_config import (
 )
 from aitester.services.kb.manager import KbUnavailableError
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
+from aitester.services.project_config import ProjectConfigError
 from aitester.services.session_store import SessionStoreError
 
 router = APIRouter(prefix="/api")
@@ -58,9 +59,11 @@ def chat_echo(req: EchoRequest, request: Request) -> EchoResponse:
 def chat_send(req: SendRequest, request: Request) -> SendResponse:
     service: ChatService = request.app.state.chat_service
     try:
-        result = service.send(req.session_id, req.message, req.agent_id)
+        result = service.send(req.session_id, req.message, req.agent_id, req.project_id)
     except ConfigNotFoundError as exc:
         raise HTTPException(status_code=404, detail=exc.detail) from exc
+    except ProjectConfigError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
     except SessionStoreError as exc:
         raise HTTPException(status_code=404, detail=exc.detail) from exc
     except ProviderConfigError as exc:

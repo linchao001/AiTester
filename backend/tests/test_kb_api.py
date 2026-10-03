@@ -90,7 +90,7 @@ def test_chat_send_returns_drafts(tmp_path):
         model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
         sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
-    app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid: {
+    app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid, project_id="": {
         "reply": "r", "trace": ["services"], "model": "m",
         "session_id": "", "title": "", "steps": [],
         "drafts": [{"op": "create", "path": "a.md", "abs_display": "P",
@@ -106,7 +106,7 @@ def test_chat_send_drafts_defaults_empty(tmp_path):
         sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
     # 保留旧形态返回（无 session_id/title/steps 键）：验 SendResponse 默认值兜底
-    app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid: {
+    app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid, project_id="": {
         "reply": "r", "trace": ["services"], "model": "m"})  # 旧形态返回：无 drafts 键
     with TestClient(app) as c:
         j = c.post("/api/chat/send", json={"message": "echo 我"}).json()
@@ -121,7 +121,7 @@ def test_chat_send_skips_malformed_drafts(tmp_path):
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
     valid = {"op": "create", "path": "a.md", "abs_display": "P",
              "summary": "s", "content": "c", "base": None, "mtime": 0}
-    app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid: {
+    app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid, project_id="": {
         "reply": "回复还在", "trace": ["services"], "model": "m",
         "session_id": "", "title": "", "steps": [],
         "drafts": [valid, {"op": "create"}, "garbage", None]})

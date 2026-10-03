@@ -10,6 +10,11 @@ from aitester.memory import InMemoryMemoryStore, MemoryStore
 from aitester.orchestration import run_echo, run_graph
 from aitester.orchestration.graph_registry import GraphBuilder
 from aitester.services.agent_runtime import AgentRuntime
+from aitester.services.project_config import (
+    ProjectConfigError,
+    ProjectService,
+    dir_exists,
+)
 from aitester.services.session_store import (
     MISSING_SESSION_DETAIL,
     SessionStore,
@@ -35,6 +40,7 @@ class ChatService:
         repo: Repository | None = None,
         agent_runtime: AgentRuntime | None = None,
         sessions: SessionStore | None = None,
+        projects: ProjectService | None = None,
     ) -> None:
         self.provider = provider
         self.agent_runtime = agent_runtime
@@ -42,6 +48,7 @@ class ChatService:
         self.context = context or PassthroughContextBuilder()
         self.repo = repo or InMemoryRepository()
         self.sessions = sessions
+        self.projects = projects
 
     def _complete(
         self,
@@ -103,19 +110,36 @@ class ChatService:
         result = self._complete(session_id, message, MockProvider(), SYSTEM_PROMPT)
         return {"reply": result["reply"], "trace": result["trace"]}
 
-    def send(self, session_id: str, message: str, agent_id: str) -> dict[str, Any]:
+    def send(self, session_id: str, message: str, agent_id: str, project_id: str = "") -> dict[str, Any]:
         """真实链路：装配一次性实例（提示词/模型/工具/拓扑）后按图执行。
 
-        会话 id 三态：空 → 服务端生成并延迟落盘；sess_* 已存在 → 续写；其余形态
-        （kb-console 等临时键）→ 不建会话、走进程内记忆，行为与既有专项一致。
+        项目维度（第 2 片）：可见智能体的会话必须属于一个项目，落点取项目 dir；
+        平台功能智能体不属于项目，project_id 一律忽略（spec 裁定 7，/kb 链路依赖此）。
         """
         if self.agent_runtime is None:
             raise ProviderConfigError(
                 "服务未装配智能体运行时，请通过 create_app 启动后端"
             )
+        platform = is_platform_agent(agent_id)
+        project: dict[str, Any] | None = None
+        pid = ""
+        if not platform:
+            pid = (project_id or "").strip()
+            if not pid:
+                raise ProjectConfigError("请先选择项目，再发送消息")
+            if self.projects is None:
+                raise ProjectConfigError("服务未装配项目配置，请通过 create_app 启动后端")
+            project = self.projects.get(pid)          # 未知项目 → ConfigNotFoundError → 路由 404
+            # 复用项目页读侧同一只探测（裁定 3）：展开 ~、绝不 mkdir、吞 (OSError, ValueError)，
+            # 畸形 dir（NUL 走 ValueError）在此同样答「不可达」→ 中文 400，绝不外泄成 500
+            if not dir_exists(project["dir"]):
+                raise ProjectConfigError(
+                    f"项目「{project['name']}」的目录 {project['dir']} 不存在或不可访问，"
+                    "请到项目页确认路径"
+                )
         sid = (session_id or "").strip()
         if not sid:
-            if self.sessions is None or is_platform_agent(agent_id):
+            if self.sessions is None or platform:
                 raise ProviderConfigError("请指定会话 id 或通过 create_app 装配会话存储")
             sid = self.sessions.new_id()
         elif self.sessions is not None and is_session_id(sid):
@@ -123,23 +147,28 @@ class ChatService:
             if existing is None:
                 raise SessionStoreError(MISSING_SESSION_DETAIL)
             # 会话归属校验：sess_* 续写前先判等 agent_id，否则任何 agent_id 都能往别人的会话里写；
-            # 第 2 片 project_id 进键前必须关的洞，detail 经路由 SessionStoreError→404 落到用户
+            # 项目维度不进键（第 2 片裁定 2），归属就靠这两维判等，detail 经路由 SessionStoreError→404 落到用户
             if existing.agent_id != agent_id:
                 raise SessionStoreError("会话不属于该智能体")
+            # 第二维（第 2 片）：项目归属同判据；平台智能体不落的会话不参与比对
+            if not platform and existing.project_id != pid:
+                raise SessionStoreError("会话不属于该项目")
 
-        instance = self.agent_runtime.build(agent_id, sid, provider_override=self.provider)
-
-        use_file = (
-            self.sessions is not None
-            and is_session_id(sid)
-            and not is_platform_agent(agent_id)
+        # 装配落点：可见智能体用项目 dir（产出物归位），平台智能体沿用 _build_platform_agent 内部算的 workspace
+        instance = self.agent_runtime.build(
+            agent_id,
+            sid,
+            provider_override=self.provider,
+            cwd=project["dir"] if project is not None else ".",
         )
+
+        use_file = self.sessions is not None and is_session_id(sid) and not platform
         memory = None
         if use_file:
             # 延迟导入：file_memory 经 services 回指本包，顶层导入会在循环链上炸开（memory/__init__ 顺序约束同源）
             from aitester.memory import FileMemoryStore
 
-            memory = FileMemoryStore(self.sessions, "")  # 过渡：空串占位，Task 6 换成解析出的项目 id
+            memory = FileMemoryStore(self.sessions, pid)
 
         result = self._complete(
             f"{instance.agent_id}:{sid}",

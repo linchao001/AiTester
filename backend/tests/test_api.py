@@ -41,6 +41,15 @@ def _isolated_client(
     return TestClient(application)
 
 
+def _seed_project(application, tmp_path: Path, name: str = "订单系统") -> str:
+    """Task 6：可见智能体的 send 必须有真实可达的项目，测试经 create_app 缝建真项目。"""
+    root = tmp_path / name
+    root.mkdir(exist_ok=True)
+    return application.state.project_config.create(
+        name=name, desc="", dir_=str(root), agents=["case_design"]
+    )["id"]
+
+
 def test_health() -> None:
     resp = client.get("/api/health")
     assert resp.status_code == 200
@@ -71,15 +80,20 @@ def test_send_uses_injected_provider_and_reports_model(tmp_path: Path) -> None:
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
+        projects_path=tmp_path / "p.json",
         sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     assert isinstance(application.state.agent_runtime, AgentRuntime)
     application.state.chat_service = ChatService(
-        provider=MockProvider(), agent_runtime=application.state.agent_runtime
+        provider=MockProvider(),
+        agent_runtime=application.state.agent_runtime,
+        projects=application.state.project_config,
     )
+    pid = _seed_project(application, tmp_path)
     resp = TestClient(application).post(
-        "/api/chat/send", json={"session_id": "s2", "message": "生成用例"}
+        "/api/chat/send",
+        json={"session_id": "s2", "message": "生成用例", "project_id": pid},
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -92,14 +106,20 @@ def test_send_with_unknown_agent_returns_404(tmp_path: Path) -> None:
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
+        projects_path=tmp_path / "p.json",
         sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     application.state.chat_service = ChatService(
-        provider=MockProvider(), agent_runtime=application.state.agent_runtime
+        provider=MockProvider(),
+        agent_runtime=application.state.agent_runtime,
+        projects=application.state.project_config,
     )
+    # 项目段先于装配：给个真项目让流程走到 build，才能验「未知智能体」的 404
+    pid = _seed_project(application, tmp_path)
     resp = TestClient(application).post(
-        "/api/chat/send", json={"session_id": "s3", "message": "hi", "agent_id": "ghost"}
+        "/api/chat/send",
+        json={"session_id": "s3", "message": "hi", "agent_id": "ghost", "project_id": pid},
     )
     assert resp.status_code == 404
     assert resp.json()["detail"] == "未知智能体「ghost」"
@@ -109,6 +129,7 @@ def test_send_with_legacy_agent_id_returns_404(tmp_path: Path) -> None:
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
+        projects_path=tmp_path / "p.json",
         sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
@@ -116,9 +137,12 @@ def test_send_with_legacy_agent_id_returns_404(tmp_path: Path) -> None:
         provider=MockProvider(),
         agent_runtime=application.state.agent_runtime,
         sessions=application.state.sessions,
+        projects=application.state.project_config,
     )
+    pid = _seed_project(application, tmp_path)
     resp = TestClient(application).post(
-        "/api/chat/send", json={"message": "hi", "agent_id": "a1"}
+        "/api/chat/send",
+        json={"message": "hi", "agent_id": "a1", "project_id": pid},
     )
     assert resp.status_code == 404
     assert "未知智能体「a1」" in resp.json()["detail"]
@@ -144,14 +168,19 @@ def test_send_uses_agent_prompt_and_default_agent_id(tmp_path: Path) -> None:
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
+        projects_path=tmp_path / "p.json",
         sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     application.state.chat_service = ChatService(
-        provider=_SpyProvider(), agent_runtime=application.state.agent_runtime
+        provider=_SpyProvider(),
+        agent_runtime=application.state.agent_runtime,
+        projects=application.state.project_config,
     )
+    pid = _seed_project(application, tmp_path)
     resp = TestClient(application).post(
-        "/api/chat/send", json={"session_id": "s4", "message": "生成登录用例"}
+        "/api/chat/send",
+        json={"session_id": "s4", "message": "生成登录用例", "project_id": pid},
     )
     assert resp.status_code == 200
     # 请求体不带 agent_id 时取 SendRequest 默认值 case_design；系统提示词来自 md
@@ -160,7 +189,10 @@ def test_send_uses_agent_prompt_and_default_agent_id(tmp_path: Path) -> None:
 
 
 def test_send_without_configured_default_returns_400(tmp_path: Path) -> None:
-    resp = _isolated_client(tmp_path).post("/api/chat/send", json={"message": "hi"})
+    c = _isolated_client(tmp_path)
+    # 项目段先于 build：项目齐备才能走到「未配置默认模型」那条 400，而非「请先选择项目」
+    pid = _seed_project(c.app, tmp_path)
+    resp = c.post("/api/chat/send", json={"message": "hi", "project_id": pid})
     assert resp.status_code == 400
     assert "设置 · 模型设置" in resp.json()["detail"]
 
@@ -182,6 +214,7 @@ def test_send_upstream_failure_returns_502(tmp_path: Path) -> None:
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
+        projects_path=tmp_path / "p.json",
         sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
@@ -189,8 +222,12 @@ def test_send_upstream_failure_returns_502(tmp_path: Path) -> None:
         provider=FailingProvider(),
         agent_runtime=application.state.agent_runtime,
         sessions=application.state.sessions,
+        projects=application.state.project_config,
     )
-    resp = TestClient(application).post("/api/chat/send", json={"message": "hi"})
+    pid = _seed_project(application, tmp_path)
+    resp = TestClient(application).post(
+        "/api/chat/send", json={"message": "hi", "project_id": pid}
+    )
     assert resp.status_code == 502
     assert "fake/model-x" in resp.json()["detail"]
 

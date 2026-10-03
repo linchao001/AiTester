@@ -18,6 +18,8 @@ class SendRequest(BaseModel):
     session_id: str = ""
     message: str = Field(min_length=1)
     agent_id: str = "case_design"
+    # 必填判据在 service 层：schema 无从知道 is_platform_agent（平台智能体天然不属于项目）
+    project_id: str = ""
 
 
 class KbDraft(BaseModel):

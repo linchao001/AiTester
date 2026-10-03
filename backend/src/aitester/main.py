@@ -68,7 +68,9 @@ def create_app(
     sessions = SessionStore(sessions_dir or DATA_DIR / "sessions")
     application.state.sessions = sessions
     application.state.chat_service = ChatService(
-        agent_runtime=application.state.agent_runtime, sessions=sessions
+        agent_runtime=application.state.agent_runtime,
+        sessions=sessions,
+        projects=project_config,
     )
     application.include_router(router)
     application.include_router(kb_browse_router)
