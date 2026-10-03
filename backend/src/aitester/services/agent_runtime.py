@@ -50,6 +50,7 @@ class AgentRuntime:
         agent_id: str,
         session_id: str,
         provider_override: LlmProvider | None = None,
+        cwd: str = ".",
     ) -> AgentInstance:
         spec = find_agent(agent_id)
         if spec is None:
@@ -74,7 +75,7 @@ class AgentRuntime:
             # 会话键与 memory/storage 的 scoped 键保持一致：会话按智能体隔离，
             # 「改前必读」守卫记录也必须按智能体隔离，否则 A 读过即可解锁 B 会话的写。
             registry = build_default_registry(
-                cwd=".",
+                cwd=cwd,
                 session_id=f"{agent_id}:{session_id}",
                 observed=self._observations,
                 kb=self._kb,
