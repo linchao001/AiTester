@@ -25,6 +25,7 @@
 | P4 | 消费端提前 `close()` 生成器 | 干净退出，异常不外泄 → 这是「浏览器断开即停」的落点 |
 | P5 | `ChatOpenAI.bind_tools([...]).stream` | 存在（`ChatOpenAI.stream` 与 bind 后对象的 `stream` 均在）；真实 token 流与 tool_calls 增量合并留真机走查实测 |
 | P6 | **未验**：取消信号经 `config.configurable` 进节点（`langgraph.config.get_config()` 读得到） | 实施计划第一个任务先钉这条测试。读不通即退回把 `RunControl` 作为 `GraphBuilder` 第三形参注入（牵动 `graph_registry` 与 `agent_runtime`，但不改拓扑） |
+| P7 | vite dev proxy 会不会把 SSE 攒成一坨 | **不会，已实测**（一次性探针：临时 uvicorn:8011 定时间隔吐帧 + 项目自己的 vite:5176 经 `VITE_PROXY_TARGET` 指过去，量每帧到达时刻；探针与脚本已删，用户 8000/5173 全程未动）：<br>· 10 帧 ×300ms（每帧约 60B）——直连 gap 恒 0.301s；经代理恒 0.300~0.301s<br>· 40 帧 ×40ms（每帧 20B，最接近真实逐 token 形态）——直连最大 gap 0.042s；经代理最大 gap 0.041s，无 Nagle 延迟、无合并<br>· 客户端声明 `gzip, deflate, br` 时代理**不加** `Content-Encoding`，也不缓冲；响应恒为 `transfer-encoding: chunked`<br>**结论：不加 `X-Accel-Buffering`、不关 gzip、不做任何保险丝**——那是给未存在的问题写代码。走查仍要眼看一次「逐字出现」，但那是验收，不是排查 |
 
 ## 用户裁定（2026-10-04，逐条确认）
 
@@ -159,7 +160,7 @@ services/stream_turn(...) -> Iterator[dict]   # 事件即 SSE 载荷
 
 - **P6 未验**：取消信号进节点的唯一路径若 `config.configurable` 读不通，退路是改 `GraphBuilder` 签名（牵动 `graph_registry.py`、`agent_runtime.py` 与所有 builder 实现）。第一个任务先钉这条测试，就是为了把它变成开工 30 分钟内known 的事。
 - **真实 token 流与 tool_calls 增量**：P1/P5 用假模型验的是通道，不是 DeepSeek/DashScope 兼容端点行为。`ChatOpenAI.stream` 在部分兼容端点上对 `tool_calls` 的 chunk 合并有差异，落不进 `merged.message.tool_calls` 就会「看不见工具」→ 真机走查必测一条「带工具调用的流式」。
-- **vite 代理与 SSE**：`/api` 走 vite dev proxy。StreamingResponse 逐帧透传需要 `Content-Encoding: identity` 且无中间缓冲；若走查发现「攒完再吐」，第一嫌疑是代理/压缩层，解法是显式 `X-Accel-Buffering: no` 与关 gzip（登记待实测，不预先加保险丝）。
+- **vite 代理与 SSE**：已实测**不缓冲、不压缩**（见前提实测 P7 的两组间隔数据）。残留风险不在缓冲，而在**真实模型的节奏**：DeepSeek/DashScope 的兼容端点如果整段一次性 flush（上游模型不回 chunk），代理这边再透明也仍是「憋一段吐一段」——这属于 P5 的走查项，与本片实现无关，出现时先查 provider 侧而不是加保险丝。
 - **断开即停依赖生成器关闭**：P4 只验了直接 `close()`；`StreamingResponse` 在 uvicorn 下把 `GeneratorExit` 送进生成器的时机未经实测。最坏退化 = 后端跑完但无人消费，此时取消位仍未置，落盘成**全量**且 `stopped:false`（用户看不到，重开才看到完整回复）。走查逐条实测这一项。
 - **Mock 粒度是测试常数**：4 字符一片只为断言条数，与真实 token 边界无关。
 - **中间轮文本 live 可见但不落盘**：`done` 把它折进过程块，重开会话后只剩最终回复。这与今天一次性 `send` 的行为完全一致（`run_graph:98` 一直是「后写的非工具轮 content 覆盖前面的」），本片不改语义，只让它先被看见一次。
@@ -184,4 +185,5 @@ services/stream_turn(...) -> Iterator[dict]   # 事件即 SSE 载荷
 - 覆盖：六条裁定各有落点（粒度→事件表+节点；真停→`RunControl`/`RunRegistry`/stop 端点；范围→前端两张表；留痕→`stopped` 字段链；删 send→契约表+405 锁；meter→`chat/utils.ts`）。无 TBD、无「类似第 N 片」。
 - 一致性：错误表与前端 toast 指向同一批 detail；「守门只有一段」写进契约表并配一条逐字相同的测试；终态事件与「撤 busy」的对应关系在事件表下方明确。
 - 顺序风险：P6 测试是第一个任务；`run_graph` 折返壳必须在改节点体之前先绿，否则回归锁失效；`stopped` 字段链（memory→store→schema→client）跨四层，任一层漏传就是静默丢标注——计划里按「先落盘层、再服务层、最后 UI」排。
+- 实测已闭合：P7（代理缓冲）已用定时间隔探针量死，结论是「不加任何保险丝」；仍开的只有 P6（取消信号进节点）与真实模型节奏（P5 走查项）两条。
 - 歧义收敛：中间轮文本的归属（过程块，不落盘）、「已停止」不进 content、`kb-console` 临时键不留痕，三处都在正文写死判据，不留实现期解释空间。
