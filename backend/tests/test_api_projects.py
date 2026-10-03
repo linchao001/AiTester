@@ -1,5 +1,7 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,16 +25,20 @@ class _NoopKbManager:
         return SimpleNamespace(success=True, answer="ok", metadata={})
 
 
-@pytest.fixture()
-def client(tmp_path: Path) -> TestClient:
-    app = create_app(
+def _app(tmp_path: Path):
+    """与 client fixture 同款装配，但返回 app 本体——用例要摸 application.state.sessions。
+
+    sessions_dir 必须给到 tmp_path：GET 现在会读 SessionStore 数会话，不注入就会读写真实
+    backend/data/sessions。
+    """
+    return create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.json",
         projects_path=tmp_path / "projects.json",
+        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
         kb_manager=_NoopKbManager(),
     )
-    return TestClient(app)
 
 
 def _body(client, **over):
@@ -46,6 +52,23 @@ def _body(client, **over):
     return payload
 
 
+def _create(application, name: str, dir_: str) -> dict[str, Any]:
+    resp = TestClient(application).post("/api/projects", json=_body(None, name=name, dir=dir_))
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def _get(application) -> dict[str, Any]:
+    resp = TestClient(application).get("/api/projects")
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+@pytest.fixture()
+def client(tmp_path: Path) -> TestClient:
+    return TestClient(_app(tmp_path))
+
+
 def test_list_is_empty_json_array(client):
     resp = client.get("/api/projects")
     assert resp.status_code == 200
@@ -56,8 +79,8 @@ def test_create_returns_201_with_kb_alias_and_zero_sessions(client):
     resp = client.post("/api/projects", json=_body(client))
     assert resp.status_code == 201
     p = resp.json()
-    assert p["kb"] == "kb" and p["session_count"] == 0
-    assert set(p) == {"id", "name", "desc", "dir", "agents", "kb", "session_count"}
+    assert p["kb"] == "kb" and p["dir_exists"] is False   # 测试里填的目录不存在
+    assert set(p) == {"id", "name", "desc", "dir", "agents", "kb", "session_count", "dir_exists"}
     assert client.get("/api/projects").json()["projects"][0]["id"] == p["id"]
 
 
@@ -124,13 +147,43 @@ def test_malformed_project_items_self_heal_on_read(tmp_path):
     (tmp_path / "projects.json").write_text(
         '{"version":1,"projects":[{"id":"evil","name":"坏","dir":"D:/x","agents":["ghost"],"kb":"nope"}]}',
         encoding="utf-8")
-    app = create_app(
-        model_config_path=tmp_path / "m.json",
-        capability_config_path=tmp_path / "c.json",
-        projects_path=tmp_path / "projects.json",
-        settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
-        kb_manager=_NoopKbManager(),
-    )
-    row = TestClient(app).get("/api/projects").json()["projects"][0]
+    row = TestClient(_app(tmp_path)).get("/api/projects").json()["projects"][0]
     assert row["id"].startswith("proj_") and row["kb"] == "kb"
     assert row["agents"] == ["case_design"]
+
+
+def test_session_count_reflects_store(tmp_path) -> None:
+    application = _app(tmp_path)  # 复用本文件既有的 create_app 助手；须同时给 projects_path 与 sessions_dir
+    pid = _create(application, "订单系统", str(tmp_path / "reqs"))["id"]
+    store = application.state.sessions
+    store.create(store.new_id(), "case_design", pid, "一")
+    store.create(store.new_id(), "case_design", pid, "二")
+    rows = _get(application)["projects"]
+    assert next(p for p in rows if p["id"] == pid)["session_count"] == 2
+
+
+def test_dir_exists_probe_matches_disk_for_every_project(tmp_path) -> None:
+    application = _app(tmp_path)
+    real = tmp_path / "reqs"
+    real.mkdir()
+    ghost = tmp_path / "typed-wrong"
+    ok_pid = _create(application, "有目录", str(real))["id"]
+    ghost_pid = _create(application, "填错了", str(ghost))["id"]
+    rows = {p["id"]: p for p in _get(application)["projects"]}
+    assert rows[ok_pid]["dir_exists"] is True
+    assert rows[ghost_pid]["dir_exists"] is False
+    # 探测只读：GET 一轮后不许替用户把目录建出来
+    assert not ghost.exists()
+
+
+def test_nul_byte_in_stored_dir_yields_false_not_500(tmp_path) -> None:
+    # dir 由用户自填，含 NUL 字节的值能让文件系统调用抛 ValueError（不是 OSError）：
+    # GET 必须答「不可达」，绝不能把它变成 500（与危险根判据同款坑）
+    (tmp_path / "projects.json").write_text(
+        json.dumps({"version": 1, "projects": [
+            {"id": "proj_aaaaaaaa", "name": "带 NUL", "desc": "", "dir": "D:/work\x00x",
+             "agents": ["case_design"], "kb": "kb"}]},
+            ensure_ascii=False),
+        encoding="utf-8")
+    row = _get(_app(tmp_path))["projects"][0]
+    assert row["dir_exists"] is False

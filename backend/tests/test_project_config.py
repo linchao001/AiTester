@@ -13,6 +13,7 @@ from aitester.services.project_config import (
     ProjectService,
     _clean_dir,
     dangerous_root_reason,
+    dir_exists,
     visible_agent_ids,
 )
 from aitester.storage import FileJsonConfigRepository
@@ -41,7 +42,8 @@ def test_create_defaults_and_view_keys(svc):
     assert set(p) == {"id", "name", "desc", "dir", "agents", "kb"}
     assert p["kb"] == PROJECT_KB_DEFAULT
     assert p["id"].startswith("proj_")
-    assert svc.list_projects()[0]["session_count"] == 0
+    # 恒 0 已从服务层摘掉：session_count 属「项目 × 会话」的组合事实，只由路由用 SessionStore 现算
+    assert "session_count" not in svc.list_projects()[0]
 
 
 def test_create_rejects_blank_and_overlong_fields(svc):
@@ -279,3 +281,38 @@ def test_create_allows_nested_dir(tmp_path) -> None:
     root = tmp_path / "reqs"
     created = _svc(tmp_path).create(name="订单系统", desc="", dir_=str(root), agents=["case_design"])
     assert created["dir"] == str(root)
+
+
+# ---------- 目录可达只读探测（读侧：不建目录、不执法）----------
+
+def test_dir_exists_reads_disk_without_creating_it(tmp_path) -> None:
+    real = tmp_path / "reqs"
+    real.mkdir()
+    ghost = tmp_path / "typed-wrong"
+    assert dir_exists(str(real)) is True
+    assert dir_exists(str(ghost)) is False
+    assert dir_exists("") is False
+    assert not ghost.exists()  # 探测绝不建目录：write 工具会建，这里必须不建
+
+
+def test_dir_exists_swallows_nul_byte_value_error(tmp_path) -> None:
+    # NUL 字节让文件系统调用抛 ValueError（不是 OSError）：与危险根判据同款坑，
+    # 探测必须按「不可达」回答，绝不能把用户填错的 dir 炸成 500
+    assert dir_exists(f"{tmp_path / 'reqs'}\x00") is False
+    assert dir_exists("\x00") is False
+
+
+def test_dir_exists_swallows_value_error_raised_by_filesystem(monkeypatch) -> None:
+    # 3.11 的 Path.is_dir() 内部就吞掉了 ValueError，所以 NUL 用例其实测不到 dir_exists
+    # 自己的 except：这里直接注入抛 ValueError 的底层判据，锁住「探测绝不外泄异常」这条硬要求
+    def boom(self) -> bool:
+        raise ValueError("embedded null byte")
+
+    monkeypatch.setattr(Path, "is_dir", boom, raising=False)
+    assert dir_exists("D:/work/projects/order") is False
+
+
+def test_dir_exists_ignores_blank_dirs() -> None:
+    # 读侧自愈可能把 dir 留成空串或纯空白：一律答「不可达」，不抛
+    assert dir_exists("   ") is False
+    assert dir_exists(None) is False  # 类型坏的历史数据也不该把 GET 炸掉

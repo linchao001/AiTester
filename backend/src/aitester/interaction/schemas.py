@@ -183,6 +183,7 @@ class ProjectInfo(BaseModel):
     agents: list[str]
     kb: str
     session_count: int = 0
+    dir_exists: bool = True
 
 
 class ProjectsResponse(BaseModel):
