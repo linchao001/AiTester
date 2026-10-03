@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any, Callable
 
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
@@ -14,6 +16,7 @@ from typing_extensions import TypedDict
 
 from aitester.adapters.llm import LlmProvider
 from aitester.adapters.tools.base import AiTooler
+from aitester.orchestration.run_control import RUN_CONTROL_KEY
 
 
 class AgentState(TypedDict):
@@ -24,6 +27,56 @@ GraphBuilder = Callable[[LlmProvider, list[AiTooler]], CompiledStateGraph]
 
 # 过程块参数摘要的截断上限（spec 接口块登记值，实现此前漂移成裸 80）
 DETAIL_MAX = 80
+
+
+def _run_control(config: RunnableConfig | None):
+    """从注入的 RunnableConfig 取取消对象；没注入就是 None（echo、单测直调、无 stop 的路径）。"""
+    if not config:
+        return None
+    return (config.get("configurable") or {}).get(RUN_CONTROL_KEY)
+
+
+def _round_no(state: AgentState) -> int:
+    """轮次 = 已落地的 ToolMessage 条数 + 1（P6 实测与 run_graph 现有 round_no 语义一致）。"""
+    return 1 + sum(1 for m in state["messages"] if isinstance(m, ToolMessage))
+
+
+def _stream_round(provider: Any, messages: list[BaseMessage], round_no: int, control) -> AIMessage:
+    """逐 chunk 累加并实时下发 delta；取消即在下一个检查点停笔。
+
+    停笔时丢弃待派发的 tool_calls——否则「用户已经按了停止」的一轮还会继续开工具、写文件。
+    返回普通 AIMessage（P8：本版本 AIMessageChunk 没有 .message，必须显式重建），
+    这样 run_graph 既有的 isinstance(msg, AIMessage) 判据不受子类型干扰。
+    """
+    writer = get_stream_writer()
+    merged = AIMessageChunk(content="")
+    text = ""
+    stopped = False
+    for chunk in provider.stream_messages(messages):
+        if control is not None and control.cancelled:
+            stopped = True
+            break
+        piece = str(chunk.content or "")
+        if piece:
+            text += piece
+            writer({"type": "delta", "round": round_no, "text": piece})
+        merged = merged + chunk
+    calls = [] if stopped else list(merged.tool_calls)
+    content = text if stopped else str(merged.content)
+    writer({
+        "type": "turn",
+        "round": round_no,
+        "text": content,
+        "stopped": stopped,
+        "tool_calls": [
+            {"id": c.get("id"), "name": c["name"], "args": c["args"]} for c in calls
+        ],
+    })
+    return AIMessage(
+        content=content,
+        tool_calls=calls,
+        additional_kwargs=dict(merged.additional_kwargs),
+    )
 
 
 def _tool_error_message(error: Exception) -> str:
@@ -38,8 +91,10 @@ def _tool_error_message(error: Exception) -> str:
 def build_agent_graph(provider: LlmProvider, tools: list[AiTooler]) -> CompiledStateGraph:
     """构建 Agent 状态图：有工具走 agent↔tools 循环，无工具退化为单节点直答。"""
     if not tools:
-        def answer_node(state: AgentState) -> dict[str, list[BaseMessage]]:
-            return {"messages": [provider.invoke_messages(state["messages"])]}
+        def answer_node(state: AgentState, config: RunnableConfig) -> dict[str, list[BaseMessage]]:
+            return {"messages": [_stream_round(
+                provider, state["messages"], _round_no(state), _run_control(config)
+            )]}
 
         plain = StateGraph(AgentState)
         plain.add_node("agent", answer_node)
@@ -50,9 +105,10 @@ def build_agent_graph(provider: LlmProvider, tools: list[AiTooler]) -> CompiledS
     tool_node = ToolNode(tools, handle_tool_errors=_tool_error_message)
     bound = provider.bind_tools(tools)
 
-    def agent_node(state: AgentState) -> dict[str, list[BaseMessage]]:
-        response = bound.invoke_messages(state["messages"])
-        return {"messages": [response]}
+    def agent_node(state: AgentState, config: RunnableConfig) -> dict[str, list[BaseMessage]]:
+        return {"messages": [_stream_round(
+            bound, state["messages"], _round_no(state), _run_control(config)
+        )]}
 
     def should_continue(state: AgentState) -> str:
         last = state["messages"][-1]

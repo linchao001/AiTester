@@ -1,5 +1,6 @@
 from aitester.adapters.llm import MockProvider
 from aitester.orchestration import run_echo
+from streaming_fakes import ChunkedStreamMixin
 
 
 def test_run_echo_returns_provider_reply() -> None:
@@ -16,7 +17,7 @@ from aitester.orchestration import run_graph
 from aitester.orchestration.agent_graph import build_agent_graph
 
 
-class _ToolCallingProvider:
+class _ToolCallingProvider(ChunkedStreamMixin):
     """固定脚本：第 1 轮调两个工具（一个成功一个失败），第 2 轮出最终回复。"""
 
     name = "spy"

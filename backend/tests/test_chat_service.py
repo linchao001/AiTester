@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 from aitester.agents import find_agent
 from aitester.adapters.llm import MockProvider, ProviderConfigError
@@ -13,6 +13,7 @@ from aitester.services.capability_config import CapabilityConfigService
 from aitester.services.model_config import ModelConfigService
 from aitester.services.project_config import ProjectConfigError, ProjectService
 from aitester.storage import FileJsonConfigRepository
+from streaming_fakes import ChunkedStreamMixin
 
 
 def _model_config(tmp_path, **settings_kwargs: object) -> ModelConfigService:
@@ -108,7 +109,7 @@ def test_send_uses_agent_system_prompt_from_md(tmp_path, project) -> None:
     svc_proj, pid, _ = project
     seen: list[list[object]] = []
 
-    class _SpyProvider:
+    class _SpyProvider(ChunkedStreamMixin):
         """独立假 provider，bind_tools 返回自身——MockProvider.bind_tools 会返回新的
         MockProvider()，用它做子类会把 spy 丢掉，断言永远抓不到消息。"""
 
@@ -148,6 +149,12 @@ def test_send_resolves_default_from_model_config(
 
         def invoke(self, messages: list[dict[str, str]]) -> object:
             return type("R", (), {"content": "真实回复"})()
+
+        def stream(self, messages: list[dict[str, str]]):
+            # 节点体现在走 stream_messages → client.stream；与 invoke 同一份回复，切成 chunk
+            text = "真实回复"
+            for i in range(0, len(text), 4):
+                yield AIMessageChunk(content=text[i:i + 4])
 
     monkeypatch.setattr(openai_compat, "ChatOpenAI", FakeChatOpenAI)
     svc = ChatService(
@@ -302,7 +309,7 @@ def test_history_is_trimmed_to_last_history_max(tmp_path, project) -> None:
     svc_proj, pid, _ = project
     seen: list[list] = []
 
-    class _SpyProvider:
+    class _SpyProvider(ChunkedStreamMixin):
         name = "spy"
         model_ref = "spy/model"
 

@@ -12,6 +12,7 @@ from aitester.main import app, create_app
 from aitester.services import model_config
 from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.chat import ChatService
+from streaming_fakes import ChunkedStreamMixin
 
 client = TestClient(app)
 
@@ -151,7 +152,7 @@ def test_send_with_legacy_agent_id_returns_404(tmp_path: Path) -> None:
 def test_send_uses_agent_prompt_and_default_agent_id(tmp_path: Path) -> None:
     seen: list[list[object]] = []
 
-    class _SpyProvider:
+    class _SpyProvider(ChunkedStreamMixin):
         name = "spy"
         model_ref = "spy/model"
 
@@ -198,7 +199,7 @@ def test_send_without_configured_default_returns_400(tmp_path: Path) -> None:
 
 
 def test_send_upstream_failure_returns_502(tmp_path: Path) -> None:
-    class FailingProvider:
+    class FailingProvider(ChunkedStreamMixin):
         name = "fake"
         model_ref = "fake/model-x"
 

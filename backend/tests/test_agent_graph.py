@@ -8,6 +8,8 @@ from typing import Any
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
+from streaming_fakes import ChunkedStreamMixin
+
 from aitester.adapters.llm import MockProvider
 from aitester.adapters.tools import build_default_registry
 from aitester.adapters.tools.file_tools.observation import FileObservationStore
@@ -21,7 +23,7 @@ from aitester.orchestration import (
 )
 
 
-class ScriptedProvider:
+class ScriptedProvider(ChunkedStreamMixin):
     """按剧本逐条返回 AIMessage：先工具调用，后最终回复。"""
 
     name = "scripted"
