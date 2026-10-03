@@ -5,6 +5,7 @@ import {
   getProjects, getSessionMessages, getSessions,
   type AgentInfo, type ChatMessage, type ChatSession, type HealthResponse, type Project,
 } from "../api/client";
+import PageState from "../components/PageState";
 import Composer from "./chat/Composer";
 import MessageList from "./chat/MessageList";
 import SessionPane from "./chat/SessionPane";
@@ -295,16 +296,26 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
 
   if (error) {
     return (
-      <div className="page">
-        <p className="p-empty">加载失败：{error} <button className="mini-btn" onClick={retryAll}>重试</button></p>
+      <div className="page state-page">
+        <PageState
+          icon="⚠️"
+          title="聊天页加载失败"
+          desc={error}
+          actions={<button className="btn-primary" onClick={retryAll}>↻ 重试</button>}
+        />
         {toastEl}
       </div>
     );
   }
   if (healthError) {
     return (
-      <div className="page">
-        <p className="p-empty">后端未就绪：{healthError} <button className="mini-btn" onClick={retryAll}>重试</button></p>
+      <div className="page state-page">
+        <PageState
+          icon="🔌"
+          title="后端未就绪"
+          desc={healthError}
+          actions={<button className="btn-primary" onClick={retryAll}>↻ 重试</button>}
+        />
         {toastEl}
       </div>
     );
@@ -313,13 +324,18 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   // 由下面的「项目列表加载失败」错误页接手
   if (projectsLoaded && !projects.length) {
     return (
-      <div className="page">
-        <p className="p-empty">
-          📁 还没有项目<br />
-          请先到项目页添加需求文档所在目录，智能体就在那里读写文件
-          {" "}<button className="mini-btn" onClick={() => navigate("/projects")}>去项目页</button>
-          {" "}<button className="mini-btn" onClick={retryAll}>重试</button>
-        </p>
+      <div className="page state-page">
+        <PageState
+          icon="📁"
+          title="还没有项目"
+          desc="智能体要在项目目录里读写需求文档与产出物。先到项目页添加一个目录，再回来开始聊天。"
+          actions={
+            <>
+              <button className="btn-primary" onClick={() => navigate("/projects")}>去项目页</button>
+              <button className="mini-btn" onClick={retryAll}>↻ 重试</button>
+            </>
+          }
+        />
         {toastEl}
       </div>
     );
@@ -329,8 +345,13 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   // 放在引导态之后：真正「拉成功且为空」永远先显示「还没有项目」的指路，错误页不遮蔽它
   if (projectsError) {
     return (
-      <div className="page">
-        <p className="p-empty">项目列表加载失败：{projectsError} <button className="mini-btn" onClick={retryAll}>重试</button></p>
+      <div className="page state-page">
+        <PageState
+          icon="⚠️"
+          title="项目列表加载失败"
+          desc={projectsError}
+          actions={<button className="btn-primary" onClick={retryAll}>↻ 重试</button>}
+        />
         {toastEl}
       </div>
     );

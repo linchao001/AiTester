@@ -6,6 +6,7 @@ import {
   getProjects,
   type Project,
 } from "../api/client";
+import PageState from "../components/PageState";
 import ProjectFormModal from "./projects/ProjectFormModal";
 
 export default function ProjectsPage() {
@@ -69,13 +70,24 @@ export default function ProjectsPage() {
         </button>
       </div>
       {error && (
-        <p className="p-empty">
-          加载失败：{error}{" "}
-          <button className="mini-btn" onClick={() => void reload()}>重试</button>
-        </p>
+        <PageState
+          icon="⚠️"
+          title="项目列表加载失败"
+          desc={error}
+          actions={<button className="btn-primary" onClick={() => void reload()}>↻ 重试</button>}
+        />
       )}
       {loaded && !error && projects.length === 0 && (
-        <p className="p-empty">还没有项目，点右上「＋ 新建项目」创建第一个。</p>
+        <PageState
+          icon="📁"
+          title="还没有项目"
+          desc="项目就是需求文档所在的本地目录。添加一个目录，智能体就能在那里读写文件。"
+          actions={
+            <button className="btn-primary" disabled={!formReady} onClick={() => setModal({ mode: "create", project: null })}>
+              ＋ 新建项目
+            </button>
+          }
+        />
       )}
       {projects.length > 0 && (
         <div className="p-table">

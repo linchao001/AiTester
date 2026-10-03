@@ -578,3 +578,18 @@
   /* 3) 正式后端有「读取时回落」语义（存过的默认模型失效时回落全局默认），原型无此状态，
         故补一条回落提示样式；配色沿用原型既有 token。 */
   .stale-warn{font-size:11.5px;line-height:1.6;color:var(--primary-deep);background:var(--primary-soft);border:1px solid #f3d9b8;border-radius:8px;padding:6px 9px;margin-top:6px}
+  /* 4) 「这一屏只有状态可看」的四种场合（后端未就绪 / 列表加载失败 / 还没有项目 / 还没有数据）：
+        原型只给一行 .p-empty 灰字贴在 1080px 容器左上角，读着像脚注，还把「唯一该做的动作」一起
+        降级成小灰按钮。补一张状态卡——卡片形态逐条复用 .ctx-card（--card / --line / 12px 圆角 /
+        同款柔和阴影），竖排居中与 34px 大图标复用 .kb-empty 与 .kb-empty .big 的取值，按钮沿用
+        .btn-primary / .mini-btn。零新增色值。聊天页整页只有卡片，加 .state-page 连上下也居中；
+        项目页卡片在标题栏下方，只水平居中。 */
+  .state-page{display:flex;flex-direction:column}
+  .page-state{margin:14px auto;background:var(--card);border:1px solid var(--line);border-radius:12px;
+    box-shadow:0 2px 8px rgba(60,45,20,.05);padding:30px 34px;max-width:520px;
+    display:flex;flex-direction:column;align-items:center;gap:9px;text-align:center}
+  .state-page .page-state{margin:auto}   /* 整页只有这张卡时（聊天页四个提前 return）改成上下也居中 */
+  .page-state .big{font-size:34px;line-height:1}
+  .page-state h2{font-size:15px;font-weight:700}
+  .page-state p{font-size:12.5px;line-height:1.75;color:var(--text-2);max-width:40ch}
+  .page-state .acts{display:flex;gap:8px;align-items:center;margin-top:5px}
