@@ -34,6 +34,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   const busyRef = useRef(false);            // 与 KbPage 同款同步重入锁（不依赖重渲染时序）
   const openSeq = useRef(0);                // 开会话的「最新一次点击」序号
   const listSeq = useRef(0);                // 拉整表的「最新一次请求」序号
+  const metaOkRef = useRef(false);          // 能力清单是否成功拉到过：决定 meta 失败占满屏还是降级 toast
   const loadingRef = useRef(false);         // 会话正文在途：此时发送会写进另一条会话，必须挡在 guard 之后
   const mutRef = useRef(false);             // 删除等改整表的操作在途：尾部会自动开会话，交叉点就点在别的智能体上
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -56,6 +57,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   const reloadMeta = useCallback(async () => {
     try {
       const [caps, models] = await Promise.all([getCapabilities(), getModels()]);
+      metaOkRef.current = true;
       setAgents(caps.agents);
       if (!agentId && caps.agents.length) {
         setAgentId(caps.agents[0].id);
@@ -71,10 +73,12 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       setCap(hit ? hit.ctx : 0);
       setError("");
     } catch (err) {
-      // 迟到的旧失败不该把已经可用的页面整页打回错误页：只有在还没拿到任何智能体
-      // （页面还什么都不知道）时才占满屏错误，否则降级成 toast，已渲染的会话/输入照常可用
+      // 迟到的旧失败不该把已经可用的页面整页打回错误页：只有还没成功拉到过能力清单
+      // （页面还什么都不知道）时才占满屏错误，否则降级成 toast，已渲染的会话/输入照常可用。
+      // 判据走 ref 不走 agents.length：deps 里的 agentId 一变才重建本回调，agents 读到的会是过期快照
+      // （首次成功后的清单还没进闭包就把失败当成「白屏」）；把 agents 加进 deps 又会让每次成功都重拉一遍
       const msg = err instanceof Error ? err.message : String(err);
-      if (agents.length === 0) setError(msg);
+      if (!metaOkRef.current) setError(msg);
       else toast(msg);
     }
   }, [agentId]);
