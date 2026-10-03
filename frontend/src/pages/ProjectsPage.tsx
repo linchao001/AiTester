@@ -46,7 +46,9 @@ export default function ProjectsPage() {
 
   async function onRemove(p: Project) {
     // 与 /kb 页同款原生确认（CDP 自动化会挂，人工点击无碍）
-    if (!window.confirm(`删除项目「${p.name}」？删除后不可恢复。`)) return;
+    if (!window.confirm(
+      `删除项目「${p.name}」？会连带删除 ${p.session_count} 条会话，删除后不可恢复。`
+    )) return;
     try {
       await deleteProject(p.id);
       toast(`已删除项目「${p.name}」`);
@@ -94,7 +96,13 @@ export default function ProjectsPage() {
                 <tr key={p.id}>
                   <td><span className="p-name">{p.name}</span></td>
                   <td className="p-desc">{p.desc || <span className="p-none">暂无描述</span>}</td>
-                  <td><span className="p-dir" title={p.dir}>{p.dir}</span></td>
+                  <td>
+                    <span className="p-dir" title={p.dir}>{p.dir}</span>
+                    {!p.dir_exists && (
+                      /* 提醒而不拦截：项目页照常可编辑名称/智能体，只有发送时后端才硬拦（spec 裁定 5） */
+                      <span style={{ color: "var(--text-2)" }}> · 目录当前不可访问</span>
+                    )}
+                  </td>
                   <td>{p.agents.map((a) => (
                     <span key={a} className="a-badge">{agentNames[a] || a}</span>
                   ))}</td>
