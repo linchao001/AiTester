@@ -37,6 +37,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   const busyRef = useRef(false);            // 与 KbPage 同款同步重入锁（不依赖重渲染时序）
   const openSeq = useRef(0);                // 开会话的「最新一次点击」序号
   const listSeq = useRef(0);                // 拉整表的「最新一次请求」序号
+  const projSeq = useRef(0);                // 拉项目列表的「最新一次请求」序号：迟到的成败都不得盖过更新的一轮
   const metaOkRef = useRef(false);          // 能力清单是否成功拉到过：决定 meta 失败占满屏还是降级 toast
   const loadingRef = useRef(false);         // 会话正文在途：此时发送会写进另一条会话，必须挡在 guard 之后
   const mutRef = useRef(false);             // 删除等改整表的操作在途：尾部会自动开会话，交叉点就点在别的智能体上
@@ -85,8 +86,10 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   }, [agentId]);
 
   const reloadProjects = useCallback(async () => {
+    const seq = ++projSeq.current;
     try {
       const j = await getProjects();
+      if (seq !== projSeq.current) return;      // 迟到的成功包不得盖过更新的一轮（retryAll 与挂载可交叉）
       setProjects(j.projects);
       // 函数式更新：不读 projectId 闭包，避免「切项目」与「拉项目列表」交叉时拿到过期快照
       setProjectId((cur) => {
@@ -94,12 +97,15 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
         const saved = window.localStorage.getItem(PROJECT_STORAGE_KEY) || "";
         const hit = j.projects.find((p) => p.id === saved) || j.projects[0];
         // saved 已不存在（项目被删）时要把真正落点写回去，否则死键一直留在 localStorage
-        if (hit && hit.id !== saved) window.localStorage.setItem(PROJECT_STORAGE_KEY, hit.id);
+        if (!hit) window.localStorage.removeItem(PROJECT_STORAGE_KEY);
+        else if (hit.id !== saved) window.localStorage.setItem(PROJECT_STORAGE_KEY, hit.id);
         return hit ? hit.id : "";
       });
       setProjectsLoaded(true);
       setProjectsError("");        // 成功即清：错误页只在「最近一次拉取失败」时占屏
     } catch (err) {
+      // 迟到的失败同样作废：否则旧的拒绝会把已经拉健康的页面打回错误态（本文件其余在途请求都这条判据）
+      if (seq !== projSeq.current) return;
       const msg = err instanceof ApiError ? err.message : String(err);
       setProjectsError(msg);       // 只 toast 会把页面永久卡在「0 个选项 + 无项目名」的死态，必须留下可重试的错误态
       toast(msg);
