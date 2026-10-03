@@ -67,6 +67,18 @@ POSIX_SYSTEM_ROOTS = frozenset({
 _WIN_ROOT_ENV_VARS = ("SystemRoot", "WINDIR", "ProgramFiles", "ProgramFiles(x86)", "ProgramData")
 
 
+def _resolve_or_none(path: Path) -> Path | None:
+    """resolve 一把，解析不了就什么候选也不给。
+
+    用户输入里的 NUL 字节会让 os.stat 抛 ValueError（不是 OSError），环境变量里的畸形值同理：
+    这类路径不该外泄成 500，也不该参与危险根比对——吞掉异常返回 None 即「不产生候选」。
+    """
+    try:
+        return path.resolve()
+    except (OSError, ValueError):
+        return None
+
+
 def dangerous_root_reason(dir_: str) -> str | None:
     """四类危险根判据（spec 裁定 6）：命中即返回中文原因，全部不命中返回 None。
 
@@ -76,21 +88,31 @@ def dangerous_root_reason(dir_: str) -> str | None:
     raw = _clean_dir(dir_)
     if not raw:
         return "请填写本地文件目录"
+    # 第四类在清洗后的「原始形态」上判等、不 resolve：这样 POSIX 系统根在任何平台都执行得到，
+    # 也不受 NUL 等畸形字符让 resolve 抛错的影响（相等匹配，不做前缀/祖先包含）
+    raw_posix = Path(raw).as_posix().rstrip("/")
+    if raw_posix in POSIX_SYSTEM_ROOTS:
+        return f"不能把系统目录「{raw_posix}」作为项目目录，请选择项目自己的目录"
     try:
         target = Path(raw).expanduser().resolve()
-    except OSError:
+    except (OSError, ValueError):
         return None  # 解析不了不等于危险：形态校验已把住入口，此处不额外拦人
     if target.parent == target:
         return f"不能把整个磁盘「{target}」作为项目目录，请选择盘下的具体目录"
-    if target == Path.home().resolve():
+    home = _resolve_or_none(Path.home())
+    if home is not None and target == home:
         return f"不能把用户主目录「{target}」作为项目目录，请选择其下的具体项目目录"
     system_roots = {
-        Path(value).resolve() for value in (os.environ.get(v) for v in _WIN_ROOT_ENV_VARS) if value
+        resolved
+        for resolved in (
+            _resolve_or_none(Path(value))
+            for value in (os.environ.get(v) for v in _WIN_ROOT_ENV_VARS)
+            if value
+        )
+        if resolved is not None
     }
     if target in system_roots:
         return f"不能把系统目录「{target}」作为项目目录，请选择项目自己的目录"
-    if target.as_posix().rstrip("/") in POSIX_SYSTEM_ROOTS:
-        return f"不能把系统目录「{target.as_posix().rstrip('/')}」作为项目目录，请选择项目自己的目录"
     return None
 
 

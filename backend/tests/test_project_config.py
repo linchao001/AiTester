@@ -227,9 +227,40 @@ def test_windows_env_dir_is_refused(tmp_path, monkeypatch: pytest.MonkeyPatch) -
     assert dangerous_root_reason(str(pf)) is not None
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Windows 上 /usr 会被 resolve 成 C:\\usr，不属 POSIX 闭集分支")
 def test_posix_system_dir_is_refused() -> None:
+    # 第四类在清洗后的原始形态上判等、不 resolve：所以在 Windows 上也照样拦得住
     assert dangerous_root_reason("/usr") is not None
+
+
+@pytest.mark.parametrize("entry", [
+    "/etc", "/usr", "/var", "/bin", "/sbin", "/lib", "/boot", "/dev", "/home", "/root",
+])
+def test_all_posix_system_roots_refused_on_this_platform(entry: str) -> None:
+    # 闭集 10 条在任何平台都要被执行到（判据不看 resolve 结果）；子目录不误杀
+    assert dangerous_root_reason(entry) is not None
+    assert dangerous_root_reason(f"{entry}/someone/project") is None
+
+
+def test_nul_byte_dir_is_not_refused_nor_leaks_valueerror() -> None:
+    # 含 NUL 字节的 dir 会让 resolve() 抛 ValueError（不是 OSError）：
+    # 判据必须吞掉它并按「解析不了不等于危险」放行，绝不让 ValueError 外泄成 500
+    assert dangerous_root_reason("~/a\x00") is None
+
+
+def test_malformed_env_root_never_blocks_create(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # 环境变量给出畸形值（含 NUL）时，同一次计算里的 env 侧 resolve 也要被护住：
+    # 畸形 env 只能「不产生候选」，不能把每一次正常 create 变成 500。
+    # Windows 的 os.environ 拒绝写入 NUL，这里换成普通 dict 才能把畸形值喂到 resolve()。
+    poison = {**os.environ, "ProgramFiles": "C:/a\x00"}
+    monkeypatch.setattr(os, "environ", poison)
+    target = tmp_path / "work" / "ok"
+    assert dangerous_root_reason(str(target)) is None
+    created = _svc(tmp_path).create(
+        name="正常项目", desc="", dir_=str(target), agents=["case_design"]
+    )
+    assert created["dir"] == str(target)
 
 
 def test_ordinary_subdir_is_allowed(tmp_path) -> None:
