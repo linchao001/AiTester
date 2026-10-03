@@ -87,7 +87,8 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     if (!agentId) return [];
     const seq = ++listSeq.current;          // 切智能体会先清列表；慢响应不得把上一个智能体的整表覆盖回来
     try {
-      const j = await getSessions(agentId);
+      // 过渡态：project_id 暂传空串（列表当前必 422），Task 10 换成所选项目 id
+      const j = await getSessions(agentId, "");
       if (seq === listSeq.current) setSessions(j.sessions);
       // stale 分支仍 return j.sessions：调用方拿到的行必属当前 agent——remove 自己的整表刷新必赢
       // listSeq，而 send/retryAll 都被 mutRef 挡在 guard() 后面、切智能体也被挡，故返回的整表只可能
@@ -144,7 +145,8 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     setMessages((prev) => [...prev, optimistic]);
     setInput("");
     try {
-      const resp = await chatSend(activeId ?? "", text, agentId);
+      // 过渡态：project_id 暂传空串（可见智能体必 400），Task 10 换成所选项目 id
+      const resp = await chatSend(activeId ?? "", text, agentId, "");
       setMessages((prev) => [...prev, {
         role: "assistant", content: resp.reply, ts: Date.now(), steps: resp.steps,
       }]);

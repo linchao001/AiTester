@@ -315,14 +315,15 @@ export default function KbPage() {
     });
   }, []);
 
-  /** brief Step 3 ask 原样转写：session_id/agent_id 固定值不可改（后端记忆键 kb_assistant:kb-console）。 */
+  /** brief Step 3 ask 原样转写：session_id/agent_id 固定值不可改（后端记忆键 kb_assistant:kb-console）。
+   * project_id 传空串——平台助手不属于项目，后端对该字段短路忽略。 */
   const ask = useCallback(async (text: string) => {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
     setMsgs((prev) => [...prev, { who: "me", text }, { who: "ai", text: "思考中…", pending: true }]);
     try {
-      const resp = await chatSend("kb-console", text, "kb_assistant");
+      const resp = await chatSend("kb-console", text, "kb_assistant", "");
       replaceLastAi(resp.reply, resp.drafts ?? []);
     } catch (err) {
       replaceLastAi(err instanceof Error ? err.message : String(err), [], true);

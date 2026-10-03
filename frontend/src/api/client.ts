@@ -282,15 +282,18 @@ export interface SendResponse {
   steps: ChatStep[];
 }
 
-export function chatSend(sessionId: string, message: string, agentId: string): Promise<SendResponse> {
+export function chatSend(
+  sessionId: string, message: string, agentId: string, projectId: string,
+): Promise<SendResponse> {
   return apiFetch<SendResponse>("/api/chat/send", {
     method: "POST", headers: JSON_HEADERS,
-    body: JSON.stringify({ session_id: sessionId, message, agent_id: agentId }) });
+    body: JSON.stringify({ session_id: sessionId, message, agent_id: agentId, project_id: projectId }) });
 }
 
 export interface ChatSession {
   id: string;
   agent_id: string;
+  project_id: string;
   title: string;
   created_at: number;
   updated_at: number;
@@ -306,9 +309,9 @@ export interface ChatMessage {
 
 const sessionsApi = (sub = "") => `/api/chat/sessions${sub}`;
 
-export function getSessions(agentId: string): Promise<{ sessions: ChatSession[] }> {
+export function getSessions(agentId: string, projectId: string): Promise<{ sessions: ChatSession[] }> {
   return apiFetch<{ sessions: ChatSession[] }>(
-    `${sessionsApi()}?${new URLSearchParams({ agent_id: agentId }).toString()}`);
+    `${sessionsApi()}?${new URLSearchParams({ agent_id: agentId, project_id: projectId }).toString()}`);
 }
 
 export function getSessionMessages(sessionId: string): Promise<{ session_id: string; messages: ChatMessage[] }> {
@@ -328,6 +331,7 @@ export interface Project {
   agents: string[];
   kb: string;
   session_count: number;
+  dir_exists: boolean;
 }
 
 export interface ProjectsResponse {
