@@ -23,9 +23,11 @@ interface Props {
 export default function ChatPage({ health, healthError, onOpenSettings, onRetryHealth }: Props) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [agentId, setAgentId] = useState("");
+  const [agentsLoaded, setAgentsLoaded] = useState(false);      // 智能体清单是否已落地：未落地时「没有可用智能体」这类话一句都不能说
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState("");
   const [projectsLoaded, setProjectsLoaded] = useState(false);   // 引导态判据：拉成功且确实为空，区别于「还没拉到」
+  const [projectsError, setProjectsError] = useState("");         // 项目列表拉失败的讯息：toast 会过期，不可重试的失败必须有状态兜住
   const navigate = useNavigate();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -60,6 +62,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       const [caps, models] = await Promise.all([getCapabilities(), getModels()]);
       metaOkRef.current = true;
       setAgents(caps.agents);
+      setAgentsLoaded(true);      // 清单落地才允许对用户断言「该项目没有可用智能体」
       const agent = caps.agents.find((a) => a.id === agentId) || caps.agents[0];
       setSystemPrompt(agent?.prompt || "");
       const uid = agent?.effective_uid || models.default_uid;
@@ -90,11 +93,16 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
         if (cur && j.projects.some((p) => p.id === cur)) return cur;
         const saved = window.localStorage.getItem(PROJECT_STORAGE_KEY) || "";
         const hit = j.projects.find((p) => p.id === saved) || j.projects[0];
+        // saved 已不存在（项目被删）时要把真正落点写回去，否则死键一直留在 localStorage
+        if (hit && hit.id !== saved) window.localStorage.setItem(PROJECT_STORAGE_KEY, hit.id);
         return hit ? hit.id : "";
       });
       setProjectsLoaded(true);
+      setProjectsError("");        // 成功即清：错误页只在「最近一次拉取失败」时占屏
     } catch (err) {
-      toast(err instanceof ApiError ? err.message : String(err));
+      const msg = err instanceof ApiError ? err.message : String(err);
+      setProjectsError(msg);       // 只 toast 会把页面永久卡在「0 个选项 + 无项目名」的死态，必须留下可重试的错误态
+      toast(msg);
     }
   }, [toast]);
 
@@ -128,13 +136,18 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     try {
       const j = await getSessions(agentId, projectId);
       if (seq === listSeq.current) setSessions(j.sessions);
-      // stale 分支仍 return j.sessions：两个触发键都只能在 guard() 之后改（切智能体/切项目互斥，
-      // send/retryAll 被 mutRef 挡在 guard() 后），remove 自己的整表刷新又必赢 listSeq，
-      // 空交集那一支已在上面的提前 return 处作废在途请求；故调用方拿到的整表只可能属于当前
-      // 「智能体 × 项目」。最坏情形也只是页头标题回落成「新会话」，不会串到别的 agent
+      // stale 分支仍 return j.sessions：取返回值的只有 send 与 remove，两者都在 busyRef/mutRef 锁内，
+      // 用户切智能体/切项目被 guard() 挡在门外；两个键也会被无锁改到（级联 effect 改 agentId、
+      // reloadProjects 写 projectId），但每次改键都让本回调重跑并 bump listSeq，setSessions 只认最新一次；
+      // remove 自己的整表刷新又必赢 listSeq，空交集那一支已在上面的提前 return 处作废在途请求。
+      // 故调用方拿到的整表只可能属于当前「智能体 × 项目」，最坏情形也只是页头标题回落成「新会话」，不会串到别的 agent
       return j.sessions;
     } catch (err) {
-      if (seq === listSeq.current) toast(err instanceof ApiError ? err.message : String(err));
+      if (seq === listSeq.current) {
+        // 刷新失败必须清列表：留着上一个项目的行挂在新项目名下，点得开、发出去就是 404
+        setSessions([]);
+        toast(err instanceof ApiError ? err.message : String(err));
+      }
       return [];
     }
   }, [agentId, projectId, toast]);
@@ -251,6 +264,16 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
 
   const agent = agentOptions.find((a) => a.id === agentId);
 
+  // 发送阻塞由状态的唯一持有者算清楚再下传：send() 在 !agentId || !projectId 时是静默 return 的，
+  // 按钮必须跟着一起哑下来并把原因写进 title，否则就是一只点不动的死按钮（UI 约定：0 个死按钮）
+  const sendBlock = !agentsLoaded
+    ? "智能体清单加载中，请稍候"
+    : !agentId
+      ? "该项目未启用可见智能体，请到项目页启用后再发送"
+      : !projectId
+        ? "尚未选择项目，请先在左侧「当前项目」里选一个"
+        : "";
+
   // healthError 只有 App 的 refreshHealth 成功才会清（App.tsx:20-27），本页自己拉不动它，
   // 所以两个错误态的重试都同时打回 App 与本页，否则后端恢复后仍永久停在「后端未就绪」
   const retryAll = useCallback(() => {
@@ -260,7 +283,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     void reloadProjects();   // 引导态的「重试」必须能救回项目列表本身，否则列表拉失败会永远卡在「还没有项目」
   }, [onRetryHealth, reloadMeta, reloadSessions, reloadProjects]);
 
-  // toast 是 fixed 定位，三个 return 分支都要挂：错误页的「重试」若只失败在拉整表上，
+  // toast 是 fixed 定位，每个提前 return 的分支都要挂：错误页的「重试」若只失败在拉整表上，
   // 这条是用户唯一的可见结果，只挂主布局会被提前 return 丢掉
   const toastEl = toastMsg ? <div className="toast show">{toastMsg}</div> : null;
 
@@ -280,7 +303,8 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       </div>
     );
   }
-  // projectsLoaded 必须先为真，否则首帧会闪一下「还没有项目」；拉失败（loaded 恒假）走 toast 而不进引导态
+  // projectsLoaded 必须先为真，否则首帧会闪一下「还没有项目」；拉失败（loaded 恒假）不进引导态，
+  // 由下面的「项目列表加载失败」错误页接手
   if (projectsLoaded && !projects.length) {
     return (
       <div className="page">
@@ -295,12 +319,24 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     );
   }
 
+  // 项目列表拉失败：这页没有项目可选、发送也会静默 return，必须占屏给出路（toast 2.2s 就没了）。
+  // 放在引导态之后：真正「拉成功且为空」永远先显示「还没有项目」的指路，错误页不遮蔽它
+  if (projectsError) {
+    return (
+      <div className="page">
+        <p className="p-empty">项目列表加载失败：{projectsError} <button className="mini-btn" onClick={retryAll}>重试</button></p>
+        {toastEl}
+      </div>
+    );
+  }
+
   return (
     <div className="layout">
       <SessionPane
         projects={projects}
         projectId={projectId}
         agents={agentOptions}
+        agentsLoaded={agentsLoaded}
         agentId={agentId}
         sessions={sessions}
         activeId={activeId}
@@ -352,6 +388,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
           systemPrompt={systemPrompt}
           messages={messages}
           projectName={projects.find((p) => p.id === projectId)?.name ?? ""}
+          sendBlock={sendBlock}
           inputRef={inputRef}
           onInput={setInput}
           onSubmit={() => void send()}

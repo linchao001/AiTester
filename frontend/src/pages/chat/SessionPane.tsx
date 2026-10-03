@@ -6,6 +6,7 @@ interface Props {
   projectId: string;
   onProjectChange: (id: string) => void;
   agents: AgentInfo[];
+  agentsLoaded: boolean;    // 智能体清单是否已落地：没落地时「该项目未启用智能体」是冤枉话，一句都不能说
   agentId: string;
   sessions: ChatSession[];
   activeId: string | null;
@@ -69,7 +70,9 @@ export default function SessionPane(p: Props) {
             <option key={a.id} value={a.id}>{a.icon} {a.name}</option>
           ))}
         </select>
-        {!p.agents.length && (
+        {/* 只在清单确实落地、且确实选了项目之后才说「未启用」：agentOptions 在 caps 到位前恒空，
+            拉到失败也恒空——那时把用户指向项目页是冤枉 */}
+        {p.agentsLoaded && p.projectId && !p.agents.length && (
           <div className="empty-tip">
             该项目未启用可见智能体<br />请到项目页调整
           </div>
@@ -90,7 +93,7 @@ export default function SessionPane(p: Props) {
             {keyword ? (
               <>无匹配「{p.query.trim()}」的会话<br />换个关键词试试</>
             ) : (
-              <>「{project ? `${project.name} · ${agentName}` : agentName}」下暂无会话<br />点击「＋ 新建会话」开始</>
+              <>「{[project?.name, agentName].filter(Boolean).join(" · ")}」下暂无会话<br />点击「＋ 新建会话」开始</>
             )}
           </div>
         )}

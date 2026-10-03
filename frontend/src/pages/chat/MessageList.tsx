@@ -49,7 +49,8 @@ export default function MessageList(p: Props) {
         <div className="welcome">
           <div className="w-logo">Ai</div>
           <h2>你好，我是 {p.agentName.replace("智能体", "")}</h2>
-          <p>📁 {p.projectName} · 发送消息即在此项目开始新会话 · 会话保存在本机</p>
+          {/* 项目名还没落地时连「📁 名字 ·」一起不渲染，免得欢迎语挂着空占位 */}
+          <p>{p.projectName ? `📁 ${p.projectName} · ` : ""}发送消息即在此项目开始新会话 · 会话保存在本机</p>
           <div className="chips">
             {WELCOME_CHIPS.map((c) => (
               <button className="chip" key={c.label} onClick={() => p.onChip(c.prompt)}>{c.label}</button>

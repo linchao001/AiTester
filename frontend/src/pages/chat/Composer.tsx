@@ -9,7 +9,8 @@ interface Props {
   cap: number;             // 上下文上限（ModelInfo.context），0 表示不可估算
   systemPrompt: string;
   messages: { content: string }[];
-  projectName: string;     // 只读橙 chip 的文案源（项目维度，第 2 片接入）
+  projectName: string;     // 只读橙 chip 的文案源（项目维度，第 2 片接入）；空串代表项目还没落地，chip 不渲染
+  sendBlock: string;       // 非空即「现在还不能发」的原因，由 ChatPage 算（它是 agentId/projectId 的唯一持有者）：折进 canSend 并直接进 title
   inputRef: { current: HTMLTextAreaElement | null };  // 供 chip 点击后聚焦 + 输入框自增高（ChatPage 持有）
   onInput: (v: string) => void;
   onSubmit: () => void;
@@ -26,7 +27,8 @@ export default function Composer(p: Props) {
     ? `上下文占用约 ${fmtK(usage.used)} / ${fmtK(usage.cap)} tokens（按「${p.modelLabel}」的最大上下文估算，含系统提示词 + 历史消息 + 当前输入）`
       + (usage.pct >= 90 ? "：已接近上限，建议新建会话" : "")
     : "未配置可用模型，无法估算上下文占用";
-  const canSend = p.input.trim().length > 0 && !p.busy;
+  // 阻塞原因非空就不给发：ChatPage.send 在这种状态下是静默 return 的，按钮若还亮着就是死按钮
+  const canSend = p.input.trim().length > 0 && !p.busy && !p.sendBlock;
   // 自增高只在这里做：打字、chip 填值、失败回填都只改 input，清空时同样要显回落，
   // 否则框体停在 160px（原型 :1437 的封顶口径）
   useEffect(() => {
@@ -55,10 +57,13 @@ export default function Composer(p: Props) {
             <span className="cm-pct">{usage.cap ? `${usage.pct}%` : "—"}</span>
           </span>
           {/* 只读展示：路径不进 UI（第 2 片偏离 5）。必须压掉 .c-chip 的 cursor:pointer，
-              否则纯装饰 span 会伪装成可点控件——第 1 片「0 个死按钮」的同一条判据 */}
-          <span className="c-chip orange" style={{ cursor: "default" }} title="智能体在此目录读写文件">
-            📁 {p.projectName}
-          </span>
+              否则纯装饰 span 会伪装成可点控件——第 1 片「0 个死按钮」的同一条判据。
+              项目名还没落地时整只 chip 不渲染：光杆「📁 」是第二种伪装成有内容的空壳 */}
+          {p.projectName ? (
+            <span className="c-chip orange" style={{ cursor: "default" }} title="智能体在此目录读写文件">
+              📁 {p.projectName}
+            </span>
+          ) : null}
           {/* 原型 :618 是可展开弹层（自由/严格，严格置灰）。本期只有「自由权限」一档生效，
               做成可点的按钮并给出原型同一条 toast 文案，避免 .c-chip 的 cursor:pointer 变成死控件 */}
           <button
@@ -70,7 +75,7 @@ export default function Composer(p: Props) {
           <div className="spacer" />
           <button
             className={`btn-send${canSend ? " on" : ""}`}
-            title={p.busy ? "正在执行…" : "发送"}
+            title={p.busy ? "正在执行…" : p.sendBlock || "发送"}
             disabled={!canSend}
             onClick={p.onSubmit}
           >↑</button>
