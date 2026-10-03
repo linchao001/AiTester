@@ -216,7 +216,12 @@ class SessionStore:
         return [Session(**s) for s in rows]
 
     def count_by_project(self, project_id: str) -> int:
-        return sum(1 for s in self._index.sessions if s["project_id"] == project_id)
+        # 与 delete_by_project 读同一份 self._index.sessions：那边锁内增删，这边就得持锁读——
+        # 这个数字喂给删除确认弹窗，读到中间态就报出与实际不符的会话数。
+        # 锁不可重入，但本方法体只遍历索引（不碰 _save_index/messages/append 等再加锁的路径），
+        # 调用方只有项目路由，且不在任何 with self._lock 之内
+        with self._lock:
+            return sum(1 for s in self._index.sessions if s["project_id"] == project_id)
 
     def delete_by_project(self, project_id: str) -> int:
         with self._lock:

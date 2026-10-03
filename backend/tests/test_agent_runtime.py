@@ -200,6 +200,14 @@ def test_registry_uses_project_cwd_when_given(
     runtime.build("case_design", "s9", provider_override=MockProvider(), cwd=str(root))
     assert captured["cwd"] == str(root)  # 第 2 片刻意把落点交给项目目录：产出物不再落进仓库
 
+    # 上面只钉到「注册表收到 cwd」，还得钉「每个工具实例都拿到」：build_default_registry 把同一个
+    # cwd 同时交给文件、搜索与命令工具（pwsh/bash 也在其中），所以这里泛化认注册表里带 cwd 的全部
+    # 实例，不列文件工具名单——只数文件工具就永远没人钉命令工具的落点
+    real = build_default_registry(cwd=str(root), session_id="case_design:s9")
+    carried = {t.tool_id(): str(t.cwd) for t in real.as_langchain_tools() if hasattr(t, "cwd")}
+    assert {"read", "write", "edit", "grep_search", "glob_search", "pwsh", "bash"} <= set(carried)
+    assert set(carried.values()) == {str(root)}  # web_search 不带 cwd，泛化断言只认有落点的那批
+
 
 def test_instances_are_independent_objects(tmp_path: Path) -> None:
     runtime, _, _ = _runtime(tmp_path)

@@ -185,7 +185,8 @@ class ProjectInfo(BaseModel):
     agents: list[str]
     kb: str
     session_count: int = 0
-    dir_exists: bool = True
+    # 无默认值：可达与否必须每次现探测，给个「可达」默认就等于把没探过的项目伪装成能写
+    dir_exists: bool
 
 
 class ProjectsResponse(BaseModel):

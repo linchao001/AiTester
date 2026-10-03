@@ -269,6 +269,14 @@ def test_list_filters_by_both_agent_and_project(tmp_path) -> None:
     assert store.get(mine).project_id == PROJECT
 
 
+def test_list_project_id_is_required(tmp_path) -> None:
+    # 必填本身就是契约（第 2 片裁定 1/2）：漏传项目必须炸 TypeError，绝不回落到默认值后
+    # 静默匹配「空归属」的行——谁给 list 的 project_id 加回默认值，这条就把回归门关上
+    store = SessionStore(tmp_path / "sessions")
+    with pytest.raises(TypeError):
+        store.list("case_design")
+
+
 def test_count_by_project(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions")
     store.create(store.new_id(), "case_design", PROJECT, "一")

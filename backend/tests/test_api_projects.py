@@ -84,6 +84,7 @@ def test_create_returns_201_with_kb_alias_and_zero_sessions(client):
     assert resp.status_code == 201
     p = resp.json()
     assert p["kb"] == "kb" and p["dir_exists"] is False   # 测试里填的目录不存在
+    assert p["session_count"] == 0                        # 测试名承诺的那一钉：新项目零会话
     assert set(p) == {"id", "name", "desc", "dir", "agents", "kb", "session_count", "dir_exists"}
     assert client.get("/api/projects").json()["projects"][0]["id"] == p["id"]
 

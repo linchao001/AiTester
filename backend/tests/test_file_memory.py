@@ -1,3 +1,5 @@
+import pytest
+
 from aitester.memory import FileMemoryStore, InMemoryMemoryStore
 from aitester.services.session_store import SessionStore
 
@@ -70,3 +72,11 @@ def test_lazy_created_session_carries_project(tmp_path) -> None:
     mem.save(f"case_design:{sid}", "user", "生成登录用例")
     assert store.get(sid).project_id == PROJECT
     assert [s.id for s in store.list("case_design", PROJECT)] == [sid]
+
+
+def test_project_id_is_required_at_construction(tmp_path) -> None:
+    # 必填本身就是契约：单参构造必须 TypeError。给了默认值就会静默把会话落成空归属，
+    # 而空归属的行在双条件列表里永远认不出来——延迟 create 的那条尤其没人报错
+    store = SessionStore(tmp_path / "sessions")
+    with pytest.raises(TypeError):
+        FileMemoryStore(store)

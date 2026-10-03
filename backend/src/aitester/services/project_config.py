@@ -118,7 +118,7 @@ def dangerous_root_reason(dir_: str) -> str | None:
     return None
 
 
-def dir_exists(dir_: str) -> bool:
+def dir_exists(dir_: str | None) -> bool:
     """只读探测：存在且是目录。绝不 mkdir——write 工具会建目录，探测若也建就分不出「用户填错」与「用户还没建」。
 
     读侧判据，不参与创建校验（创建只校验形态与危险根，见 `_validate_dir`）。含 NUL 字节的 dir 会让
