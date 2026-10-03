@@ -53,6 +53,7 @@ class SessionStoreError(RuntimeError):
 class Session:
     id: str
     agent_id: str
+    project_id: str
     title: str
     created_at: int
     updated_at: int
@@ -125,11 +126,18 @@ class SessionStore:
             agent_id = str(item.get("agent_id") or "")
             if not agent_id:
                 continue
+            project_id = str(item.get("project_id") or "")
+            if not project_id:
+                # 项目归属自第 2 片起是硬字段：缺了就没有任何列表能安全地显示它。
+                # 与坏行同口径——丢一行必须留话，正文 .jsonl 原地不动，用户还能从日志找回
+                logger.warning("会话索引中 %s 行缺少项目归属（第 2 片前的旧数据），已丢弃该行", sid)
+                continue
             try:
                 created = int(item.get("created_at") or 0)
                 record = {
                     "id": sid,
                     "agent_id": agent_id,
+                    "project_id": project_id,
                     "title": str(item.get("title") or DEFAULT_TITLE)[:TITLE_MAX * 4] or DEFAULT_TITLE,
                     "created_at": created,
                     "updated_at": int(item.get("updated_at") or created) or created,
@@ -175,7 +183,7 @@ class SessionStore:
     def _index_by_id(self) -> dict[str, dict[str, Any]]:
         return {s["id"]: s for s in self._index.sessions}
 
-    def create(self, session_id: str, agent_id: str, first_message: str) -> Session:
+    def create(self, session_id: str, agent_id: str, project_id: str, first_message: str) -> Session:
         if not is_session_id(session_id):
             raise SessionStoreError(MISSING_SESSION_DETAIL)
         with self._lock:
@@ -186,6 +194,7 @@ class SessionStore:
             record = {
                 "id": session_id,
                 "agent_id": agent_id,
+                "project_id": project_id,
                 "title": _title_from(first_message),
                 "created_at": now,
                 "updated_at": now,
@@ -196,10 +205,31 @@ class SessionStore:
             self._path(session_id).touch()
             return Session(**record)
 
-    def list(self, agent_id: str) -> list[Session]:
-        rows = [s for s in self._index.sessions if s["agent_id"] == agent_id]
+    def list(self, agent_id: str, project_id: str = "") -> list[Session]:
+        # 双条件过滤：列表是「这个项目下这个智能体的会话」，缺一即跨项目串列（spec 裁定 1/2）
+        # 过渡默认值：project_id 缺省 "" 仅存活到 Task 7 收紧列表端点——Task 7 必须删掉这个默认值
+        rows = [
+            s for s in self._index.sessions
+            if s["agent_id"] == agent_id and s["project_id"] == project_id
+        ]
         rows.sort(key=lambda s: (s["updated_at"], s["created_at"]), reverse=True)
         return [Session(**s) for s in rows]
+
+    def count_by_project(self, project_id: str) -> int:
+        return sum(1 for s in self._index.sessions if s["project_id"] == project_id)
+
+    def delete_by_project(self, project_id: str) -> int:
+        with self._lock:
+            rows = [s for s in self._index.sessions if s["project_id"] == project_id]
+            if not rows:
+                return 0
+            for row in rows:
+                self._index.sessions.remove(row)
+            # 与 delete 同款刻意顺序：先写索引再 unlink，宁可留孤儿正文也不留指向不存在文件的悬空行
+            self._save_index()
+            for row in rows:
+                self._path(row["id"]).unlink(missing_ok=True)
+            return len(rows)
 
     def get(self, session_id: str) -> Session | None:
         record = self._index_by_id().get(session_id)

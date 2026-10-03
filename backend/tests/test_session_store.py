@@ -8,6 +8,8 @@ from aitester.services.session_store import (
     is_session_id,
 )
 
+PROJECT = "proj_11111111"
+
 
 def _store(tmp_path):
     return SessionStore(tmp_path / "sessions")
@@ -29,7 +31,7 @@ def test_is_session_id_rejects_other_forms() -> None:
 def test_create_derives_title_from_first_message(tmp_path) -> None:
     store = _store(tmp_path)
     sid = store.new_id()
-    sess = store.create(sid, "case_design", "  第一行很长的问题\n第二行不要进标题  ")
+    sess = store.create(sid, "case_design", PROJECT, "  第一行很长的问题\n第二行不要进标题  ")
     assert sess.id == sid and sess.agent_id == "case_design"
     # 换行转空格后取前 16 字（spec:2026-10-03-chat-session-design.md:46 与 TITLE_MAX=16 一致）
     assert sess.title == "第一行很长的问题 第二行不要进标"
@@ -39,22 +41,22 @@ def test_create_derives_title_from_first_message(tmp_path) -> None:
 
 def test_title_falls_back_when_first_message_blank(tmp_path) -> None:
     store = _store(tmp_path)
-    assert store.create(store.new_id(), "case_design", "  \n  ").title == "新会话"
+    assert store.create(store.new_id(), "case_design", PROJECT, "  \n  ").title == "新会话"
 
 
 def test_create_is_idempotent_for_existing_id(tmp_path) -> None:
     store = _store(tmp_path)
     sid = store.new_id()
-    first = store.create(sid, "case_design", "原始问题")
-    again = store.create(sid, "case_design", "另一个问题")
+    first = store.create(sid, "case_design", PROJECT, "原始问题")
+    again = store.create(sid, "case_design", PROJECT, "另一个问题")
     assert again.title == first.title  # 已存在只返回既有，绝不覆盖标题
-    assert [s.id for s in store.list("case_design")] == [sid]
+    assert [s.id for s in store.list("case_design", PROJECT)] == [sid]
 
 
 def test_append_bumps_count_updates_and_appends_jsonl(tmp_path) -> None:
     store = _store(tmp_path)
     sid = store.new_id()
-    store.create(sid, "case_design", "问题")
+    store.create(sid, "case_design", PROJECT, "问题")
     store.append(sid, "user", "问题")
     store.append(sid, "assistant", "答", steps=[{"tool": "read", "ok": True, "round": 1, "detail": "{}"}])
     msgs = store.messages(sid)
@@ -77,17 +79,17 @@ def test_append_unknown_session_raises_actionable(tmp_path) -> None:
 
 def test_list_sorts_by_updated_at_desc_and_scopes_by_agent(tmp_path) -> None:
     store = _store(tmp_path)
-    a = store.create(store.new_id(), "case_design", "A")
-    b = store.create(store.new_id(), "case_design", "B")
+    a = store.create(store.new_id(), "case_design", PROJECT, "A")
+    b = store.create(store.new_id(), "case_design", PROJECT, "B")
     store.append(b.id, "user", "B 又说话了")
-    assert [s.id for s in store.list("case_design")] == [b.id, a.id]
-    assert store.list("ghost") == []
+    assert [s.id for s in store.list("case_design", PROJECT)] == [b.id, a.id]
+    assert store.list("ghost", PROJECT) == []
 
 
 def test_delete_removes_index_entry_and_file(tmp_path) -> None:
     store = _store(tmp_path)
     sid = store.new_id()
-    store.create(sid, "case_design", "问题")
+    store.create(sid, "case_design", PROJECT, "问题")
     store.append(sid, "user", "问题")
     path = tmp_path / "sessions" / f"{sid}.jsonl"
     assert path.exists()
@@ -101,12 +103,12 @@ def test_index_shape_is_versioned(tmp_path) -> None:
     root = tmp_path / "sessions"
     store = SessionStore(root)
     sid = store.new_id()
-    store.create(sid, "case_design", "问题")
+    store.create(sid, "case_design", PROJECT, "问题")
     index = json.loads((root / "index.json").read_text(encoding="utf-8"))
     assert index["version"] == 1
     assert index["sessions"][0]["id"] == sid
     assert set(index["sessions"][0]) == {
-        "id", "agent_id", "title", "created_at", "updated_at", "message_count"
+        "id", "agent_id", "project_id", "title", "created_at", "updated_at", "message_count"
     }
 
 
@@ -114,7 +116,7 @@ def test_index_dirty_entries_dropped_or_healed_on_load(tmp_path) -> None:
     root = tmp_path / "sessions"
     root.mkdir(parents=True)
     good = {
-        "id": "sess_0a1b2c3d", "agent_id": "case_design", "title": "原始",
+        "id": "sess_0a1b2c3d", "agent_id": "case_design", "project_id": PROJECT, "title": "原始",
         "created_at": 1, "updated_at": 2, "message_count": 1,
     }
     dirty = [
@@ -122,25 +124,25 @@ def test_index_dirty_entries_dropped_or_healed_on_load(tmp_path) -> None:
         {**good, "id": "legacy_001"},
         {**good, "title": "重复"},
         {"id": "sess_11112222", "title": "无智能体"},
-        {"id": "sess_33334444", "agent_id": "ghost", "message_count": -5},
+        {"id": "sess_33334444", "agent_id": "ghost", "project_id": PROJECT, "message_count": -5},
     ]
     (root / "index.json").write_text(
         json.dumps({"version": 1, "sessions": dirty}, ensure_ascii=False), encoding="utf-8"
     )
 
     store = SessionStore(root)
-    rows = store.list("case_design")
+    rows = store.list("case_design", PROJECT)
     assert [(s.id, s.title) for s in rows] == [("sess_0a1b2c3d", "原始")]
     assert store.get("legacy_001") is None
     assert store.get("sess_11112222") is None
-    healed = store.list("ghost")
+    healed = store.list("ghost", PROJECT)
     assert [(s.id, s.message_count) for s in healed] == [("sess_33334444", 0)]
 
-    created = store.create(store.new_id(), "case_design", "新问题")
+    created = store.create(store.new_id(), "case_design", PROJECT, "新问题")
     saved = json.loads((root / "index.json").read_text(encoding="utf-8"))
     ids = [item["id"] for item in saved["sessions"]]
     assert sorted(ids) == sorted(["sess_0a1b2c3d", "sess_33334444", created.id])
-    keys = {"id", "agent_id", "title", "created_at", "updated_at", "message_count"}
+    keys = {"id", "agent_id", "project_id", "title", "created_at", "updated_at", "message_count"}
     assert all(set(item) == keys for item in saved["sessions"])
     ghost = next(item for item in saved["sessions"] if item["id"] == "sess_33334444")
     assert ghost["message_count"] == 0
@@ -152,9 +154,9 @@ def test_corrupt_index_self_heals_to_empty(tmp_path) -> None:
     (root / "index.json").write_text('{"version":1,"sess', encoding="utf-8")
 
     store = SessionStore(root)
-    assert store.list("case_design") == []
+    assert store.list("case_design", PROJECT) == []
 
-    created = store.create(store.new_id(), "case_design", "问题")
+    created = store.create(store.new_id(), "case_design", PROJECT, "问题")
     store.append(created.id, "user", "问题")
     reopened = SessionStore(root)
     got = reopened.get(created.id)
@@ -164,7 +166,7 @@ def test_corrupt_index_self_heals_to_empty(tmp_path) -> None:
 def test_store_survives_reinstantiation(tmp_path) -> None:
     store = _store(tmp_path)
     sid = store.new_id()
-    store.create(sid, "case_design", "问题")
+    store.create(sid, "case_design", PROJECT, "问题")
     store.append(sid, "user", "问题")
     store.append(sid, "assistant", "答")
     reopened = _store(tmp_path)
@@ -178,7 +180,7 @@ def test_bad_field_type_drops_only_that_row(tmp_path, caplog) -> None:
     root = tmp_path / "sessions"
     root.mkdir(parents=True)
     good = {
-        "id": "sess_0a1b2c3d", "agent_id": "case_design", "title": "好的",
+        "id": "sess_0a1b2c3d", "agent_id": "case_design", "project_id": PROJECT, "title": "好的",
         "created_at": 1, "updated_at": 2, "message_count": 1,
     }
     bad_created = {**good, "id": "sess_11112222", "created_at": "昨天"}
@@ -189,7 +191,7 @@ def test_bad_field_type_drops_only_that_row(tmp_path, caplog) -> None:
     )
 
     store = SessionStore(root)  # 构造不抛
-    assert [s.id for s in store.list("case_design")] == ["sess_0a1b2c3d"]  # 合法行全在
+    assert [s.id for s in store.list("case_design", PROJECT)] == ["sess_0a1b2c3d"]  # 合法行全在
     assert store.get("sess_11112222") is None  # created_at 坏 → 丢
     assert store.get("sess_33334444") is None  # message_count 坏 → 丢
     # 丢行必须留话：下一次写盘就把这两行从文件里永久抹掉，无日志就是无迹可查的静默删除
@@ -206,7 +208,7 @@ def test_corrupt_index_archives_and_keeps_jsonl(tmp_path) -> None:
     before = body.read_text(encoding="utf-8")
 
     store = SessionStore(root)
-    assert store.list("case_design") == []
+    assert store.list("case_design", PROJECT) == []
     archived = list(root.glob("index.json.bad-*"))
     assert len(archived) == 1  # 坏文件被改名留档
     assert not (root / "index.json").exists()  # 改名即移走原文件
@@ -229,12 +231,63 @@ def test_structurally_broken_index_also_archives(tmp_path, broken) -> None:
     (root / "index.json").write_text(payload, encoding="utf-8")
 
     store = SessionStore(root)
-    assert store.list("case_design") == []
+    assert store.list("case_design", PROJECT) == []
     archived = list(root.glob("index.json.bad-*"))
     assert len(archived) == 1
     assert archived[0].read_text(encoding="utf-8") == payload  # 留档内容原样，还有救
     # 留档不是拖延：随后首次写盘建新索引，但坏文件仍在原地备查
     sid = store.new_id()
-    store.create(sid, "case_design", "新会话第一条")
+    store.create(sid, "case_design", PROJECT, "新会话第一条")
     assert json.loads((root / "index.json").read_text(encoding="utf-8"))["sessions"][0]["id"] == sid
     assert len(list(root.glob("index.json.bad-*"))) == 1
+
+
+def test_index_row_requires_project_id_or_row_is_dropped(tmp_path, caplog) -> None:
+    # 归属是硬字段：第 2 片之前的旧行（无 project_id）按「丢一行且留话」处理，正文原地不动
+    store = SessionStore(tmp_path / "sessions")
+    sid = store.new_id()
+    store.create(sid, "case_design", PROJECT, "问题")
+    raw = tmp_path / "sessions" / "index.json"
+    data = json.loads(raw.read_text(encoding="utf-8"))
+    data["sessions"][0].pop("project_id")
+    raw.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    reloaded = SessionStore(tmp_path / "sessions")
+    assert reloaded.list("case_design", PROJECT) == []
+    assert "缺少项目归属" in caplog.text
+    assert (tmp_path / "sessions" / f"{sid}.jsonl").exists()
+
+
+def test_list_filters_by_both_agent_and_project(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    mine = store.new_id()
+    other_agent = store.new_id()
+    other_project = store.new_id()
+    store.create(mine, "case_design", PROJECT, "我的")
+    store.create(other_agent, "kb_assistant", PROJECT, "别的智能体")
+    store.create(other_project, "case_design", "proj_22222222", "别的项目")
+    assert [s.id for s in store.list("case_design", PROJECT)] == [mine]
+    assert store.get(mine).project_id == PROJECT
+
+
+def test_count_by_project(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    store.create(store.new_id(), "case_design", PROJECT, "一")
+    store.create(store.new_id(), "case_design", PROJECT, "二")
+    store.create(store.new_id(), "case_design", "proj_22222222", "三")
+    assert store.count_by_project(PROJECT) == 2
+    assert store.count_by_project("proj_99999999") == 0
+
+
+def test_delete_by_project_removes_rows_and_files(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    a = store.new_id()
+    b = store.new_id()
+    keep = store.new_id()
+    store.create(a, "case_design", PROJECT, "一")
+    store.create(b, "case_design", PROJECT, "二")
+    store.create(keep, "case_design", "proj_22222222", "留")
+    assert store.delete_by_project(PROJECT) == 2
+    assert not (tmp_path / "sessions" / f"{a}.jsonl").exists()
+    assert not (tmp_path / "sessions" / f"{b}.jsonl").exists()
+    assert store.get(keep) is not None
+    assert store.delete_by_project(PROJECT) == 0  # 幂等：再来一次不炸

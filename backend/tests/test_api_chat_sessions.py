@@ -47,7 +47,8 @@ def _seed(tmp_path: Path, agent_id: str = "case_design") -> tuple[TestClient, st
     application = _app(tmp_path)
     store: SessionStore = application.state.sessions
     sid = store.new_id()
-    store.create(sid, agent_id, "订单退款用例设计")
+    # 过渡：project_id 先传空串（与 file_memory 同款），Task 7 收紧列表端点时替换
+    store.create(sid, agent_id, "", "订单退款用例设计")
     store.append(sid, "user", "订单退款用例设计")
     store.append(sid, "assistant", "好的",
                  steps=[{"tool": "read", "ok": True, "round": 1, "detail": "{}"}])
@@ -172,7 +173,8 @@ def test_send_to_foreign_session_returns_404(tmp_path: Path) -> None:
     # 会话归属校验：sess_* 建在 agent A 下，用 agent_id=B 续写必须 404，否则等于往别人的会话里写
     application = _wired_app(tmp_path)
     sid = application.state.sessions.new_id()
-    application.state.sessions.create(sid, "case_design", "订单退款")
+    # 过渡：project_id 先传空串，Task 7 收紧列表端点时替换
+    application.state.sessions.create(sid, "case_design", "", "订单退款")
     client = TestClient(application)
     r = client.post(
         "/api/chat/send",

@@ -270,7 +270,8 @@ def test_history_is_trimmed_to_last_history_max(tmp_path) -> None:
 
     store = SessionStore(tmp_path / "sessions")
     sid = store.new_id()
-    store.create(sid, "case_design", "标题")
+    # 过渡：project_id 先传空串，Task 6 收紧本文件时注入真实项目
+    store.create(sid, "case_design", "", "标题")
     for i in range(45):
         store.append(sid, "user", f"问{i}")
         store.append(sid, "assistant", f"答{i}")
