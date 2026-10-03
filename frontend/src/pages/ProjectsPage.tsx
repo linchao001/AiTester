@@ -129,7 +129,7 @@ export default function ProjectsPage() {
         />
       )}
       <p className="p-tip">
-        提示：此处勾选的智能体即该项目启用的智能体（聊天页按项目过滤将在后续专项接入）；
+        提示：此处勾选的智能体即该项目启用的智能体（聊天页的「当前智能体」只列这里启用的那些）；
         本地文件目录与知识库配置在项目创建后不可修改。
       </p>
       {toastMsg && <div className="toast show">{toastMsg}</div>}
