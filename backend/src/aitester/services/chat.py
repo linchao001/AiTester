@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -159,7 +160,10 @@ class ChatService:
             agent_id,
             sid,
             provider_override=self.provider,
-            cwd=project["dir"] if project is not None else ".",
+            # 验真与落点必须认同一个展开结果，否则 `~` 项目会被 `mkdir` 建成字面 `~` 目录树
+            # （dir_exists 先 expanduser 才答「可达」，fs_tool._resolve 却从不展 `~`）：只在这里展开，
+            # 落盘数据与 UI 仍是用户输入的原始形态，无迁移
+            cwd=str(Path(project["dir"]).expanduser()) if project is not None else ".",
         )
 
         use_file = self.sessions is not None and is_session_id(sid) and not platform

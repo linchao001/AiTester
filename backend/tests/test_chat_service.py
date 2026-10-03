@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from langchain_core.messages import AIMessage
 
@@ -371,7 +373,7 @@ def test_send_requires_project_for_visible_agent(tmp_path, project) -> None:
     chat = ChatService(provider=MockProvider(), agent_runtime=_runtime(tmp_path),
                        sessions=SessionStore(tmp_path / "sessions"), projects=svc)
     with pytest.raises(ProjectConfigError) as exc:
-        chat.send("", "生成用例", "case_design")           # 空 project_id
+        chat.send("", "生成用例", "case_design", "")         # 空 project_id：显式传，不靠签名默认值
     assert "项目" in exc.value.detail
 
 
@@ -414,6 +416,34 @@ def test_send_builds_instance_with_project_cwd(tmp_path, project) -> None:
     assert chat.sessions.get(sid).project_id == pid          # 延迟建会话也把归属落进去
 
 
+def test_send_expands_tilde_project_dir_before_handing_over_cwd(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`~` 项目：验真与落点必须认同一个展开结果，否则裁定 5 的验真落空。
+
+    `dir_exists` 与 `dangerous_root_reason` 都先 expanduser 再 stat，所以 `~/work/reqs` 答「可达」；
+    而 `fs_tool._resolve` 只把 `Path(cwd) / target` 拼起来、从不展 `~`，未展开的 dir 会被当相对片段
+    拼进后端 cwd，write 的 `mkdir(parents=True)` 就地建出一棵字面 `~` 目录树——用户以为写进了项目。
+    平台差异：POSIX 的 `os.path.expanduser` 读 HOME，Windows 读 USERPROFILE（3.11 的
+    `Path.expanduser` 内部就是调 `os.path.expanduser("~")`），所以两个变量都设，断言在任何平台上
+    都指向同一个真实目录；测试侧同样用 `Path(dir).expanduser()` 求期望值，与被测代码认同一个入口。
+    """
+    home = tmp_path / "fakehome"
+    (home / "work" / "reqs").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    svc = ProjectService(FileJsonConfigRepository(tmp_path / "projects.json"))
+    created = svc.create(name="波浪号项目", desc="", dir_="~/work/reqs", agents=["case_design"])
+    runtime = _recording_runtime()
+    chat = ChatService(provider=MockProvider(), agent_runtime=runtime,
+                       sessions=SessionStore(tmp_path / "sessions"), projects=svc)
+    chat.send("", "生成用例", "case_design", created["id"])
+    cwd = str(runtime.calls[-1]["cwd"])
+    assert "~" not in cwd                                    # 字面 `~` 绝不进落点
+    assert Path(cwd).is_absolute()
+    assert cwd == str(Path("~/work/reqs").expanduser())      # 与验真同一次展开
+
+
 def test_send_rejects_project_mismatch(tmp_path, project) -> None:
     svc, pid, _ = project
     # 目录验真在项目段第一关（早于归属比对）：other 的 dir 必须真实存在，
@@ -434,5 +464,5 @@ def test_platform_agent_ignores_project(tmp_path, project) -> None:
     svc, _pid, _ = project
     chat = ChatService(provider=MockProvider(), agent_runtime=_runtime(tmp_path),
                        sessions=SessionStore(tmp_path / "sessions"), projects=svc)
-    result = chat.send("kb-console", "记一笔", "kb_assistant")  # 空 project_id：/kb 链路不破（spec 裁定 7）
+    result = chat.send("kb-console", "记一笔", "kb_assistant", "")  # 空 project_id：/kb 链路不破（spec 裁定 7）
     assert result["session_id"] == "kb-console"
