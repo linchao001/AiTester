@@ -9,6 +9,7 @@ import PageState from "../components/PageState";
 import Composer from "./chat/Composer";
 import MessageList from "./chat/MessageList";
 import SessionPane from "./chat/SessionPane";
+import WorkspacePane from "./chat/WorkspacePane";
 
 /** 视图上下文，不是数据：项目本身已落盘在后端，这里只记「这次打开 /chat 看着哪个」。
  *  换浏览器不带走选择——这是第 2 片裁定 3 的代价，写在注释里免得后来人当 bug 修。 */
@@ -44,6 +45,9 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   const mutRef = useRef(false);             // 删除等改整表的操作在途：尾部会自动开会话，交叉点就点在别的智能体上
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [collapsed, setCollapsed] = useState(false);
+  const [wsCollapsed, setWsCollapsed] = useState(false);   // 工作区收起（视图态，不落盘）
+  const [wsSeq, setWsSeq] = useState(0);                   // 发送成功后 +1：工作区静默重拉
+  const wsDirtyRef = useRef(false);                        // 工作区脏文档：切项目前问一句
   const [query, setQuery] = useState("");
   const [modelLabel, setModelLabel] = useState("未配置模型");
   const [cap, setCap] = useState(0);
@@ -57,6 +61,8 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToastMsg(""), 2200);
   }, []);
+
+  const onWsDirty = useCallback((d: boolean) => { wsDirtyRef.current = d; }, []);
 
   // 进页面：能力（智能体清单 + 生效模型）与模型上限一次拉齐，任一失败都要给重试出路
   const reloadMeta = useCallback(async () => {
@@ -209,6 +215,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
         role: "assistant", content: resp.reply, ts: Date.now(), steps: resp.steps,
       }]);
       if (resp.session_id !== activeId) setActiveId(resp.session_id);
+      setWsSeq((n) => n + 1);            // 模型可能刚写了产出物：工作区树静默重拉
       const rows = await reloadSessions();
       // 新建会话后标题由服务端定，用返回的 title 就地补齐，避免等整表刷新才可见
       const mine = rows.find((r) => r.id === resp.session_id);
@@ -263,6 +270,8 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   // 切项目与切智能体同构：guard → 清列表 → 回欢迎态；列表由 reloadSessions 的 effect 按新项目重拉
   const onProjectChange = useCallback((id: string) => {
     if (!guard()) return;
+    // 工作区有脏文件时先问：确认才切（取消即早退，受控 select 会停在原项目）
+    if (wsDirtyRef.current && !window.confirm("工作区有未保存的文件修改，切换项目将丢弃它们。继续？")) return;
     window.localStorage.setItem(PROJECT_STORAGE_KEY, id);
     setProjectId(id);
     setSessions([]);
@@ -270,6 +279,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   }, [guard, openSession]);
 
   const agent = agentOptions.find((a) => a.id === agentId);
+  const currentProject = projects.find((p) => p.id === projectId);
 
   // 发送阻塞由状态的唯一持有者算清楚再下传：send() 在 !agentId || !projectId 时是静默 return 的，
   // 按钮必须跟着一起哑下来并把原因写进 title，否则就是一只点不动的死按钮（UI 约定：0 个死按钮）
@@ -391,6 +401,9 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
             <span className="m-dot" />{modelLabel} ▾
           </button>
           <div className="spacer" />
+          {wsCollapsed && currentProject && (
+            <button className="mini-btn" title="显示工作区" onClick={() => setWsCollapsed(false)}>📁 工作区</button>
+          )}
           <button className="icon-btn" title="新建会话" disabled={busy} onClick={newSession}>
             💬<sup style={{ color: "var(--primary)", fontWeight: 800 }}>＋</sup>
           </button>
@@ -398,7 +411,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
         <MessageList
           messages={messages}
           agentName={agent?.name ?? "用例设计智能体"}
-          projectName={projects.find((p) => p.id === projectId)?.name ?? ""}
+          projectName={currentProject?.name ?? ""}
           busy={busy}
           onCopy={(t) => void copy(t)}
           onChip={(t) => {
@@ -414,7 +427,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
           cap={cap}
           systemPrompt={systemPrompt}
           messages={messages}
-          projectName={projects.find((p) => p.id === projectId)?.name ?? ""}
+          projectName={currentProject?.name ?? ""}
           sendBlock={sendBlock}
           inputRef={inputRef}
           onInput={setInput}
@@ -422,6 +435,17 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
           onToast={toast}
         />
       </main>
+      {currentProject && (
+        <WorkspacePane
+          key={currentProject.id}
+          project={currentProject}
+          collapsed={wsCollapsed}
+          refreshSeq={wsSeq}
+          onCollapse={() => setWsCollapsed(true)}
+          onToast={toast}
+          onDirtyChange={onWsDirty}
+        />
+      )}
       {toastEl}
     </div>
   );
