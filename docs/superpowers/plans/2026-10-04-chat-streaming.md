@@ -2179,7 +2179,7 @@ def chat_stop(req: StreamStopRequest, request: Request) -> StreamStopResponse:
 
 > `_GUARD_MAP` 的写法保持了迁移前五条 except 分支的码值对应（`ConfigNotFoundError`→404、`ProjectConfigError`→400、`SessionStoreError`→404、`ProviderConfigError`→400），并把「其他 `ProviderError`」留成 502——`prepare` 实际只抛这四类，502 分支是同一映射的收尾，不新增判据。
 
-- [ ] **Step 6: 迁 18 处既有 HTTP 调用点**
+- [ ] **Step 6: 迁 15 处既有 HTTP 调用点**（实测 `grep -rn "api/chat/send" backend/tests`：`test_api.py` 6 + `test_api_chat_sessions.py` 6 + `test_kb_api.py` 3。spec 测试策略里的「22 处」数的是服务层 `svc.send(` 用例，那是另一批，本任务不改）
 
 `tests/test_api.py`：文件顶部加共用小助手（放在 `ALL_LAYERS` 之后）：
 
