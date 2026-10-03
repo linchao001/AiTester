@@ -7,6 +7,7 @@ from aitester.adapters.tools import FileObservationStore
 from aitester.config import Settings, get_settings
 from aitester.interaction.kb_browse import router as kb_browse_router
 from aitester.interaction.pick_dir import router as pick_dir_router
+from aitester.interaction.project_browse import router as project_browse_router
 from aitester.interaction.projects import router as projects_router
 from aitester.interaction.router import router
 from aitester.interaction.sessions import router as sessions_router
@@ -77,6 +78,7 @@ def create_app(
     application.include_router(pick_dir_router)
     application.include_router(kb_browse_router)
     application.include_router(projects_router)
+    application.include_router(project_browse_router)
     application.include_router(sessions_router)
     return application
 
