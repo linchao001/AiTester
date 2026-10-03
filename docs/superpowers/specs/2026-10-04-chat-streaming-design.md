@@ -15,7 +15,7 @@
 - **传输只留一条**：裁定 1 删掉 `POST /api/chat/send`。`trace` 与 `model` 两个响应字段前端零消费方（全仓只有 `resp.reply/resp.steps/resp.drafts/resp.session_id/resp.title` 被读），随端点一起消失；`/api/chat/echo` 的 `trace` 是七层回归链路的验收物，不动。
 - **一份实现，两种消费**：`stream_graph` 是唯一执行路径，`run_graph` 改成「把事件折回今天那个 `{reply, tool_traces, drafts}` dict」的薄壳。这样既有的 `test_agent_graph.py` 全套用例直接变成流式核心的回归锁，也避免出现「invoke 与 stream 两套节点行为」这条第 2 片教训里的缝。
 
-## 前提实测（2026-10-04，假模型、零网络、零副作用；脚本 `D:/tmp/probe_stream.py`，一次性探针，不入库）
+## 前提实测（2026-10-04，假模型/裸 socket，零网络、零副作用；一次性探针 `D:/tmp/probe_stream.py`、`probe_cancel.py`、`sse_probe_server.py`+`sse_arrival_probe.py` 用完即删，不入库）
 
 | # | 前提 | 结果 |
 |---|---|---|
@@ -24,7 +24,8 @@
 | P3 | 非流式 `invoke` 下 `get_stream_writer()` 会不会炸 | 不炸，写成 no-op。（本片最终不依赖这条：`run_graph` 也走 stream；仍登记，因为它意味着「必要时可退回一次性路径」） |
 | P4 | 消费端提前 `close()` 生成器 | 干净退出，异常不外泄 → 这是「浏览器断开即停」的落点 |
 | P5 | `ChatOpenAI.bind_tools([...]).stream` | 存在（`ChatOpenAI.stream` 与 bind 后对象的 `stream` 均在）；真实 token 流与 tool_calls 增量合并留真机走查实测 |
-| P6 | **未验**：取消信号经 `config.configurable` 进节点（`langgraph.config.get_config()` 读得到） | 实施计划第一个任务先钉这条测试。读不通即退回把 `RunControl` 作为 `GraphBuilder` 第三形参注入（牵动 `graph_registry` 与 `agent_runtime`，但不改拓扑） |
+| P6 | 取消信号进节点的路径 | **已验**（2026-10-04，`D:/tmp/probe_cancel.py`，假模型、零网络，脚本已删）：<br>· 节点形参 `config: RunnableConfig` 与 `langgraph.config.get_config()` **两条都读得到** `config["configurable"]["run_control"]`（值是活对象，不是字符串）→ 采用官方写法：节点签名从 `(state)` 改 `(state, config)`，`GraphBuilder` 签名**不用改**，退路作废<br>· 取消位在 chunk 之间命中后：该轮不再产出 delta，`turn` 事件带的是已生成的前缀 → 中断是正常收尾，不需要异常类型<br>· `stream_mode=["custom","updates"]` 混流可用：`custom` 载荷按写入顺序实时到达；`updates` 给出 `{"agent": {"messages":[AIMessage]}}`、`{"tools": {"messages":[ToolMessage]}}`，`tool_call_id`/`status` 都在 → `step` 事件从 tools 分片折，`call` 事件从节点的 `turn` 折<br>· 轮次编号按「state 里已有几条 ToolMessage + 1」算，实测第 1 轮=1、工具回来后=2，与 `run_graph` 现有 `round_no` 语义一致 |
+| P8 | `AIMessageChunk` 累加后怎么变回消息 | **已验，并纠正本 spec 的一处假设**：langchain-core 1.6.6 的 `AIMessageChunk` **没有 `.message` 属性**（原设计写 `merged.message` 会 AttributeError）。实测 `AIMessageChunk` 是 `AIMessage` 的子类，`c1 + c2` 累加后 `merged.tool_calls` 已把 `tool_call_chunks` 里的 JSON 参数解析好（参数只到半截时 `args` 退化成 `{}`，不抛）。节点改为 `AIMessage(content=merged.content, tool_calls=merged.tool_calls, additional_kwargs=merged.additional_kwargs)` 重建——落进 state 的是普通 `AIMessage`，`run_graph` 既有的 `isinstance(msg, AIMessage)` 判据不受子类型干扰 |
 | P7 | vite dev proxy 会不会把 SSE 攒成一坨 | **不会，已实测**（一次性探针：临时 uvicorn:8011 定时间隔吐帧 + 项目自己的 vite:5176 经 `VITE_PROXY_TARGET` 指过去，量每帧到达时刻；探针与脚本已删，用户 8000/5173 全程未动）：<br>· 10 帧 ×300ms（每帧约 60B）——直连 gap 恒 0.301s；经代理恒 0.300~0.301s<br>· 40 帧 ×40ms（每帧 20B，最接近真实逐 token 形态）——直连最大 gap 0.042s；经代理最大 gap 0.041s，无 Nagle 延迟、无合并<br>· 客户端声明 `gzip, deflate, br` 时代理**不加** `Content-Encoding`，也不缓冲；响应恒为 `transfer-encoding: chunked`<br>**结论：不加 `X-Accel-Buffering`、不关 gzip、不做任何保险丝**——那是给未存在的问题写代码。走查仍要眼看一次「逐字出现」，但那是验收，不是排查 |
 
 ## 用户裁定（2026-10-04，逐条确认）
@@ -79,7 +80,7 @@ services/stream_turn(...) -> Iterator[dict]   # 事件即 SSE 载荷
 | `adapters/llm/base.py` | 协议加 `stream_messages(messages: list[Any]) -> Iterator[AIMessageChunk]` | 与 `invoke_messages` 并列，不替换：节点在流里用它，折返壳也走流 |
 | `adapters/llm/openai_compat.py` | `stream_messages` = `self._client.stream(messages)` 逐 chunk 透传；异常按 `invoke_messages` 同款包法（`ProviderError` + key 打星） | 失败口径两侧一致，不出现「invoke 报中文、stream 报裸异常」 |
 | `adapters/llm/mock.py` | `stream_messages` 按定长 4 字符切片产出 `AIMessageChunk` | 测试可断言 delta 条数 = `ceil(len/4)`；粒度是测试常数，不代表真实 token 边界（风险节登记） |
-| `orchestration/agent_graph.py` | 节点体改流：`answer_node`/`agent_node` 用 `provider.stream_messages` 累加 `AIMessageChunk`（`merged += chunk`）后返回 `merged.message`；每个非空 chunk 调 `get_stream_writer()`；每个 chunk 之间与每轮之前查 `control`，命中即停止累加并按当前已生成文本收尾 | 拓扑（节点/边/`should_continue`）一字不改 |
+| `orchestration/agent_graph.py` | 节点体改流：`answer_node`/`agent_node` 签名改 `(state, config: RunnableConfig)`，用 `provider.stream_messages` 累加 `AIMessageChunk`（`merged = AIMessageChunk(content="")` 起，`merged += chunk`），返回 `{"messages": [AIMessage(content=merged.content, tool_calls=merged.tool_calls, additional_kwargs=merged.additional_kwargs)]}`（P8：`.message` 在本版本不存在）；每个非空 chunk 调 `get_stream_writer()`；每个 chunk 之间查 `config["configurable"]["run_control"]`，命中即停止累加并按当前已生成前缀收尾 | 拓扑（节点/边/`should_continue`）与 `GraphBuilder` 签名一字不改（P6 实测：取消对象走 `config.configurable` 进节点可读） |
 | 同上 | 新增 `stream_graph(build, provider, tools, messages, control=None) -> Iterator[dict]`；`run_graph(...)` 改为薄壳 `fold(stream_graph(...))` → `{reply, tool_traces, drafts}` | `tool_traces` 的 `ok/round/detail` 严格取键口径不变 |
 | 新增 `orchestration/run_control.py` | `RunControl`：`threading.Event` 包装 + `cancelled` 属性。**取消不走异常**（聊天里设计的 `TurnCancelled` 作废）——它带着已生成的产物，是正常终态，统一由 `finish{stopped:true}` 表达 | 放 orchestration 而非 services：节点要 import 它，方向必须停在 adapters/orchestration 之下 |
 | `services/run_registry.py`（新增） | `RunRegistry.start(run_id) -> RunControl` / `cancel(run_id) -> bool` / `finish(run_id)`，`threading.Lock` 保护；`run_id = uuid4().hex` | 进程内、内存态：后端重启即在途 run 消失（`/api/chat/stop` 回 404，UI 已在 `done` 前断开，无害） |
@@ -158,8 +159,8 @@ services/stream_turn(...) -> Iterator[dict]   # 事件即 SSE 载荷
 
 ## 风险与已知限制
 
-- **P6 未验**：取消信号进节点的唯一路径若 `config.configurable` 读不通，退路是改 `GraphBuilder` 签名（牵动 `graph_registry.py`、`agent_runtime.py` 与所有 builder 实现）。第一个任务先钉这条测试，就是为了把它变成开工 30 分钟内known 的事。
-- **真实 token 流与 tool_calls 增量**：P1/P5 用假模型验的是通道，不是 DeepSeek/DashScope 兼容端点行为。`ChatOpenAI.stream` 在部分兼容端点上对 `tool_calls` 的 chunk 合并有差异，落不进 `merged.message.tool_calls` 就会「看不见工具」→ 真机走查必测一条「带工具调用的流式」。
+- **P6 已闭合，但只闭合了机制**：假模型证明「取消对象能进节点、`custom`+`updates` 混流可用」，没证明真实兼容端点的行为。仍开的两条：真实 token 节奏（下一条）与 `updates` 分片在带 checkpointer/并行分支时的形状变化（本片无 checkpointer、无并行分支，撞上再改）。
+- **真实 token 流与 tool_calls 增量**：P1/P5/P6 用假模型验的是通道，不是 DeepSeek/DashScope 兼容端点行为。`ChatOpenAI.stream` 在部分兼容端点上对 `tool_calls` 的 chunk 合并有差异，`merged.tool_calls` 解析不出来就会「看不见工具」（P8 实测：参数 JSON 只到半截时 `args` 静默退化成 `{}`，不抛异常）→ 真机走查必测一条「带工具调用的流式」。
 - **vite 代理与 SSE**：已实测**不缓冲、不压缩**（见前提实测 P7 的两组间隔数据）。残留风险不在缓冲，而在**真实模型的节奏**：DeepSeek/DashScope 的兼容端点如果整段一次性 flush（上游模型不回 chunk），代理这边再透明也仍是「憋一段吐一段」——这属于 P5 的走查项，与本片实现无关，出现时先查 provider 侧而不是加保险丝。
 - **断开即停依赖生成器关闭**：P4 只验了直接 `close()`；`StreamingResponse` 在 uvicorn 下把 `GeneratorExit` 送进生成器的时机未经实测。最坏退化 = 后端跑完但无人消费，此时取消位仍未置，落盘成**全量**且 `stopped:false`（用户看不到，重开才看到完整回复）。走查逐条实测这一项。
 - **Mock 粒度是测试常数**：4 字符一片只为断言条数，与真实 token 边界无关。
@@ -185,5 +186,5 @@ services/stream_turn(...) -> Iterator[dict]   # 事件即 SSE 载荷
 - 覆盖：六条裁定各有落点（粒度→事件表+节点；真停→`RunControl`/`RunRegistry`/stop 端点；范围→前端两张表；留痕→`stopped` 字段链；删 send→契约表+405 锁；meter→`chat/utils.ts`）。无 TBD、无「类似第 N 片」。
 - 一致性：错误表与前端 toast 指向同一批 detail；「守门只有一段」写进契约表并配一条逐字相同的测试；终态事件与「撤 busy」的对应关系在事件表下方明确。
 - 顺序风险：P6 测试是第一个任务；`run_graph` 折返壳必须在改节点体之前先绿，否则回归锁失效；`stopped` 字段链（memory→store→schema→client）跨四层，任一层漏传就是静默丢标注——计划里按「先落盘层、再服务层、最后 UI」排。
-- 实测已闭合：P7（代理缓冲）已用定时间隔探针量死，结论是「不加任何保险丝」；仍开的只有 P6（取消信号进节点）与真实模型节奏（P5 走查项）两条。
+- 实测已闭合：P6（取消信号进节点 + `custom`/`updates` 混流形状）与 P7（代理缓冲）、P8（`AIMessageChunk` 累加回消息）都用假模型/裸 socket 量死，结论分别是「节点加 `config` 形参即可，`GraphBuilder` 签名不动」「不加任何保险丝」「没有 `.message`，用 `merged.tool_calls` 重建 `AIMessage`」。仍开的只有真实模型节奏一条（P5 走查项）。
 - 歧义收敛：中间轮文本的归属（过程块，不落盘）、「已停止」不进 content、`kb-console` 临时键不留痕，三处都在正文写死判据，不留实现期解释空间。
