@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterator
 
-from langchain_core.messages import AIMessage, BaseMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, get_buffer_string
 from langchain_openai import ChatOpenAI
 
 from aitester.adapters.llm.errors import ProviderError
@@ -54,3 +54,12 @@ class OpenAICompatProvider:
         if not isinstance(result, AIMessage):
             return AIMessage(content=str(result.content))
         return result
+
+    def stream_messages(self, messages: list[Any]) -> Iterator[AIMessageChunk]:
+        # 失败包法与 invoke_messages 逐字相同：同一条「调用 {model_ref} 失败: …」+ key 打星
+        try:
+            for chunk in self._client.stream(messages):
+                yield chunk
+        except Exception as exc:
+            raw = f"调用 {self.model_ref} 失败: {exc}".replace(self._api_key, "***")
+            raise ProviderError(raw) from exc

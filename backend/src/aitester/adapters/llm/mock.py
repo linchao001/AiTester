@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterator
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
+
+# 定长切片只为「条数可断言」，与真实 token 边界无关（spec 风险节登记）
+MOCK_CHUNK_CHARS = 4
 
 
 class MockProvider:
@@ -25,3 +28,16 @@ class MockProvider:
             if role == "human":
                 return AIMessage(content=f"[mock] {content}")
         return AIMessage(content="[mock]")
+
+    def stream_messages(self, messages: list[Any]) -> Iterator[AIMessageChunk]:
+        # 输入兼容两种形态：dict（对齐 complete 的 role=user）与消息对象（对齐 invoke_messages 的 type=human）
+        text = "[mock]"
+        for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                text = f"[mock] {msg['content']}"
+                break
+            if getattr(msg, "type", "") == "human":
+                text = f"[mock] {getattr(msg, 'content', '') or ''}"
+                break
+        for i in range(0, len(text), MOCK_CHUNK_CHARS):
+            yield AIMessageChunk(content=text[i:i + MOCK_CHUNK_CHARS])
