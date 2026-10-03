@@ -16,6 +16,7 @@ from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.kb.manager import RemeKbManager
 from aitester.services.model_config import ModelConfigService
 from aitester.services.project_config import ProjectService
+from aitester.services.run_registry import RunRegistry
 from aitester.services.session_store import SessionStore
 from aitester.storage import FileJsonConfigRepository
 
@@ -69,6 +70,8 @@ def create_app(
     )
     sessions = SessionStore(sessions_dir or DATA_DIR / "sessions")
     application.state.sessions = sessions
+    # 在途回合注册表：路由持它（stream_turn 只收 RunControl 形参，服务不认识 run_id）
+    application.state.run_registry = RunRegistry()
     application.state.chat_service = ChatService(
         agent_runtime=application.state.agent_runtime,
         sessions=sessions,
