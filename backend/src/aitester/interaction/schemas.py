@@ -212,6 +212,7 @@ class ProjectUpdateRequest(BaseModel):
 class SessionInfo(BaseModel):
     id: str
     agent_id: str
+    project_id: str
     title: str
     created_at: int
     updated_at: int

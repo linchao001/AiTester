@@ -34,13 +34,16 @@ router = APIRouter(prefix="/api/chat/sessions")
 
 @router.get("", response_model=SessionsResponse)
 def sessions_list(
-    request: Request, agent_id: str = Query(min_length=1)
+    request: Request,
+    agent_id: str = Query(min_length=1),
+    project_id: str = Query(min_length=1),
 ) -> SessionsResponse:
-    # 未知或平台智能体 → 空列表 200：列表是「此处没有会话」，不是错误
+    # 未知或平台智能体 → 空列表 200：列表是「此处没有会话」，不是错误。
+    # project_id 必填不砸 /kb：三端点按第 1 片口径只服务已落盘的 sess_* 会话，临时键一律 404/空表
     # model_validate 而非 **vars：与读路径 steps 同款口径，Session 数据类日后多出字段也不会炸
     return SessionsResponse(
         sessions=[
-            SessionInfo.model_validate(vars(s)) for s in _store(request).list(agent_id)
+            SessionInfo.model_validate(vars(s)) for s in _store(request).list(agent_id, project_id)
         ]
     )
 

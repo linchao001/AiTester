@@ -205,9 +205,9 @@ class SessionStore:
             self._path(session_id).touch()
             return Session(**record)
 
-    def list(self, agent_id: str, project_id: str = "") -> list[Session]:
+    def list(self, agent_id: str, project_id: str) -> list[Session]:
         # 双条件过滤：列表是「这个项目下这个智能体的会话」，缺一即跨项目串列（spec 裁定 1/2）
-        # 过渡默认值：project_id 缺省 "" 仅存活到 Task 7 收紧列表端点——Task 7 必须删掉这个默认值
+        # project_id 无默认值：漏传项目必须是 TypeError，而不是静默匹配空归属的跨项目泄漏路径
         rows = [
             s for s in self._index.sessions
             if s["agent_id"] == agent_id and s["project_id"] == project_id
