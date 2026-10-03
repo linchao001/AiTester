@@ -38,8 +38,12 @@ class ChunkedStreamMixin:
         yield from chunks_from(self.invoke_messages(messages))  # type: ignore[attr-defined]
 
 
-class CancelAfterProvider(ChunkedStreamMixin):
-    """在第 n 块产出时置取消位：验「chunk 之间」的检查点真的生效。"""
+class CancelAfterProvider:
+    """在第 n 块产出时置取消位：验「chunk 之间」的检查点真的生效。
+
+    自带 stream_messages 逐块置位，不必借 ChunkedStreamMixin 把 invoke 剧本切块，
+    故不再继承该基类（原先继承后又覆写 stream_messages，基类那份即成死码）。
+    """
 
     name = "cancel"
     model_ref = "cancel/model"
@@ -54,9 +58,6 @@ class CancelAfterProvider(ChunkedStreamMixin):
 
     def bind_tools(self, tools: list) -> "CancelAfterProvider":
         return self
-
-    def invoke_messages(self, messages: list) -> AIMessage:
-        return self._message
 
     def stream_messages(self, messages: list) -> Iterator[AIMessageChunk]:
         for i, chunk in enumerate(chunks_from(self._message)):

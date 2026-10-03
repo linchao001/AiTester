@@ -44,8 +44,36 @@ class _ToolCallingProvider(ChunkedStreamMixin):
 
 def _graph_with(messages):
     class _Fixed:
-        def invoke(self, state):
-            return {"messages": messages}
+        # run_graph 已从 graph.invoke 翻成 graph.stream 的折返壳，这份假图于是把同一条消息
+        # 清单翻成节点实际会写的两路事件：agent 的 custom turn（text/tool_calls/round）+
+        # tools 的 updates 分片。改的只是假图的内部产出格式，下面各用例断言一字未动。
+        def stream(self, state, config=None, stream_mode=None):
+            msgs = messages                              # 与迁移前 invoke 同形：读闭包剧本，忽略传入 state
+            tools_seen = 0
+            idx = 0
+            while idx < len(msgs):
+                msg = msgs[idx]
+                if isinstance(msg, AIMessage):
+                    yield ("custom", {
+                        "type": "turn",
+                        "round": 1 + tools_seen,          # 轮次 = 已落地 ToolMessage + 1
+                        "text": str(msg.content or ""),
+                        "stopped": False,
+                        "tool_calls": [
+                            {"id": c.get("id"), "name": c["name"], "args": c["args"]}
+                            for c in msg.tool_calls
+                        ],
+                    })
+                    idx += 1
+                elif isinstance(msg, ToolMessage):
+                    batch = []
+                    while idx < len(msgs) and isinstance(msgs[idx], ToolMessage):
+                        batch.append(msgs[idx])
+                        idx += 1
+                    tools_seen += len(batch)
+                    yield ("updates", {"tools": {"messages": batch}})
+                else:
+                    idx += 1
 
     return lambda provider, tools: _Fixed()
 

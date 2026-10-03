@@ -13,7 +13,7 @@ from aitester.services.capability_config import CapabilityConfigService
 from aitester.services.model_config import ModelConfigService
 from aitester.services.project_config import ProjectConfigError, ProjectService
 from aitester.storage import FileJsonConfigRepository
-from streaming_fakes import ChunkedStreamMixin
+from streaming_fakes import CHUNK_CHARS, ChunkedStreamMixin
 
 
 def _model_config(tmp_path, **settings_kwargs: object) -> ModelConfigService:
@@ -153,8 +153,8 @@ def test_send_resolves_default_from_model_config(
         def stream(self, messages: list[dict[str, str]]):
             # 节点体现在走 stream_messages → client.stream；与 invoke 同一份回复，切成 chunk
             text = "真实回复"
-            for i in range(0, len(text), 4):
-                yield AIMessageChunk(content=text[i:i + 4])
+            for i in range(0, len(text), CHUNK_CHARS):
+                yield AIMessageChunk(content=text[i:i + CHUNK_CHARS])
 
     monkeypatch.setattr(openai_compat, "ChatOpenAI", FakeChatOpenAI)
     svc = ChatService(
@@ -179,19 +179,24 @@ def test_send_without_usable_default_raises_actionable_config_error(
 
 def test_send_passes_drafts_through(tmp_path, project):
     from types import SimpleNamespace
-    from langchain_core.messages import AIMessage, ToolMessage
+    from langchain_core.messages import ToolMessage
 
     svc_proj, pid, _ = project
     draft = {"op": "create", "path": "_inbox/n.md", "abs_display": "P", "summary": "s",
              "content": "c", "base": None, "mtime": 0}
 
     class _FakeGraph:
-        def invoke(self, state):
-            return {"messages": [
-                AIMessage(content="", tool_calls=[{"name": "prepare_kb_write", "args": {}, "id": "c1", "type": "tool_call"}]),
-                ToolMessage(content="Draft ready", tool_call_id="c1", name="prepare_kb_write", artifact=draft),
-                AIMessage(content="草案已生成"),
-            ]}
+        # run_graph 驱动翻到 graph.stream：假图改吐 custom turn + tools updates，
+        # draft 仍从 prepare_kb_write 的 ToolMessage.artifact 走草案通道。下面断言一字未动。
+        def stream(self, state, *, config=None, stream_mode=None):
+            yield ("custom", {"type": "turn", "round": 1, "text": "", "stopped": False,
+                              "tool_calls": [{"id": "c1", "name": "prepare_kb_write",
+                                              "args": {}}]})
+            yield ("updates", {"tools": {"messages": [
+                ToolMessage(content="Draft ready", tool_call_id="c1",
+                            name="prepare_kb_write", artifact=draft)]}})
+            yield ("custom", {"type": "turn", "round": 2, "text": "草案已生成",
+                              "stopped": False, "tool_calls": []})
 
     from aitester.services.agent_runtime import AgentInstance
     runtime = SimpleNamespace(build=lambda aid, sid, provider_override=None, cwd=".": AgentInstance(
@@ -351,14 +356,17 @@ def test_send_stores_failed_tool_step(tmp_path, project) -> None:
                 "detail": '{"file_path": "missing.txt"}'}
 
     class _FakeGraph:
-        def invoke(self, state):
-            return {"messages": [
-                AIMessage(content="", tool_calls=[{"name": "read", "args": {
-                    "file_path": "missing.txt"}, "id": "c1", "type": "tool_call"}]),
+        # run_graph 驱动翻到 graph.stream：假图改吐 custom turn + tools updates。
+        # status=error 折出的 ok=False 仍原样进 steps。下面断言一字未动。
+        def stream(self, state, *, config=None, stream_mode=None):
+            yield ("custom", {"type": "turn", "round": 1, "text": "", "stopped": False,
+                              "tool_calls": [{"id": "c1", "name": "read",
+                                              "args": {"file_path": "missing.txt"}}]})
+            yield ("updates", {"tools": {"messages": [
                 ToolMessage(content="工具执行失败", tool_call_id="c1", name="read",
-                            status="error"),
-                AIMessage(content="读取失败"),
-            ]}
+                            status="error")]}})
+            yield ("custom", {"type": "turn", "round": 2, "text": "读取失败",
+                              "stopped": False, "tool_calls": []})
 
     store = SessionStore(tmp_path / "sessions")
     svc = ChatService(provider=MockProvider(), sessions=store, projects=svc_proj)

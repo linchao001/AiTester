@@ -248,18 +248,23 @@ def test_send_to_foreign_session_returns_404(tmp_path: Path) -> None:
 def test_send_returns_nonempty_steps_at_http_level(tmp_path: Path) -> None:
     # 端点级 steps 非空且内容回显：与 chat.py「装配漏了 steps 键」的假绿区分开——
     # 若 send 不再回 steps，373 用例全绿而 UI 的「🔧 执行过程」整块消失
-    from langchain_core.messages import AIMessage, ToolMessage
+    from langchain_core.messages import ToolMessage
 
     from aitester.services.agent_runtime import AgentInstance
 
     class _FakeGraph:
-        def invoke(self, state):
-            return {"messages": [
-                AIMessage(content="", tool_calls=[
-                    {"name": "read", "args": {"path": "a.md"}, "id": "c1", "type": "tool_call"}]),
-                ToolMessage(content="内容", tool_call_id="c1", name="read", status="success"),
-                AIMessage(content="完成"),
-            ]}
+        # run_graph 已把驱动从 graph.invoke 翻到 graph.stream，这份假图随之改吐事件协议：
+        # agent 的 custom turn（含 tool_calls）+ tools 的 updates 分片 + 收口 turn。
+        # 下面 body["steps"] 的断言一字未动。
+        def stream(self, state, *, config=None, stream_mode=None):
+            yield ("custom", {"type": "turn", "round": 1, "text": "", "stopped": False,
+                              "tool_calls": [{"id": "c1", "name": "read",
+                                              "args": {"path": "a.md"}}]})
+            yield ("updates", {"tools": {"messages": [
+                ToolMessage(content="内容", tool_call_id="c1", name="read",
+                            status="success")]}})
+            yield ("custom", {"type": "turn", "round": 2, "text": "完成",
+                              "stopped": False, "tool_calls": []})
 
     application = _app(tmp_path)
     pid = _seed_project(application, tmp_path)

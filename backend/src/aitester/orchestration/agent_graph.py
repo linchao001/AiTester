@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, Callable, Iterator
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -16,7 +16,7 @@ from typing_extensions import TypedDict
 
 from aitester.adapters.llm import LlmProvider
 from aitester.adapters.tools.base import AiTooler
-from aitester.orchestration.run_control import RUN_CONTROL_KEY
+from aitester.orchestration.run_control import RUN_CONTROL_KEY, RunControl
 
 
 class AgentState(TypedDict):
@@ -125,52 +125,120 @@ def build_agent_graph(provider: LlmProvider, tools: list[AiTooler]) -> CompiledS
     return graph.compile()
 
 
+def _detail_of(call: dict[str, Any]) -> str:
+    """过程块的参数摘要：与迁移前逐字同口径（JSON 序列化后截 DETAIL_MAX）。"""
+    try:
+        return json.dumps(call.get("args") or {}, ensure_ascii=False)[:DETAIL_MAX]
+    except (TypeError, ValueError):
+        return str(call.get("args"))[:DETAIL_MAX]  # 非常规 args（非 JSON 可序列化）不退化成报错，UI 只截一行
+
+
+def stream_graph(
+    build: GraphBuilder,
+    provider: LlmProvider,
+    tools: list[AiTooler],
+    messages: list[BaseMessage],
+    control: RunControl | None = None,
+) -> Iterator[dict[str, Any]]:
+    """按指定拓扑执行一轮，把执行过程实时折成事件流。
+
+    两路合成：节点内 get_stream_writer() 写的 custom（delta/turn）给正文与工具发起，
+    graph.stream 的 updates 分片给 ToolMessage（step/draft）。二者按写入顺序到达（P6 实测）。
+    末条恒为 finish：{reply, tool_traces, drafts, stopped}。
+    """
+    graph = build(provider, tools)
+    # 只有真带 control 时才注入 config：空 config 等于「没有取消对象」，与 invoke 直调同形
+    config = {"configurable": {RUN_CONTROL_KEY: control}} if control is not None else {}
+    stream = graph.stream(
+        {"messages": messages}, config=config, stream_mode=["custom", "updates"]
+    )
+
+    reply = ""
+    round_no = 0
+    stopped = False
+    tool_traces: list[dict[str, Any]] = []
+    drafts: list[dict[str, Any]] = []
+    calls_by_id: dict[str, dict[str, Any]] = {}
+
+    for mode, payload in stream:
+        if mode == "custom":
+            kind = payload.get("type")
+            if kind == "delta":
+                yield {"type": "delta", "round": payload["round"], "text": payload["text"]}
+            elif kind == "turn":
+                round_no = max(round_no, int(payload["round"]))
+                stopped = stopped or bool(payload["stopped"])
+                calls = payload.get("tool_calls") or []
+                if calls:
+                    for call in calls:
+                        calls_by_id[str(call.get("id"))] = call
+                        yield {
+                            "type": "call",
+                            "tool": call["name"],
+                            "round": payload["round"],
+                            "detail": _detail_of(call),
+                        }
+                elif payload.get("text"):
+                    # 与迁移前同口径：后写的非工具轮 content 覆盖前面的（中间轮文本因此不落盘）
+                    reply = str(payload["text"])
+            continue
+
+        produced = payload.get("tools") or {}
+        for msg in produced.get("messages") or []:
+            if not isinstance(msg, ToolMessage):
+                continue
+            detail = _detail_of(calls_by_id.get(str(msg.tool_call_id), {}))
+            trace = {
+                "tool": msg.name or "",
+                "result": str(msg.content),
+                "ok": str(getattr(msg, "status", "success")) != "error",
+                "round": round_no,
+                "detail": detail,
+            }
+            tool_traces.append(trace)
+            # step 事件是 UI 过程块的契约字段，严格取键、不外泄 result（services 层一直不吃 result）
+            yield {
+                "type": "step",
+                "tool": trace["tool"],
+                "ok": trace["ok"],
+                "round": trace["round"],
+                "detail": trace["detail"],
+            }
+            # prepare_kb_write 的草案走 artifact 通道（模型不可见），只发给 UI 确认
+            if msg.name == "prepare_kb_write" and getattr(msg, "artifact", None):
+                drafts.append(msg.artifact)
+                yield {"type": "draft", "draft": msg.artifact}
+
+    yield {
+        "type": "finish",
+        "reply": reply,
+        "tool_traces": tool_traces,
+        "drafts": drafts,
+        "stopped": stopped,
+    }
+
+
 def run_graph(
     build: GraphBuilder,
     provider: LlmProvider,
     tools: list[AiTooler],
     messages: list[BaseMessage],
 ) -> dict[str, Any]:
-    """按指定拓扑执行一轮，返回 {reply, tool_traces, drafts}。
+    """一次性折返壳：把事件流折回 {reply, tool_traces, drafts}。
 
-    tool_traces 每项为 {tool, result, ok, round, detail}：ok/round/detail 是 UI 过程块
-    的契约字段，services/chat.py 按严格取键消费，缺字段即 KeyError（不兜默认防假绿）。
+    形状与迁移前逐字相同（tool_traces 每项 {tool, result, ok, round, detail}，
+    services/chat.py 按严格取键消费，缺字段即 KeyError，不兜默认防假绿）。
+    留着它只为让既有测试继续锁住流式核心——一份实现，两种消费。
     """
-    graph = build(provider, tools)
-    result = graph.invoke({"messages": messages})
-
-    reply = ""
-    tool_traces: list[dict[str, Any]] = []
-    drafts: list[dict[str, Any]] = []
-    calls_by_id: dict[str, dict[str, Any]] = {}
-    round_no = 0
-    for msg in result["messages"]:
-        if isinstance(msg, AIMessage):
-            if msg.tool_calls:
-                round_no += 1  # 一轮 agent↔tools = 一条带 tool_calls 的 AIMessage
-                for call in msg.tool_calls:
-                    calls_by_id[str(call.get("id"))] = call
-            elif msg.content:
-                reply = str(msg.content)
-            continue
-        if isinstance(msg, ToolMessage):
-            call = calls_by_id.get(str(msg.tool_call_id), {})
-            try:
-                detail = json.dumps(call.get("args") or {}, ensure_ascii=False)[:DETAIL_MAX]
-            except (TypeError, ValueError):
-                detail = str(call.get("args"))[:DETAIL_MAX]  # 非常规 args（非 JSON 可序列化）不退化成报错，UI 只截一行
-            tool_traces.append({
-                "tool": msg.name or "",
-                "result": str(msg.content),
-                "ok": str(getattr(msg, "status", "success")) != "error",
-                "round": round_no,
-                "detail": detail,
-            })
-            # prepare_kb_write 的草案走 artifact 通道（模型不可见），只发给 UI 确认
-            if msg.name == "prepare_kb_write" and getattr(msg, "artifact", None):
-                drafts.append(msg.artifact)
-
-    return {"reply": reply, "tool_traces": tool_traces, "drafts": drafts}
+    out: dict[str, Any] = {"reply": "", "tool_traces": [], "drafts": []}
+    for event in stream_graph(build, provider, tools, messages):
+        if event["type"] == "finish":
+            out = {
+                "reply": event["reply"],
+                "tool_traces": event["tool_traces"],
+                "drafts": event["drafts"],
+            }
+    return out
 
 
 def run_agent(
