@@ -107,10 +107,14 @@ class SessionStore:
             # 且不可恢复，而正文其实原地躺着——留档是本期唯一的救济窗口
             self._archive_broken_index()
             return _Index()
+        # 「合法 JSON 但结构坏」与「不可解析」是同一个毁数据形态：下一次写盘同样整文件覆盖，所以两条分支也先留档
         if not isinstance(raw, dict):
+            self._archive_broken_index()
             return _Index()
         items = raw.get("sessions")
-        items = items if isinstance(items, list) else []
+        if not isinstance(items, list):
+            self._archive_broken_index()
+            return _Index()
         sessions: list[dict[str, Any]] = []
         for item in items:
             if not isinstance(item, dict):
@@ -131,15 +135,17 @@ class SessionStore:
                     "updated_at": int(item.get("updated_at") or created) or created,
                     "message_count": max(0, int(item.get("message_count") or 0)),
                 }
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as exc:
                 # 坏一行丢一行：字段类型坏但 JSON 合法时，_load_index 跑在 create_app 导入期，
-                # 不吞掉就会让整进程起不来（main.py 模块级 app = create_app()）
+                # 不吞掉就会让整进程起不来（main.py 模块级 app = create_app()）。
+                # 丢行必须留话：下一次写盘会把这行从文件里永久抹掉，无日志就成无迹可查的静默删除
+                logger.warning("会话索引中 %s 行的字段类型不可用，已丢弃该行：%s", sid, exc)
                 continue
             sessions.append(record)
         return _Index(sessions=sessions)
 
     def _archive_broken_index(self) -> None:
-        """把不可解析的 index.json 改名为 index.json.bad-<ms>；best-effort，改名失败也不再抛。"""
+        """把损坏的 index.json 改名为 index.json.bad-<ms>；best-effort，改名失败也不再抛。"""
         src = self._root / "index.json"
         if not src.exists():
             # 文件不存在时 repo.load 回 None、不走 ConfigStorageError，首次启动不落到这里
@@ -149,7 +155,7 @@ class SessionStore:
             src.rename(bad)
         except OSError:
             return  # 留档只是尽力而为，改名失败绝不能反过来把启动打断
-        logger.warning("会话索引不可解析，已留档 %s，本次以空索引启动", bad)
+        logger.warning("会话索引不可用，已留档 %s，本次以空索引启动", bad)
 
     def _save_index(self) -> None:
         # 调用方必须持锁；索引丢了正文还在，但本期不提供从 .jsonl 重建索引的路径，故坏索引先留档

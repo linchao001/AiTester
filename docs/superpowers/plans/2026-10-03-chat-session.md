@@ -2497,7 +2497,7 @@ git commit -m "docs(chat): 聊天页第 1 片收尾——能力段与 spec 状�
 | 7 | 回复正文排版 | 聊天正文有专用排版（`.msg.agent .body`） | 复用工作区 `.md-preview` 渲染，故气泡内 `color:#33302a`（比 `--text` 略淡）与 `h1..h4` 的边框、`code/pre` 底色会生效；`ul/ol` 缩进已归零对齐原型 | 不引第二套 markdown 渲染器（`mdRender` 已含转义与 href 白名单）；仓内先例 `.kb-msg .md-preview` 是同一取舍 |
 | 8 | 键盘可达性 | 侧栏行、`⧉` 复制、过程块折叠都是 `div/span onClick`，删除按钮 hover 才出现 | 原样照搬，未加 `tabIndex` / `role` / 方向键导航 | 与原型同形；本期门禁是走查，可访问性留给后续专项（评审已同意不阻塞） |
 | 9 | busy 视觉 | 原型无 busy 态 | busy 期间 `新建/切换/删除/模型 select` 已 `disabled`，但 `App.css` 没有这些控件的 `:disabled` 规则，外观不变灰 | 补禁用样式属样式专项，本期只保证「点了没反应且能看出在执行」（textarea 禁用 + 发送按钮 `正在执行…` + typing 动画） |
-| 10 | chat-header 模型 chip | 裁定 3 的「点击进列表但不可选，底部『⚙ 设置 · 模型…』跳设置」 | `model-chip` 直接打开设置弹窗（`ChatPage.tsx:249`），设置弹窗内本就展示只读模型清单 | 少一层中间弹层，且不新增可选能力，属措辞偏离而非裁定变更 |
+| 10 | chat-header 模型 chip | 裁定 3 的「点击进列表但不可选，底部『⚙ 设置 · 模型…』跳设置」 | `model-chip` 直接打开设置弹窗（`ChatPage.tsx` 的 `model-chip` 按钮 `onClick=onOpenSettings`；行号会漂，认符号不认行号），设置弹窗内本就展示只读模型清单 | 少一层中间弹层，且不新增可选能力，属措辞偏离而非裁定变更 |
 
 `.foot-tip` 用原型 `:623` 原文 `为测试人员而生 · 用例生成 / 脚本编写 / 失败分析`，**无偏离**（早期草稿自造过一句「会话与消息保存在本机 · …」的说明文案，已撤回）。
 
@@ -2506,7 +2506,7 @@ git commit -m "docs(chat): 聊天页第 1 片收尾——能力段与 spec 状�
 ## 终审留给第 2 片的议程
 
 - 前端测试运行器（vitest）替代「写-跑-删」临时断言脚本——本期两次真缺陷（Task 8 的 `fmtTime` 日历日边界、Task 10 的 `fmtK` tooltip）的回归网都随脚本删掉了。
-- 把 `session_store` 挪出 `services` 包，拆掉 `memory → services → memory` 的导入顺序防线（现靠 `chat.py:128-129` 与 `memory/__init__.py:5-6` 两处注释维持）。
+- 把 `session_store` 挪出 `services` 包，拆掉 `memory → services → memory` 的导入顺序防线（现靠 `chat.py` 的「延迟导入」注释与 `memory/__init__.py` 的导入顺序注释维持；行号会漂，认符号不认行号）。
 - `project_id` 进会话键时，把 `send` 的归属校验从 `agent_id` 扩到项目维度。
 - 孤儿 `.jsonl` 的回收，以及从正文 `.jsonl` 重建索引的路径（本期仅留档坏索引）。
 - `backend/data` 单进程约束若要强制，可用锁文件在第二次启动时响亮拒绝。

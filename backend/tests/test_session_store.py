@@ -173,7 +173,7 @@ def test_store_survives_reinstantiation(tmp_path) -> None:
     assert [m.content for m in reopened.messages(sid)] == ["问题", "答"]
 
 
-def test_bad_field_type_drops_only_that_row(tmp_path) -> None:
+def test_bad_field_type_drops_only_that_row(tmp_path, caplog) -> None:
     """字段类型坏但 JSON 合法的一行只丢该行：坏一行不能拖垮整份 index，更不能让 create_app 在导入期崩。"""
     root = tmp_path / "sessions"
     root.mkdir(parents=True)
@@ -192,6 +192,8 @@ def test_bad_field_type_drops_only_that_row(tmp_path) -> None:
     assert [s.id for s in store.list("case_design")] == ["sess_0a1b2c3d"]  # 合法行全在
     assert store.get("sess_11112222") is None  # created_at 坏 → 丢
     assert store.get("sess_33334444") is None  # message_count 坏 → 丢
+    # 丢行必须留话：下一次写盘就把这两行从文件里永久抹掉，无日志就是无迹可查的静默删除
+    assert sum("字段类型不可用" in r.getMessage() for r in caplog.records) == 2
 
 
 def test_corrupt_index_archives_and_keeps_jsonl(tmp_path) -> None:
@@ -209,3 +211,30 @@ def test_corrupt_index_archives_and_keeps_jsonl(tmp_path) -> None:
     assert len(archived) == 1  # 坏文件被改名留档
     assert not (root / "index.json").exists()  # 改名即移走原文件
     assert body.read_text(encoding="utf-8") == before  # 正文文件不受影响
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        [{"id": "sess_0a1b2c3d", "agent_id": "case_design"}],  # 顶层不是 dict
+        {"version": 1, "sessions": "oops"},  # sessions 不是 list
+    ],
+    ids=["top-level-list", "sessions-not-list"],
+)
+def test_structurally_broken_index_also_archives(tmp_path, broken) -> None:
+    """合法 JSON 但结构坏也留档：返回空索引后下一次写盘就整文件覆盖，毁数据机制与「不可解析」同类。"""
+    root = tmp_path / "sessions"
+    root.mkdir(parents=True)
+    payload = json.dumps(broken, ensure_ascii=False)
+    (root / "index.json").write_text(payload, encoding="utf-8")
+
+    store = SessionStore(root)
+    assert store.list("case_design") == []
+    archived = list(root.glob("index.json.bad-*"))
+    assert len(archived) == 1
+    assert archived[0].read_text(encoding="utf-8") == payload  # 留档内容原样，还有救
+    # 留档不是拖延：随后首次写盘建新索引，但坏文件仍在原地备查
+    sid = store.new_id()
+    store.create(sid, "case_design", "新会话第一条")
+    assert json.loads((root / "index.json").read_text(encoding="utf-8"))["sessions"][0]["id"] == sid
+    assert len(list(root.glob("index.json.bad-*"))) == 1
