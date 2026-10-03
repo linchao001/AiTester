@@ -30,14 +30,6 @@ class MockProvider:
         return AIMessage(content="[mock]")
 
     def stream_messages(self, messages: list[Any]) -> Iterator[AIMessageChunk]:
-        # 输入兼容两种形态：dict（对齐 complete 的 role=user）与消息对象（对齐 invoke_messages 的 type=human）
-        text = "[mock]"
-        for msg in reversed(messages):
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                text = f"[mock] {msg['content']}"
-                break
-            if getattr(msg, "type", "") == "human":
-                text = f"[mock] {getattr(msg, 'content', '') or ''}"
-                break
+        text = str(self.invoke_messages(messages).content or "")
         for i in range(0, len(text), MOCK_CHUNK_CHARS):
             yield AIMessageChunk(content=text[i:i + MOCK_CHUNK_CHARS])

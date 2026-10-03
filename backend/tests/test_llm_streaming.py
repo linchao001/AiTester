@@ -10,7 +10,7 @@ from aitester.adapters.llm.openai_compat import OpenAICompatProvider
 
 
 def test_mock_stream_yields_4_char_chunks_and_concatenates_exactly() -> None:
-    chunks = list(MockProvider().stream_messages([{"role": "user", "content": "生成用例"}]))
+    chunks = list(MockProvider().stream_messages([HumanMessage(content="生成用例")]))
     full = "[mock] 生成用例"
     assert chunks, "流式必须至少产出一块，空流等于没有正文"
     assert all(isinstance(c, AIMessageChunk) for c in chunks)
@@ -19,7 +19,7 @@ def test_mock_stream_yields_4_char_chunks_and_concatenates_exactly() -> None:
 
 
 def test_mock_stream_chunk_piecing_is_deterministic() -> None:
-    chunks = list(MockProvider().stream_messages([{"role": "user", "content": "abcd"}]))
+    chunks = list(MockProvider().stream_messages([HumanMessage(content="abcd")]))
     assert [str(c.content) for c in chunks] == ["[moc", "k] a", "bcd"]
 
 
