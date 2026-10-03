@@ -593,3 +593,6 @@
   .page-state h2{font-size:15px;font-weight:700}
   .page-state p{font-size:12.5px;line-height:1.75;color:var(--text-2);max-width:40ch}
   .page-state .acts{display:flex;gap:8px;align-items:center;margin-top:5px}
+  /* 5) 「本地文件目录」那行的按钮会被同排输入框挤到换行（窄窗口下「📁 浏览…」断成两行），
+        故不参与收缩。选择器弹窗本身由本机后端负责，前端这里没有任何新增形态。 */
+  .field .ro .mini-btn{flex:none;white-space:nowrap}

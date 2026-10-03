@@ -362,3 +362,14 @@ export function putProject(id: string, values: ProjectFormValues): Promise<Proje
 export function deleteProject(id: string): Promise<null> {
   return apiFetch<null>(`/api/projects/${id}`, { method: "DELETE" });
 }
+
+/* 本机目录选择器：绝对路径只有「拥有桌面的进程」能给，浏览器自己的 showDirectoryPicker
+   只暴露末级文件夹名（File System Access API 的隐私限制）。后端与浏览器同机，所以由它弹
+   系统「选择文件夹」窗——等价于 Electron / Tauri 里 main 进程弹 dialog 再交给渲染进程。
+   path 为空串表示用户取消了弹窗。 */
+export interface PickDirResponse { path: string }
+
+export function postPickDir(path: string): Promise<PickDirResponse> {
+  return apiFetch<PickDirResponse>("/api/fs/pick-dir", {
+    method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ path }) });
+}

@@ -1,23 +1,14 @@
 import { useEffect, useState } from "react";
 import {
   ApiError,
+  postPickDir,
   postProject,
   putProject,
   type Project,
   type ProjectFormValues,
 } from "../../api/client";
 
-declare global {
-  interface Window {
-    showDirectoryPicker?: (opts?: { mode?: "read" | "readwrite" }) => Promise<{ name: string }>;
-  }
-}
-
 const ABS_PATH = /^([A-Za-z]:[\\/]|\/|\\\\|~[\\/])/;
-const PROJECT_ROOT_DEFAULT = "D:/work/projects";
-const joinPath = (parent: string, name: string) => `${parent.replace(/[\\/]+$/, "")}/${name}`;
-// 降级只作用于本文件：NotAllowedError 等瞬时错误不代表浏览器永久没有该能力，写坏 window 会殃及同标签页一切消费方且只有刷新能恢复
-let pickerDegraded = false;
 
 interface ProjectFormModalProps {
   mode: "create" | "edit";
@@ -39,6 +30,7 @@ export default function ProjectFormModal({
   );
   const [tip, setTip] = useState("");
   const [saving, setSaving] = useState(false);
+  const [picking, setPicking] = useState(false);
 
   /* 统一关闭入口：saving 期间任何路径都不得卸载弹窗——请求结果会落在已卸载组件上，用户零反馈误以为成功 */
   function requestClose() {
@@ -56,39 +48,23 @@ export default function ProjectFormModal({
     setAgents((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
-  /* 浏览…：浏览器读不到所选文件夹的完整路径，父目录需确认后才能拼成绝对路径（原型同款） */
+  /* 浏览…＝让同机后端弹系统的「选择文件夹」窗（postPickDir 的注释里写了为什么浏览器自己
+     弹不出带路径的窗）。picking 守卫：窗还开着时再点一次，后端会叠出第二个模态窗。 */
   async function pickDir() {
-    const raw = dir.trim();
-    let picked = "";
-    if (!pickerDegraded && typeof window.showDirectoryPicker === "function") {
-      try {
-        picked = (await window.showDirectoryPicker({ mode: "readwrite" })).name;
-      } catch (err) {
-        if ((err as { name?: string })?.name === "AbortError") return;
-        // 本页面生命周期内不再撞第二次：降级走手输回落（瞬时错误也一并回避，回落功能完整）
-        pickerDegraded = true;
-      }
+    if (picking) return;
+    setPicking(true);
+    setTip("");
+    try {
+      const seed = ABS_PATH.test(dir.trim()) ? dir.trim() : "";
+      const res = await postPickDir(seed);
+      if (!res.path) { setTip("未选择目录，可直接粘贴绝对路径"); return; }
+      setDir(res.path);
+      setTip("已填入所选目录，可直接编辑修改");
+    } catch (err) {
+      setTip(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      setPicking(false);
     }
-    if (!picked) {
-      const typed = window.prompt("输入本地目录的绝对路径", ABS_PATH.test(raw) ? raw : PROJECT_ROOT_DEFAULT);
-      if (typed === null) return;
-      setDir(typed.trim());
-      setTip(typed.trim() && !ABS_PATH.test(typed.trim()) ? "该路径不是绝对路径，请补全盘符或根路径" : "");
-      return;
-    }
-    if (ABS_PATH.test(raw)) {
-      setDir(joinPath(raw, picked));
-      setTip(`已补全子目录：${picked}`);
-      return;
-    }
-    const parent = window.prompt(
-      `已取到文件夹名「${picked}」，浏览器读不到它的完整路径，请确认绝对父目录`,
-      PROJECT_ROOT_DEFAULT
-    );
-    if (parent === null) { setDir(picked); setTip("请在该文件夹名前补全绝对父路径"); return; }
-    const base = ABS_PATH.test(parent.trim()) ? parent.trim() : PROJECT_ROOT_DEFAULT;
-    setDir(joinPath(base, picked));
-    setTip("已拼出绝对路径，前缀可直接编辑修改");
   }
 
   /* 校验顺序与文案逐条对齐原型 btnProjSave；服务端 400 的 detail 落在同一个 tip 位 */
@@ -153,13 +129,15 @@ export default function ProjectFormModal({
                 placeholder="例如 D:/work/projects/order-system 或 /home/me/order-system"
                 onChange={(e) => { setDir(e.target.value); setTip(""); }} />
               {!editing && (
-                <button className="mini-btn" onClick={() => void pickDir()}>📁 浏览…</button>
+                <button className="mini-btn" disabled={picking} onClick={() => void pickDir()}>
+                  {picking ? "等待选择…" : "📁 浏览…"}
+                </button>
               )}
             </div>
             <div className="hint">
               {editing
                 ? "本地文件目录创建后不可修改。"
-                : "可直接粘贴绝对路径；或点「浏览…」选中文件夹，再确认它的绝对父目录，自动拼成完整路径（浏览器读不到所选文件夹的完整路径）。产出（用例 / 脚本 / 报告）都写入该目录，创建后不可修改。"}
+                : "可直接粘贴绝对路径；或点「📁 浏览…」弹出本机的「选择文件夹」窗，选完自动把真实绝对路径填进来（路径只能由本机进程给出，网页自己读不到）。产出（用例 / 脚本 / 报告）都写入该目录，创建后不可修改。"}
             </div>
           </div>
           <div className="field">

@@ -210,6 +210,18 @@ class ProjectUpdateRequest(BaseModel):
     kb: str | None = None
 
 
+class PickDirRequest(BaseModel):
+    """`path` 非空且是本机真实目录时，作为选择器的初始位置；无效值静默回落。"""
+
+    path: str = ""
+
+
+class PickDirResponse(BaseModel):
+    """`path` 为空串 = 用户取消了弹窗，不是错误。"""
+
+    path: str
+
+
 class SessionInfo(BaseModel):
     id: str
     agent_id: str
