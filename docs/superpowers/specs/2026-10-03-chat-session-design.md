@@ -153,7 +153,10 @@ class FileMemoryStore:
 
 ## 范围外（后续各自成片）
 
-- **第 2 片 项目维度**：`project_id` 进 `SendRequest` 与会话键、当前项目→当前智能体级联、会话按项目作用域、文件工具 `cwd` 从 `"."`（`agent_runtime.py:77`，有测试锁定并注释「留给项目专项的缝」）换成项目 `dir` —— **该片必须先设计根约束**，否则模型可在用户填的目录里任意读写
+- **第 2 片 项目维度**（设计见 `docs/superpowers/specs/2026-10-03-chat-project-design.md`，该片按其裁定 1/2 落地）：
+  `project_id` 进 `SendRequest` 与 `index.json` 行，只做**归属字段与列表过滤**（`list(agent_id, project_id)`），**不进会话键**——memory 键与守卫键仍是 `{agent_id}:{session_id}`；`/chat` 当前项目→当前智能体级联；文件工具 `cwd` 从 `"."`（原 `agent_runtime.py:77`，当时有测试锁定并注释「留给项目专项的缝」）换成项目 `dir`。
+  原文「**该片必须先设计根约束**，否则模型可在用户填的目录里任意读写」**已作废**：第 2 片不做任何边界执法，模型仍可用绝对路径读写项目之外（自由模式语义）；根约束/越界拦截/界外授权/`strict` 属后续第 5 片「边界与权限」。
+  （2026-10-03 第 2 片定稿时改裁，见该片偏离登记 1）
 - **第 3 片 右栏工作区**：项目目录浏览 + 预览/编辑（把 `kb_browse.py` 的 `_resolve/_walk_abs` 抽成通用 root）
 - **第 4 片 流式**：`graph.stream` 替 `invoke` + SSE + 增量渲染 + 停止按钮（节点已是返回 `{"messages":[...]}` 的普通函数，拓扑不用改）
 - rename/pin/归档、会话级模型、富卡片、token 统计

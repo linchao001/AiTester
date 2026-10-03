@@ -1,6 +1,6 @@
 # 聊天页 · 第 2 片：项目维度 设计
 
-日期：2026-10-03　状态：**设计待评审**（v2 = 丁一口径：本片只做「归属 + 落点」，不做边界执法）
+日期：2026-10-03　状态：**设计已定稿、实现已落地**（2026-10-03，计划 `docs/superpowers/plans/2026-10-03-chat-project.md`；v2 = 丁一口径：本片只做「归属 + 落点」，不做边界执法）
 
 参考原型：`prototype/index.html` 当前项目 card `:570`、composer 橙 chip `:617`（`📁 订单系统 · Agent 工作目录`）、欢迎态副行 `:1314`、权限模式 `PERM_MODES :1451-1455`
 现状依据：`services/agent_runtime.py:76-83`（`build_default_registry(cwd=".", …)`，守卫键 `:78`）、`adapters/tools/__init__.py:35-40`（工具实例携带 `cwd` 现场构造）、`adapters/tools/file_tools/fs_tool.py:23-27`（绝对路径直通，无边界）、`adapters/tools/file_tools/write.py:60`（`mkdir(parents=True)`）、`services/chat.py:106-128`（send 三态与 `agent_id` 归属校验）、`services/session_store.py:130-137,169-172,178,199,225,247`、`memory/file_memory.py:3-4,17-19`（按首冒号切分）、`services/project_config.py:60-70,85-94,165-167,202-205,212-216`、`interaction/sessions.py:35-45,62-70,73-76`、`interaction/projects.py:25,32,47,61`、`interaction/schemas.py:16-20,176-206,209-231`、`pages/KbPage.tsx:325`（`chatSend("kb-console", text, "kb_assistant")`）、`api/client.ts:156-157,285,323-359`、`pages/ChatPage.tsx:28,62-100,137-167,244`、`pages/chat/SessionPane.tsx:20,27-46`、`App.tsx:11-13,58-71`、`orchestration/agent_graph.py:84`（一次性 `graph.invoke`）、`tests/test_agent_runtime.py:161-162`（`cwd == "."` 锁定）、`services/capability_config.py:57,65,102-106`（`pwsh`/`bash` 为可勾选工具，Windows 上 `bash` 默认关）
@@ -86,7 +86,7 @@ POST /api/chat/send { project_id, agent_id, session_id, message }
 - **一条守 /kb 不破的回归**：平台智能体带空 `project_id` 必须照旧走临时键成功（`chat.py` 平台短路在前）。
 - ChatService 测试注入 fake `ProjectService`，与既有 fake runtime 捕获 `build` 参数的缝同构。
 
-前端：`npm run build` 门禁（项目无前端测试框架，沿用第 1 片裁定）+ 真机走查（真实 LLM 调用，**须用户当面授权后自行发消息**，探针会话用后即删）。
+前端：`npm run build` 门禁（项目无前端测试框架，沿用第 1 片裁定）+ 真机走查（真实 LLM 调用，**须用户当面授权后自行发消息**，探针会话用后即删）。**本片真机走查未由实现方执行**——发消息要真烧 LLM，须用户当面授权后自行操作；走查由用户本人在自起端口上按下文「验收清单」逐条完成，探针会话用后即删。
 
 ## 验收清单
 
@@ -113,6 +113,7 @@ POST /api/chat/send { project_id, agent_id, session_id, message }
 - **读侧仍不校验归属**：`GET /{sid}/messages` 与 `DELETE /{sid}` 按 id 直读，与第 1 片一致，「切项目立刻清侧栏」是 UI 侧防线而非后端保证。
 - **单进程约束、明文落盘、磁盘无上限**：全部沿用第 1 片已知限制（`README.md` 后端节）。
 - **`dir` 冻结**：项目目录被移动后，历史会话的 `cwd` 指向不存在的目录 → 该会话发送被裁定 5 拦下（400），历史消息仍可读。本片不提供「改绑目录」。
+- **本片实现仅过单测与 build 门禁，未走真机**：产出物是否真落进项目目录、级联与引导态的实际观感都未经真机验证；走查清单见上文「验收清单」与计划末节，由用户本人当面授权后自起端口逐条补齐。
 
 ## 偏离登记（`QODER.md`「禁止静默偏离」条款要求）
 
