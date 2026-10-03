@@ -299,3 +299,30 @@ def test_delete_by_project_removes_rows_and_files(tmp_path) -> None:
     assert not (tmp_path / "sessions" / f"{b}.jsonl").exists()
     assert store.get(keep) is not None
     assert store.delete_by_project(PROJECT) == 0  # 幂等：再来一次不炸
+
+
+def test_stopped_roundtrip_and_old_row_default_false(tmp_path) -> None:
+    """零迁移：第 4 片之前落盘的行没有 stopped 字段，读侧必须答 False 而不是炸。"""
+    store = SessionStore(tmp_path / "sessions")
+    sid = store.new_id()
+    store.create(sid, "case_design", "proj_11111111", "退款用例")
+    store.append(sid, "assistant", "半截回答",
+                 steps=[{"tool": "read", "ok": True, "round": 1, "detail": "{}"}],
+                 stopped=True)
+    rows = store.messages(sid)
+    assert rows[-1].stopped is True
+    assert rows[-1].to_dict()["stopped"] is True
+
+    path = tmp_path / "sessions" / f"{sid}.jsonl"
+    legacy = {"role": "assistant", "content": "第 4 片前的行", "ts": 1}
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(legacy, ensure_ascii=False) + "\n")
+    assert store.messages(sid)[-1].stopped is False
+
+
+def test_append_defaults_to_not_stopped(tmp_path) -> None:
+    store = SessionStore(tmp_path / "sessions")
+    sid = store.new_id()
+    store.create(sid, "case_design", "proj_11111111", "订单")
+    store.append(sid, "user", "生成用例")
+    assert store.messages(sid)[-1].stopped is False

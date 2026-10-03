@@ -290,3 +290,11 @@ def test_send_returns_nonempty_steps_at_http_level(tmp_path: Path) -> None:
     msgs = client.get(
         f"/api/chat/sessions/{body['session_id']}/messages").json()["messages"]
     assert msgs[-1]["steps"] == body["steps"]
+
+
+def test_messages_endpoint_exposes_stopped(tmp_path) -> None:
+    client, sid, _ = _seed(tmp_path)
+    client.app.state.sessions.append(sid, "assistant", "半截回答", stopped=True)
+    rows = client.get(f"/api/chat/sessions/{sid}/messages").json()["messages"]
+    assert rows[-1]["stopped"] is True
+    assert rows[0]["stopped"] is False      # 老行/未标注的行默认 False

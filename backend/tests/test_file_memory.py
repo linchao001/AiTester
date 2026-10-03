@@ -80,3 +80,25 @@ def test_project_id_is_required_at_construction(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions")
     with pytest.raises(TypeError):
         FileMemoryStore(store)
+
+
+def test_stopped_flag_persists_on_assistant_row(tmp_path) -> None:
+    """标注进得了磁盘：memory.save 漏传 stopped 就是静默丢标注（四层链任一环都锁一条）。"""
+    store = SessionStore(tmp_path / "sessions")
+    mem = FileMemoryStore(store, "proj_11111111")
+    mem.save("case_design:sess_abcdef01", "user", "生成用例")
+    mem.save("case_design:sess_abcdef01", "assistant", "半截回答",
+             steps=[{"tool": "read", "ok": True, "round": 1, "detail": "{}"}],
+             stopped=True)
+    rows = store.messages("sess_abcdef01")
+    assert rows[-1].stopped is True
+    assert rows[-1].steps == [{"tool": "read", "ok": True, "round": 1, "detail": "{}"}]
+
+
+def test_recall_returns_truncated_text_verbatim(tmp_path) -> None:
+    """被停止的那条进下一轮 prompt 时是截断原文——不加「（已停止）」，标注只进 UI。"""
+    store = SessionStore(tmp_path / "sessions")
+    mem = FileMemoryStore(store, "proj_11111111")
+    mem.save("case_design:sess_11112222", "assistant", "已生成的前缀", stopped=True)
+    assert mem.recall("case_design:sess_11112222") == [
+        {"role": "assistant", "content": "已生成的前缀"}]

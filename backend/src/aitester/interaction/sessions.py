@@ -58,7 +58,8 @@ def _to_message(m: ChatMessage) -> ChatMessageInfo:
         except ValidationError:
             continue
     return ChatMessageInfo(
-        role=m.role, content=m.content, ts=m.ts, steps=steps or None
+        role=m.role, content=m.content, ts=m.ts, steps=steps or None,
+        stopped=m.stopped,
     )
 
 

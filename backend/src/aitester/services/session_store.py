@@ -69,6 +69,8 @@ class ChatMessage:
     content: str
     ts: int
     steps: list[dict[str, Any]] | None = None
+    # 第 4 片：被停止的回答。老 jsonl 行没这个键 → from_dict 读缺省 False，零迁移
+    stopped: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -81,6 +83,7 @@ class ChatMessage:
             content=str(raw.get("content") or ""),
             ts=int(raw.get("ts") or 0),
             steps=steps if isinstance(steps, list) else None,
+            stopped=raw.get("stopped") is True,   # 只认真 True，脏数据不伪装成被停止
         )
 
 
@@ -263,10 +266,13 @@ class SessionStore:
         role: str,
         content: str,
         steps: list[dict[str, Any]] | None = None,
+        stopped: bool = False,
     ) -> None:
         path = self._path(session_id)
         ts = _now_ms()
-        line = ChatMessage(role=role, content=content, ts=ts, steps=steps or None).to_dict()
+        line = ChatMessage(
+            role=role, content=content, ts=ts, steps=steps or None, stopped=stopped
+        ).to_dict()
         # jsonl 先写、index 后记：中途崩溃只丢一次计数更新，消息本身不丢
         with self._lock:
             record = self._index_by_id().get(session_id)

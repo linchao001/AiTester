@@ -241,6 +241,7 @@ class ChatMessageInfo(BaseModel):
     content: str
     ts: int
     steps: list[StepInfo] | None = None
+    stopped: bool = False      # 读侧字段只增不删：GET /{sid}/messages 向后兼容
 
 
 class SessionMessagesResponse(BaseModel):
