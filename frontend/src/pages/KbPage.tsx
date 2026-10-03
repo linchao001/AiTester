@@ -4,6 +4,7 @@ import {
   chatSend, kbPostFile, kbPutFile, kbReadFile, kbSearchFiles, kbTree,
   type KbBrowseItem, type KbDraft, type KbSearchHit, type KbWriteResponse,
 } from "../api/client";
+import { bindDragBar } from "../components/dragBar";
 import KbTreePane from "./kb/KbTreePane";
 import KbEditorPane from "./kb/KbEditorPane";
 import KbAssistantPane, { type KbChatMsg } from "./kb/KbAssistantPane";
@@ -23,28 +24,6 @@ export interface KbDocState {
 
 /** 收起按钮恢复文案与 resizer 夹持范围（用户裁定：180–560 / 260–640，宽于原型 520/620 上限）。 */
 const KBW_MIN = 180, KBW_MAX = 560, KBC_MIN = 260, KBC_MAX = 640;
-
-/** 原型 :1652-1660 dragBar 的 hook 化：mousedown → document mousemove → mouseup，卸载即清理。 */
-function bindDragBar(el: HTMLElement, onMove: (ev: MouseEvent) => void): () => void {
-  let detachMove: (() => void) | null = null;
-  const down = (e: MouseEvent) => {
-    e.preventDefault();
-    el.classList.add("dragging");
-    const move = (ev: MouseEvent) => onMove(ev);
-    const up = () => {
-      el.classList.remove("dragging");
-      detachMove?.();
-      detachMove = null;
-      document.body.style.userSelect = "";
-    };
-    document.body.style.userSelect = "none";
-    document.addEventListener("mousemove", move);
-    document.addEventListener("mouseup", up);
-    detachMove = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
-  };
-  el.addEventListener("mousedown", down);
-  return () => { el.removeEventListener("mousedown", down); detachMove?.(); document.body.style.userSelect = ""; };
-}
 
 /** 原型对 #kbTree 直接换 innerHTML（搜索中…/错误行），React 等价：占位盒与 KbTreePane 同构（树盒+脚注）。 */
 function TreeBoxPlaceholder({ msg, root }: { msg: string; root: string }): ReactNode {

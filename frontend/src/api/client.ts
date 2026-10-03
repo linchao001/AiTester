@@ -255,6 +255,27 @@ export function kbPostFile(path: string, content: string): Promise<KbWriteRespon
     method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ content }) });
 }
 
+export interface WsItem { name: string; rel: string; dir: boolean; size: number; mtime: number }
+export interface WsTreeResponse { rel: string; items: WsItem[] }
+export interface WsFileResponse { rel: string; name: string; ext: string; content: string; size: number; mtime: number; editable: boolean }
+export interface WsWriteResponse { rel: string; size: number; mtime: number }
+
+/** 项目工作区接口：形状与 KB browse 同款不同源——不复用 Kb* 类型，将来各自漂移不互累。 */
+const wsApi = (pid: string, sub: string, params: Record<string, string | number>) =>
+  `/api/projects/${pid}/browse/${sub}?${new URLSearchParams(
+    Object.entries(params).map(([k, v]) => [k, String(v)])).toString()}`;
+
+export function wsTree(pid: string, path: string): Promise<WsTreeResponse> {
+  return apiFetch<WsTreeResponse>(wsApi(pid, "tree", { path }));
+}
+export function wsReadFile(pid: string, path: string): Promise<WsFileResponse> {
+  return apiFetch<WsFileResponse>(wsApi(pid, "file", { path }));
+}
+export function wsPutFile(pid: string, path: string, content: string, mtime: number): Promise<WsWriteResponse> {
+  return apiFetch<WsWriteResponse>(wsApi(pid, "file", { path, mtime }), {
+    method: "PUT", headers: JSON_HEADERS, body: JSON.stringify({ content }) });
+}
+
 export interface KbDraft {
   op: "create" | "modify";
   path: string;
