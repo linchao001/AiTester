@@ -64,6 +64,10 @@ def _get(application) -> dict[str, Any]:
     return resp.json()
 
 
+def _delete(application, pid: str):
+    return TestClient(application).delete(f"/api/projects/{pid}")
+
+
 @pytest.fixture()
 def client(tmp_path: Path) -> TestClient:
     return TestClient(_app(tmp_path))
@@ -187,3 +191,30 @@ def test_nul_byte_in_stored_dir_yields_false_not_500(tmp_path) -> None:
         encoding="utf-8")
     row = _get(_app(tmp_path))["projects"][0]
     assert row["dir_exists"] is False
+
+
+def test_delete_project_cascades_sessions(tmp_path) -> None:
+    application = _app(tmp_path)
+    pid = _create(application, "订单系统", str(tmp_path / "reqs"))["id"]
+    other = _create(application, "支付中心", str(tmp_path / "pay"))["id"]
+    store = application.state.sessions
+    sid = store.new_id()
+    kept = store.new_id()
+    store.create(sid, "case_design", pid, "该删")
+    store.create(kept, "case_design", other, "该留")
+    assert _delete(application, pid).status_code == 204
+    assert store.get(sid) is None
+    assert not (tmp_path / "sessions" / f"{sid}.jsonl").exists()
+    assert store.get(kept) is not None            # 别的项目一条不少
+    assert (tmp_path / "sessions" / f"{kept}.jsonl").exists()
+
+
+def test_delete_project_last_one_keeps_sessions(tmp_path) -> None:
+    # 顺序是刻意的：项目校验没过（剩 1 条禁删）时绝不能先把会话删了
+    application = _app(tmp_path)
+    pid = _create(application, "唯一项目", str(tmp_path / "only"))["id"]
+    store = application.state.sessions
+    sid = store.new_id()
+    store.create(sid, "case_design", pid, "别跟着死")
+    assert _delete(application, pid).status_code == 400
+    assert store.get(sid) is not None

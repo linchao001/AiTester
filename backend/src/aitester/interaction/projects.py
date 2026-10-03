@@ -5,6 +5,7 @@
 （SessionStore）× 磁盘实况（只读探测），三个真相源都在响应现算，不由服务层伪造。
 """
 
+from logging import getLogger
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -22,9 +23,11 @@ from aitester.services.project_config import (
     ProjectService,
     dir_exists,
 )
-from aitester.services.session_store import SessionStore
+from aitester.services.session_store import SessionStore, SessionStoreError
 
 router = APIRouter(prefix="/api/projects")
+
+logger = getLogger(__name__)
 
 
 def _svc(request: Request) -> ProjectService:
@@ -89,3 +92,9 @@ def projects_delete(project_id: str, request: Request) -> None:
         raise HTTPException(status_code=404, detail=exc.detail) from exc
     except ProjectConfigError as exc:
         raise HTTPException(status_code=400, detail=exc.detail) from exc
+    # 先删项目再收会话：顺序反了就会在「剩 1 条禁删」这类校验失败时把会话陪葬掉
+    try:
+        _sessions(request).delete_by_project(project_id)
+    except (OSError, SessionStoreError) as exc:
+        # 项目已从真相里消失，此刻删不动的会话是孤儿：留话即可，绝不回滚项目删除
+        logger.warning("项目 %s 已删除，但其会话回收失败：%s", project_id, exc)
