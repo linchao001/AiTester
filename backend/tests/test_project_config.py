@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 import pytest
 
 from aitester.services.kb.aliases import PROJECT_KB_DEFAULT
@@ -8,6 +11,8 @@ from aitester.services.project_config import (
     NAME_MAX,
     ProjectConfigError,
     ProjectService,
+    _clean_dir,
+    dangerous_root_reason,
     visible_agent_ids,
 )
 from aitester.storage import FileJsonConfigRepository
@@ -62,12 +67,18 @@ def test_dir_must_be_absolute_any_shape(svc):
         assert _mk(svc, name=f"好{good}", dir_=good)["dir"]
 
 
-def test_dir_strips_trailing_separators_but_keeps_root(svc):
+def test_dir_strips_trailing_separators_but_keeps_root(svc, tmp_path):
     assert _mk(svc, name="尾斜杠", dir_="D:/work/a///")["dir"] == "D:/work/a"
-    assert _mk(svc, name="纯根", dir_="D:/")["dir"] == "D:/"
-    # 家目录根与裸盘符同病：剥尾分隔符塌成 `~` 会被 ABS_PATH 拒，须回退原输入形态
-    assert _mk(svc, name="家目录正斜杠", dir_="~/")["dir"] == "~/"
-    assert _mk(svc, name="家目录反斜杠", dir_="~\\")["dir"] == "~\\"
+    nested = tmp_path / "work" / "b"
+    assert _mk(svc, name="嵌套尾斜杠", dir_=f"{nested}///")["dir"] == str(nested)
+    # 纯根形态清洗后仍保留原形状（`D:/` 不剥成裸盘符、`~` 不被 ABS_PATH 误判成相对路径），
+    # 但自危险根闭集起，创建入口一律拒绝整盘/家目录本身（spec 裁定 6）
+    assert _clean_dir("D:/") == "D:/"
+    assert _clean_dir("~/") == "~/"
+    assert _clean_dir("~\\") == "~\\"
+    for pure_root in ("D:/", "~/", "~\\", os.path.abspath(os.sep)):
+        with pytest.raises(ProjectConfigError, match="项目目录"):
+            _mk(svc, name=f"纯根{pure_root}", dir_=pure_root)
 
 
 def test_dir_overlong_rejected(svc):
@@ -192,3 +203,48 @@ def test_persist_across_service_instances(svc, tmp_path):
     again = ProjectService(FileJsonConfigRepository(tmp_path / "projects.json"))
     assert [x["id"] for x in again.list_projects()] == [p["id"]]
     assert again.get(p["id"])["dir"] == p["dir"]
+
+
+# ---------- 危险根闭集（spec 裁定 6：四类判据是闭集，不是会长大的黑名单）----------
+
+def _svc(tmp_path):
+    # 与 svc fixture 同款构造，供直接拿 tmp_path 的用例复用
+    return ProjectService(FileJsonConfigRepository(tmp_path / "projects.json"))
+
+
+def test_filesystem_root_is_refused() -> None:
+    # os.path.abspath(os.sep) 在 Windows 给 "C:\\"、POSIX 给 "/"，两侧都是「没有父目录」的形态
+    assert dangerous_root_reason(os.path.abspath(os.sep)) is not None
+
+
+def test_home_dir_itself_is_refused() -> None:
+    assert dangerous_root_reason(str(Path.home())) is not None
+
+
+def test_windows_env_dir_is_refused(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pf = tmp_path / "Program Files"
+    monkeypatch.setenv("ProgramFiles", str(pf))
+    assert dangerous_root_reason(str(pf)) is not None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows 上 /usr 会被 resolve 成 C:\\usr，不属 POSIX 闭集分支")
+def test_posix_system_dir_is_refused() -> None:
+    assert dangerous_root_reason("/usr") is not None
+
+
+def test_ordinary_subdir_is_allowed(tmp_path) -> None:
+    target = tmp_path / "work" / "reqs"
+    assert dangerous_root_reason(str(target)) is None
+
+
+def test_create_refuses_filesystem_root(tmp_path) -> None:
+    svc = _svc(tmp_path)  # 复用本文件既有的 ProjectService 构造助手
+    with pytest.raises(ProjectConfigError) as exc:
+        svc.create(name="整盘", desc="", dir_=os.path.abspath(os.sep), agents=["case_design"])
+    assert "项目目录" in exc.value.detail
+
+
+def test_create_allows_nested_dir(tmp_path) -> None:
+    root = tmp_path / "reqs"
+    created = _svc(tmp_path).create(name="订单系统", desc="", dir_=str(root), agents=["case_design"])
+    assert created["dir"] == str(root)

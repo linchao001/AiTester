@@ -1,15 +1,17 @@
 """项目注册表：JSON 落盘为唯一真相，校验与不可改裁定集中在服务层。
 
 知识库字段只存别名（默认 `kb`），真实 reme 知识库 id 与实体根路径由 `services/kb/aliases`
-解析且永不出现在返回值里（脱敏裁定）。本地文件目录只校验绝对路径形态，不触磁盘、
-不建目录——浏览… 由前端拼接，路径真相归用户。
+解析且永不出现在返回值里（脱敏裁定）。本地文件目录只校验绝对路径形态与危险根闭集，
+不 stat 存在性、不建目录——浏览… 由前端拼接，路径真相归用户。
 """
 
 from __future__ import annotations
 
 import copy
+import os
 import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 from aitester.agents import AGENT_CATALOG, PLATFORM_AGENT_CATALOG
@@ -57,8 +59,43 @@ def _clean_dir(dir_: str) -> str:
     return stripped
 
 
+POSIX_SYSTEM_ROOTS = frozenset({
+    "/etc", "/usr", "/var", "/bin", "/sbin", "/lib", "/boot", "/dev", "/home", "/root",
+})
+
+# Windows 侧一律取环境变量，不硬编码盘符：机器可能装在不同的系统盘
+_WIN_ROOT_ENV_VARS = ("SystemRoot", "WINDIR", "ProgramFiles", "ProgramFiles(x86)", "ProgramData")
+
+
+def dangerous_root_reason(dir_: str) -> str | None:
+    """四类危险根判据（spec 裁定 6）：命中即返回中文原因，全部不命中返回 None。
+
+    只判四类闭集，不维护黑名单——判据是「文件系统根 / 家目录本身 / 环境变量给出的 Windows
+    系统目录 / 写死的 POSIX 系统目录」，第四条之外一律放行，用户填 D:/work 这类容器目录是他的选择。
+    """
+    raw = _clean_dir(dir_)
+    if not raw:
+        return "请填写本地文件目录"
+    try:
+        target = Path(raw).expanduser().resolve()
+    except OSError:
+        return None  # 解析不了不等于危险：形态校验已把住入口，此处不额外拦人
+    if target.parent == target:
+        return f"不能把整个磁盘「{target}」作为项目目录，请选择盘下的具体目录"
+    if target == Path.home().resolve():
+        return f"不能把用户主目录「{target}」作为项目目录，请选择其下的具体项目目录"
+    system_roots = {
+        Path(value).resolve() for value in (os.environ.get(v) for v in _WIN_ROOT_ENV_VARS) if value
+    }
+    if target in system_roots:
+        return f"不能把系统目录「{target}」作为项目目录，请选择项目自己的目录"
+    if target.as_posix().rstrip("/") in POSIX_SYSTEM_ROOTS:
+        return f"不能把系统目录「{target.as_posix().rstrip('/')}」作为项目目录，请选择项目自己的目录"
+    return None
+
+
 def _validate_dir(dir_: str) -> str:
-    """只校验形态（绝对路径），不 stat、不建目录。仅创建时调用——dir 冻结后不再重复校验。"""
+    """只校验形态（绝对路径）与危险根，不 stat、不建目录。仅创建时调用——dir 冻结后不再重复校验。"""
     clean = _clean_dir(dir_)
     if not clean:
         raise ProjectConfigError("请填写本地文件目录")
@@ -66,6 +103,9 @@ def _validate_dir(dir_: str) -> str:
         raise ProjectConfigError("目录必须是绝对路径，例如 D:/work/projects/order-system")
     if len(clean) > DIR_MAX:
         raise ProjectConfigError(f"本地文件目录不能超过 {DIR_MAX} 字")
+    reason = dangerous_root_reason(clean)
+    if reason:
+        raise ProjectConfigError(reason)
     return clean
 
 
