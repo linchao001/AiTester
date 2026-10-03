@@ -1,6 +1,8 @@
 from aitester.memory import FileMemoryStore, InMemoryMemoryStore
 from aitester.services.session_store import SessionStore
 
+PROJECT = "proj_11111111"
+
 
 def _new_sid(tmp_path) -> str:
     return SessionStore(tmp_path / "sessions").new_id()
@@ -8,7 +10,7 @@ def _new_sid(tmp_path) -> str:
 
 def test_first_user_save_creates_session_with_title(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions")
-    mem = FileMemoryStore(store)
+    mem = FileMemoryStore(store, PROJECT)
     sid = _new_sid(tmp_path)
     mem.save(f"case_design:{sid}", "user", "生成登录用例")
     got = store.get(sid)
@@ -18,7 +20,7 @@ def test_first_user_save_creates_session_with_title(tmp_path) -> None:
 
 def test_second_save_appends_and_steps_persist(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions")
-    mem = FileMemoryStore(store)
+    mem = FileMemoryStore(store, PROJECT)
     sid = _new_sid(tmp_path)
     mem.save(f"case_design:{sid}", "user", "问")
     mem.save(f"case_design:{sid}", "assistant", "答", steps=[{"tool": "read", "ok": True}])
@@ -29,7 +31,7 @@ def test_second_save_appends_and_steps_persist(tmp_path) -> None:
 
 def test_recall_returns_role_content_in_order(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions")
-    mem = FileMemoryStore(store)
+    mem = FileMemoryStore(store, PROJECT)
     sid = _new_sid(tmp_path)
     for role, content in [("user", "一"), ("assistant", "二"), ("user", "三")]:
         mem.save(f"case_design:{sid}", role, content)
@@ -41,14 +43,14 @@ def test_recall_returns_role_content_in_order(tmp_path) -> None:
 
 
 def test_unregistered_or_temporary_key_recalls_empty(tmp_path) -> None:
-    mem = FileMemoryStore(SessionStore(tmp_path / "sessions"))
+    mem = FileMemoryStore(SessionStore(tmp_path / "sessions"), PROJECT)
     assert mem.recall("case_design:sess_00000000") == []
     assert mem.recall("kb_assistant:kb-console") == []
 
 
 def test_key_split_uses_first_colon_only(tmp_path) -> None:
     store = SessionStore(tmp_path / "sessions")
-    mem = FileMemoryStore(store)
+    mem = FileMemoryStore(store, PROJECT)
     sid = _new_sid(tmp_path)
     mem.save(f"case_design:{sid}", "user", "含:冒号的内容")
     assert store.messages(sid)[0].content == "含:冒号的内容"
@@ -58,3 +60,13 @@ def test_in_memory_store_accepts_and_ignores_steps() -> None:
     mem = InMemoryMemoryStore()
     mem.save("s1", "assistant", "答", steps=[{"tool": "read"}])
     assert mem.recall("s1") == [{"role": "assistant", "content": "答"}]
+
+
+def test_lazy_created_session_carries_project(tmp_path) -> None:
+    # 延迟建会话的裁定不变，但建出来的行必须带上归属——否则第一次刷新列表就把它丢了
+    store = SessionStore(tmp_path / "sessions")
+    mem = FileMemoryStore(store, PROJECT)
+    sid = _new_sid(tmp_path)
+    mem.save(f"case_design:{sid}", "user", "生成登录用例")
+    assert store.get(sid).project_id == PROJECT
+    assert [s.id for s in store.list("case_design", PROJECT)] == [sid]

@@ -139,7 +139,7 @@ class ChatService:
             # 延迟导入：file_memory 经 services 回指本包，顶层导入会在循环链上炸开（memory/__init__ 顺序约束同源）
             from aitester.memory import FileMemoryStore
 
-            memory = FileMemoryStore(self.sessions)
+            memory = FileMemoryStore(self.sessions, "")  # 过渡：空串占位，Task 6 换成解析出的项目 id
 
         result = self._complete(
             f"{instance.agent_id}:{sid}",
