@@ -117,14 +117,21 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   }, [agentOptions, agentId]);
 
   const reloadSessions = useCallback(async () => {
-    if (!agentId || !projectId) return [];
-    const seq = ++listSeq.current;          // 切智能体会先清列表；慢响应不得把上一个智能体的整表覆盖回来
+    if (!agentId || !projectId) {
+      // 拉表由 agentId 与 projectId 共同触发：切项目时旧 agentId 会先带着新项目发一次请求，
+      // 级联 effect 随后才把 agentId 收敛成 ""。这条提前 return 也必须先 bump 序号作废在途响应，
+      // 否则迟到的「旧智能体 × 新项目」整表会认自己的 seq 仍是最新的而粘进侧栏（初始挂载 bump 无害）。
+      ++listSeq.current;
+      return [];
+    }
+    const seq = ++listSeq.current;          // 切智能体/切项目都会先清列表；慢响应不得把上一轮的整表覆盖回来
     try {
       const j = await getSessions(agentId, projectId);
       if (seq === listSeq.current) setSessions(j.sessions);
-      // stale 分支仍 return j.sessions：调用方拿到的行必属当前 agent——remove 自己的整表刷新必赢
-      // listSeq，而 send/retryAll 都被 mutRef 挡在 guard() 后面、切智能体也被挡，故返回的整表只可能
-      // 是当前智能体的；最坏情形也只是页头标题回落成「新会话」，不会串到别的 agent
+      // stale 分支仍 return j.sessions：两个触发键都只能在 guard() 之后改（切智能体/切项目互斥，
+      // send/retryAll 被 mutRef 挡在 guard() 后），remove 自己的整表刷新又必赢 listSeq，
+      // 空交集那一支已在上面的提前 return 处作废在途请求；故调用方拿到的整表只可能属于当前
+      // 「智能体 × 项目」。最坏情形也只是页头标题回落成「新会话」，不会串到别的 agent
       return j.sessions;
     } catch (err) {
       if (seq === listSeq.current) toast(err instanceof ApiError ? err.message : String(err));
