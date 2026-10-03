@@ -1,4 +1,5 @@
 import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -24,9 +25,20 @@ def svc(tmp_path):
     return ProjectService(FileJsonConfigRepository(tmp_path / "projects.json"))
 
 
+@pytest.fixture()
+def allow_missing_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """形态/危险根用例专用：把存在性探测钉成 True。
+
+    UNC「\\\\srv\\share\\a」与 POSIX「/home/me/a」在这台机器上造不出真实目录，而这些用例只锁
+    形态判据；存在性的正反两面由 test_create_rejects_missing_dir / test_create_accepts 用真目录覆盖。
+    """
+    monkeypatch.setattr("aitester.services.project_config.dir_exists", lambda _dir: True)
+
+
 def _mk(svc, name="订单系统", **kw):
     kw.setdefault("desc", "交易链路")
-    kw.setdefault("dir_", "D:/work/projects/order")
+    # 创建时校验目录存在（2026-10-03 裁定）：默认给一个真实存在的目录，不插真目录的用例不再需要垫片
+    kw.setdefault("dir_", tempfile.gettempdir())
     kw.setdefault("agents", [visible_agent_ids()[0]])
     return svc.create(name=name, **kw)
 
@@ -61,7 +73,7 @@ def test_create_rejects_blank_and_overlong_fields(svc):
         _mk(svc, desc="描" * (DESC_MAX + 1))
 
 
-def test_dir_must_be_absolute_any_shape(svc):
+def test_dir_must_be_absolute_any_shape(svc, allow_missing_dir):
     for bad in ("order-system", "work/projects/order", "relative\\path"):
         with pytest.raises(ProjectConfigError, match="绝对路径"):
             _mk(svc, name=f"坏{bad}", dir_=bad)
@@ -69,7 +81,7 @@ def test_dir_must_be_absolute_any_shape(svc):
         assert _mk(svc, name=f"好{good}", dir_=good)["dir"]
 
 
-def test_dir_strips_trailing_separators_but_keeps_root(svc, tmp_path):
+def test_dir_strips_trailing_separators_but_keeps_root(svc, tmp_path, allow_missing_dir):
     assert _mk(svc, name="尾斜杠", dir_="D:/work/a///")["dir"] == "D:/work/a"
     nested = tmp_path / "work" / "b"
     assert _mk(svc, name="嵌套尾斜杠", dir_=f"{nested}///")["dir"] == str(nested)
@@ -175,7 +187,7 @@ def test_delete_last_project_protected(svc):
     p = _mk(svc)
     with pytest.raises(ProjectConfigError, match="至少需要保留 1 个项目"):
         svc.delete(p["id"])
-    q = _mk(svc, name="会员中心", dir_="D:/work/m")
+    q = _mk(svc, name="会员中心")
     svc.delete(q["id"])
     assert [x["id"] for x in svc.list_projects()] == [p["id"]]
     with pytest.raises(ConfigNotFoundError, match="未知项目"):
@@ -258,6 +270,7 @@ def test_malformed_env_root_never_blocks_create(
     poison = {**os.environ, "ProgramFiles": "C:/a\x00"}
     monkeypatch.setattr(os, "environ", poison)
     target = tmp_path / "work" / "ok"
+    target.mkdir(parents=True)          # 创建时校验目录存在：先给真目录，本用例只锁畸形 env 不挡正常创建
     assert dangerous_root_reason(str(target)) is None
     created = _svc(tmp_path).create(
         name="正常项目", desc="", dir_=str(target), agents=["case_design"]
@@ -279,8 +292,44 @@ def test_create_refuses_filesystem_root(tmp_path) -> None:
 
 def test_create_allows_nested_dir(tmp_path) -> None:
     root = tmp_path / "reqs"
+    root.mkdir()
     created = _svc(tmp_path).create(name="订单系统", desc="", dir_=str(root), agents=["case_design"])
     assert created["dir"] == str(root)
+
+
+# ---------- 创建时目录必须真实存在（2026-10-03 用户裁定：不存在就拦在创建口）----------
+
+def test_create_rejects_missing_dir(svc, tmp_path) -> None:
+    ghost = tmp_path / "typed-wrong"
+    with pytest.raises(ProjectConfigError, match="不存在或不是目录"):
+        _mk(svc, name="路径打错", dir_=str(ghost))
+    assert not ghost.exists()          # 校验只读：被拒也不许替用户把目录建出来
+
+
+def test_create_rejects_file_as_dir(svc, tmp_path) -> None:
+    afile = tmp_path / "reqs.md"
+    afile.write_text("x", encoding="utf-8")
+    with pytest.raises(ProjectConfigError, match="不存在或不是目录"):
+        _mk(svc, name="指到文件", dir_=str(afile))
+
+
+def test_create_accepts_tilde_dir_that_exists(svc, tmp_path, monkeypatch) -> None:
+    # `~` 展开口径与读侧探测、发送侧 cwd 认同一个入口（HOME/USERPROFILE 双设，任何平台同一真实目录）；
+    # 落盘仍是用户输入的原始形态，不展开、不迁移
+    home = tmp_path / "fakehome"
+    (home / "work" / "reqs").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    assert _mk(svc, name="波浪号", dir_="~/work/reqs")["dir"] == "~/work/reqs"
+
+
+def test_create_rejects_tilde_dir_that_missing(svc, tmp_path, monkeypatch) -> None:
+    home = tmp_path / "fakehome"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    with pytest.raises(ProjectConfigError, match="不存在或不是目录"):
+        _mk(svc, name="波浪号缺目录", dir_="~/work/reqs")
 
 
 # ---------- 目录可达只读探测（读侧：不建目录、不执法）----------

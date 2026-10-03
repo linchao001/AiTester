@@ -1,9 +1,10 @@
 """项目注册表：JSON 落盘为唯一真相，校验与不可改裁定集中在服务层。
 
 知识库字段只存别名（默认 `kb`），真实 reme 知识库 id 与实体根路径由 `services/kb/aliases`
-解析且永不出现在返回值里（脱敏裁定）。本地文件目录只校验绝对路径形态与危险根闭集，
-不 stat 存在性、不建目录——浏览… 由前端拼接，路径真相归用户。
-读侧另有一只纯只读探测 `dir_exists`：它 stat 目录回答「还在不在」，同样绝不 mkdir，
+解析且永不出现在返回值里（脱敏裁定）。本地文件目录创建时校验绝对路径形态、危险根闭集
+与存在性（2026-10-03 裁定：目录不存在即拦截创建），存在性复用只读探测 `dir_exists`——
+只 stat、绝不 mkdir，dir 冻结后编辑期不再重复校验。
+读侧同一只 `dir_exists` 回答「还在不在」（目录可在创建后被删），它绝不 mkdir，
 也不做任何路径包含判定（边界执法是后续片的事）。
 """
 
@@ -121,9 +122,10 @@ def dangerous_root_reason(dir_: str) -> str | None:
 def dir_exists(dir_: str | None) -> bool:
     """只读探测：存在且是目录。绝不 mkdir——write 工具会建目录，探测若也建就分不出「用户填错」与「用户还没建」。
 
-    读侧判据，不参与创建校验（创建只校验形态与危险根，见 `_validate_dir`）。含 NUL 字节的 dir 会让
-    文件系统调用抛 ValueError 而不是 OSError，畸形/超长路径抛 OSError：两者一律答「不可达」，
-    绝不把用户填的 dir 外泄成 500。
+    同一只探测既服务读侧（列表 dir_exists 灰字提醒），也服务创建校验（`_validate_dir` 的存在性判据），
+    口径单一：只 stat、只读；展开 `~` 与发送侧 cwd 的 expanduser 认同一个入口。
+    含 NUL 字节的 dir 会让文件系统调用抛 ValueError 而不是 OSError，畸形/超长路径抛 OSError：
+    两者一律答「不可达」，绝不把用户填的 dir 外泄成 500。
     """
     if not (dir_ or "").strip():
         return False
@@ -134,7 +136,7 @@ def dir_exists(dir_: str | None) -> bool:
 
 
 def _validate_dir(dir_: str) -> str:
-    """只校验形态（绝对路径）与危险根，不 stat、不建目录。仅创建时调用——dir 冻结后不再重复校验。"""
+    """形态（绝对路径）→ 危险根 → 存在性（只读探测，绝不建目录）。仅创建时调用——dir 冻结后不再重复校验。"""
     clean = _clean_dir(dir_)
     if not clean:
         raise ProjectConfigError("请填写本地文件目录")
@@ -145,6 +147,12 @@ def _validate_dir(dir_: str) -> str:
     reason = dangerous_root_reason(clean)
     if reason:
         raise ProjectConfigError(reason)
+    # 存在性（2026-10-03 用户裁定：不存在就拦在创建口）：探测只 stat 不 mkdir，
+    # 用户必须先有真目录——路径打错在保存时即见红字，不再留到发送时才 400
+    if not dir_exists(clean):
+        raise ProjectConfigError(
+            f"本地文件目录 {clean} 不存在或不是目录，请先创建该目录，或改用「浏览…」选择已有目录"
+        )
     return clean
 
 

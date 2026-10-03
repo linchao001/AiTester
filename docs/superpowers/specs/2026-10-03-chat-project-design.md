@@ -24,7 +24,7 @@
 2. **`project_id` 只做归属字段，不进会话键**：memory 键与守卫键继续是 `{agent_id}:{session_id}`，`index.json` 行多一个 `project_id`。**改裁** 2026-09-30「键扩展含 `project_id`」。理由：`new_id` 生成的 `sess_*` 已在索引内查重防碰撞（`session_store.py:169-172`），隔离已由 sid 提供；进键买不到任何隔离，却要重写 `FileMemoryStore._split` 的首冒号规则与「字符集无冒号」那条锁定测试。
 3. **选择态存 localStorage**（`aitester.chat.projectId`）：视图上下文不是数据，项目本身已落盘。代价：换浏览器不带走选择。
 4. **删项目级联删会话并在确认框报数**（沿用 2026-09-30 原型口径），顺带把 `ProjectInfo.session_count` 从恒 0 接成真值（`project_config.py:165-167` 注释已把这条缝留好）。
-5. **目录不可达 = 读侧探测提醒 + 发送时硬拦**：`GET /api/projects` 加 `dir_exists`（只 stat 不建目录），项目页给一行提醒；`send` 装配前校验目录存在且是目录，否则 400 中文可照做 detail。这条与边界执法无关，是落点正确性：`write.py:60` 的 `mkdir(parents=True)` 会在路径打错时**静默建出整棵目录树**（`D:/word/reqs` vs `D:/work/reqs`），用户以为写进了项目。`cwd` 第一次真被消费，就得第一次为它验真。
+5. **目录不可达 = 创建时硬拦 + 读侧探测提醒 + 发送时硬拦**（第三段为 2026-10-03 用户改裁新增）：`_validate_dir` 创建时校验目录真实存在（只 stat 不建目录），不存在或指到文件 → 中文 400 拦在保存口；`GET /api/projects` 仍带 `dir_exists`（只 stat 不建目录），项目页给一行提醒——兜底**创建后**被删/移走的目录；`send` 装配前校验目录存在且是目录，否则 400 中文可照做 detail。这条与边界执法无关，是落点正确性：`write.py:60` 的 `mkdir(parents=True)` 会在路径打错时**静默建出整棵目录树**（`D:/word/reqs` vs `D:/work/reqs`），用户以为写进了项目。`cwd` 第一次真被消费，就得第一次为它验真。
 6. **危险根闭集四类**（仅创建时校验，`dir` 冻结故读侧不重复判）：判据一处函数 `dangerous_root_reason(dir) -> str | None`，表驱动、测试锁四类，不维护会长大的活黑名单。
    1. 文件系统根：`resolve()` 后 `p.parent == p`（`D:\`、`/`）
    2. 家目录本身：`p == Path.home()`（其下子目录放行）

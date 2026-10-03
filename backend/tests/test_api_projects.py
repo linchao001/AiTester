@@ -1,4 +1,5 @@
 import json
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -45,7 +46,8 @@ def _body(client, **over):
     payload = {
         "name": "订单系统",
         "desc": "交易链路",
-        "dir": "D:/work/projects/order",
+        # 创建时校验目录存在（2026-10-03 裁定）：默认给真实存在的目录；缺点/不存在的反例用例显式覆盖
+        "dir": tempfile.gettempdir(),
         "agents": ["case_design"],
     }
     payload.update(over)
@@ -53,6 +55,8 @@ def _body(client, **over):
 
 
 def _create(application, name: str, dir_: str) -> dict[str, Any]:
+    # 只服务成功路径：给的目录先建好（创建口已拦不存在，见 test_create_rejects_missing_dir_as_400）
+    Path(dir_).mkdir(parents=True, exist_ok=True)
     resp = TestClient(application).post("/api/projects", json=_body(None, name=name, dir=dir_))
     assert resp.status_code == 201, resp.text
     return resp.json()
@@ -83,7 +87,7 @@ def test_create_returns_201_with_kb_alias_and_zero_sessions(client):
     resp = client.post("/api/projects", json=_body(client))
     assert resp.status_code == 201
     p = resp.json()
-    assert p["kb"] == "kb" and p["dir_exists"] is False   # 测试里填的目录不存在
+    assert p["kb"] == "kb" and p["dir_exists"] is True    # 默认目录真实存在（创建口已拦不存在）
     assert p["session_count"] == 0                        # 测试名承诺的那一钉：新项目零会话
     assert set(p) == {"id", "name", "desc", "dir", "agents", "kb", "session_count", "dir_exists"}
     assert client.get("/api/projects").json()["projects"][0]["id"] == p["id"]
@@ -113,9 +117,21 @@ def test_validation_maps_to_400_with_chinese_detail(client):
     assert kb.status_code == 400 and "未知知识库" in kb.json()["detail"]
 
 
+def test_create_rejects_missing_dir_as_400(client, tmp_path):
+    # 2026-10-03 裁定：目录不存在（或指到文件）在保存时即拦，不再留到发送时才 400
+    ghost = tmp_path / "typed-wrong"
+    resp = client.post("/api/projects", json=_body(client, dir=str(ghost)))
+    assert resp.status_code == 400 and "不存在或不是目录" in resp.json()["detail"]
+    assert not ghost.exists()          # 校验只读：被拒也不许替用户把目录建出来
+    afile = tmp_path / "reqs.md"
+    afile.write_text("x", encoding="utf-8")
+    resp = client.post("/api/projects", json=_body(client, dir=str(afile)))
+    assert resp.status_code == 400 and "不存在或不是目录" in resp.json()["detail"]
+
+
 def test_duplicate_name_rejected(client):
     assert client.post("/api/projects", json=_body(client)).status_code == 201
-    dup = client.post("/api/projects", json=_body(client, dir="D:/work/other"))
+    dup = client.post("/api/projects", json=_body(client))
     assert dup.status_code == 400 and "同名项目" in dup.json()["detail"]
 
 
@@ -136,7 +152,7 @@ def test_update_immutable_fields_and_unknown_id(client):
 
 def test_delete_204_then_last_project_protected(client):
     a = client.post("/api/projects", json=_body(client)).json()["id"]
-    b = client.post("/api/projects", json=_body(client, name="会员中心", dir="D:/work/m")).json()["id"]
+    b = client.post("/api/projects", json=_body(client, name="会员中心")).json()["id"]
     assert client.delete(f"/api/projects/{b}").status_code == 204
     assert client.delete(f"/api/projects/{b}").status_code == 404
     last = client.delete(f"/api/projects/{a}")
@@ -167,18 +183,19 @@ def test_session_count_reflects_store(tmp_path) -> None:
     assert next(p for p in rows if p["id"] == pid)["session_count"] == 2
 
 
-def test_dir_exists_probe_matches_disk_for_every_project(tmp_path) -> None:
+def test_dir_exists_probe_tracks_post_create_disk_state(tmp_path) -> None:
+    # 创建口已拦「不存在」（见 test_create_rejects_missing_dir_as_400）；本用例锁读侧：
+    # 目录在创建后被删/移走，列表必须如实答 False，且探测只读、绝不把目录建回来
     application = _app(tmp_path)
     real = tmp_path / "reqs"
     real.mkdir()
-    ghost = tmp_path / "typed-wrong"
-    ok_pid = _create(application, "有目录", str(real))["id"]
-    ghost_pid = _create(application, "填错了", str(ghost))["id"]
+    pid = _create(application, "有目录", str(real))["id"]
     rows = {p["id"]: p for p in _get(application)["projects"]}
-    assert rows[ok_pid]["dir_exists"] is True
-    assert rows[ghost_pid]["dir_exists"] is False
-    # 探测只读：GET 一轮后不许替用户把目录建出来
-    assert not ghost.exists()
+    assert rows[pid]["dir_exists"] is True
+    real.rmdir()                                          # 目录创建后被移走：读侧如实回答
+    rows = {p["id"]: p for p in _get(application)["projects"]}
+    assert rows[pid]["dir_exists"] is False
+    assert not real.exists()                              # 探测只读：GET 一轮后不许替用户把目录建出来
 
 
 def test_nul_byte_in_stored_dir_yields_false_not_500(tmp_path) -> None:
