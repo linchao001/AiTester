@@ -14,6 +14,7 @@ const WELCOME_CHIPS = [
 interface Props {
   messages: ChatMessage[];
   agentName: string;
+  projectName: string;
   busy: boolean;
   onCopy: (text: string) => void;
   onChip: (text: string) => void;   // 原型 :1322-1324：chip 只填输入框，绝不自动发送
@@ -48,7 +49,7 @@ export default function MessageList(p: Props) {
         <div className="welcome">
           <div className="w-logo">Ai</div>
           <h2>你好，我是 {p.agentName.replace("智能体", "")}</h2>
-          <p>发送消息即在此智能体开始新会话 · 会话保存在本机</p>
+          <p>📁 {p.projectName} · 发送消息即在此项目开始新会话 · 会话保存在本机</p>
           <div className="chips">
             {WELCOME_CHIPS.map((c) => (
               <button className="chip" key={c.label} onClick={() => p.onChip(c.prompt)}>{c.label}</button>

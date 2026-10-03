@@ -9,14 +9,15 @@ interface Props {
   cap: number;             // 上下文上限（ModelInfo.context），0 表示不可估算
   systemPrompt: string;
   messages: { content: string }[];
+  projectName: string;     // 只读橙 chip 的文案源（项目维度，第 2 片接入）
   inputRef: { current: HTMLTextAreaElement | null };  // 供 chip 点击后聚焦 + 输入框自增高（ChatPage 持有）
   onInput: (v: string) => void;
   onSubmit: () => void;
   onToast: (msg: string) => void;
 }
 
-/** 原型 :611-624 逐字对齐：bar 内只有 上下文 meter + 蓝 perm chip + spacer + 发送。
- *  原型橙 chip（:617）是「📁 项目 · Agent 工作目录」，属项目维度 → 第 2 片才接，本期不渲染；
+/** 原型 :611-624 逐字对齐：bar 内只有 上下文 meter + 橙项目 chip + 蓝 perm chip + spacer + 发送。
+ *  原型橙 chip（:617）是「📁 项目」只读展示，路径不进 UI（第 2 片偏离 5）；
  *  模型 chip 在 chat-header（:598），不在 composer 内，勿在此重复。 */
 export default function Composer(p: Props) {
   const usage = contextUsage({ systemPrompt: p.systemPrompt, history: p.messages, input: p.input, cap: p.cap });
@@ -52,6 +53,11 @@ export default function Composer(p: Props) {
           <span className={cls} title={tip}>
             <i className="cm-bar"><b style={{ width: `${usage.pct}%` }} /></i>
             <span className="cm-pct">{usage.cap ? `${usage.pct}%` : "—"}</span>
+          </span>
+          {/* 只读展示：路径不进 UI（第 2 片偏离 5）。必须压掉 .c-chip 的 cursor:pointer，
+              否则纯装饰 span 会伪装成可点控件——第 1 片「0 个死按钮」的同一条判据 */}
+          <span className="c-chip orange" style={{ cursor: "default" }} title="智能体在此目录读写文件">
+            📁 {p.projectName}
           </span>
           {/* 原型 :618 是可展开弹层（自由/严格，严格置灰）。本期只有「自由权限」一档生效，
               做成可点的按钮并给出原型同一条 toast 文案，避免 .c-chip 的 cursor:pointer 变成死控件 */}

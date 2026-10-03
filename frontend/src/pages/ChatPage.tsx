@@ -1,20 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
-  ApiError,
-  chatSend,
-  deleteChatSession,
-  getCapabilities,
-  getModels,
-  getSessionMessages,
-  getSessions,
-  type AgentInfo,
-  type ChatMessage,
-  type ChatSession,
-  type HealthResponse,
+  ApiError, chatSend, deleteChatSession, getCapabilities, getModels,
+  getProjects, getSessionMessages, getSessions,
+  type AgentInfo, type ChatMessage, type ChatSession, type HealthResponse, type Project,
 } from "../api/client";
 import Composer from "./chat/Composer";
 import MessageList from "./chat/MessageList";
 import SessionPane from "./chat/SessionPane";
+
+/** 视图上下文，不是数据：项目本身已落盘在后端，这里只记「这次打开 /chat 看着哪个」。
+ *  换浏览器不带走选择——这是第 2 片裁定 3 的代价，写在注释里免得后来人当 bug 修。 */
+const PROJECT_STORAGE_KEY = "aitester.chat.projectId";
 
 interface Props {
   health: HealthResponse | null;
@@ -26,6 +23,10 @@ interface Props {
 export default function ChatPage({ health, healthError, onOpenSettings, onRetryHealth }: Props) {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [agentId, setAgentId] = useState("");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectId, setProjectId] = useState("");
+  const [projectsLoaded, setProjectsLoaded] = useState(false);   // 引导态判据：拉成功且确实为空，区别于「还没拉到」
+  const navigate = useNavigate();
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -59,9 +60,6 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       const [caps, models] = await Promise.all([getCapabilities(), getModels()]);
       metaOkRef.current = true;
       setAgents(caps.agents);
-      if (!agentId && caps.agents.length) {
-        setAgentId(caps.agents[0].id);
-      }
       const agent = caps.agents.find((a) => a.id === agentId) || caps.agents[0];
       setSystemPrompt(agent?.prompt || "");
       const uid = agent?.effective_uid || models.default_uid;
@@ -83,12 +81,46 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     }
   }, [agentId]);
 
+  const reloadProjects = useCallback(async () => {
+    try {
+      const j = await getProjects();
+      setProjects(j.projects);
+      // 函数式更新：不读 projectId 闭包，避免「切项目」与「拉项目列表」交叉时拿到过期快照
+      setProjectId((cur) => {
+        if (cur && j.projects.some((p) => p.id === cur)) return cur;
+        const saved = window.localStorage.getItem(PROJECT_STORAGE_KEY) || "";
+        const hit = j.projects.find((p) => p.id === saved) || j.projects[0];
+        return hit ? hit.id : "";
+      });
+      setProjectsLoaded(true);
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : String(err));
+    }
+  }, [toast]);
+
+  useEffect(() => { void reloadProjects(); }, [reloadProjects]);
+
+  // 级联：智能体下拉只给「当前项目启用的」∩「可见目录里的」，顺序按 caps 原序（两套序会漂，认一份）
+  const agentOptions = useMemo(() => {
+    const proj = projects.find((p) => p.id === projectId);
+    if (!proj) return agents;
+    const allowed = new Set(proj.agents);
+    return agents.filter((a) => allowed.has(a.id));
+  }, [agents, projects, projectId]);
+
+  useEffect(() => {
+    if (!agentOptions.length) {
+      if (agentId) setAgentId("");
+      return;
+    }
+    if (!agentOptions.some((a) => a.id === agentId)) setAgentId(agentOptions[0].id);
+  }, [agentOptions, agentId]);
+
   const reloadSessions = useCallback(async () => {
-    if (!agentId) return [];
+    if (!agentId || !projectId) return [];
     const seq = ++listSeq.current;          // 切智能体会先清列表；慢响应不得把上一个智能体的整表覆盖回来
     try {
-      // 过渡态：project_id 暂传空串（列表当前必 422），Task 10 换成所选项目 id
-      const j = await getSessions(agentId, "");
+      const j = await getSessions(agentId, projectId);
       if (seq === listSeq.current) setSessions(j.sessions);
       // stale 分支仍 return j.sessions：调用方拿到的行必属当前 agent——remove 自己的整表刷新必赢
       // listSeq，而 send/retryAll 都被 mutRef 挡在 guard() 后面、切智能体也被挡，故返回的整表只可能
@@ -98,7 +130,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       if (seq === listSeq.current) toast(err instanceof ApiError ? err.message : String(err));
       return [];
     }
-  }, [agentId, toast]);
+  }, [agentId, projectId, toast]);
 
   useEffect(() => { void reloadMeta(); }, [reloadMeta]);
   useEffect(() => { void reloadSessions(); }, [reloadSessions]);
@@ -137,7 +169,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
 
   const send = useCallback(async () => {
     const text = input.trim();
-    if (!text || !guard() || !agentId) return;
+    if (!text || !guard() || !agentId || !projectId) return;
     busyRef.current = true;
     setBusy(true);
     // 乐观气泡按对象身份撤，不按文案匹配：同一句话在历史里出现过时，按内容 filter 会把旧的那条一起删掉
@@ -145,8 +177,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     setMessages((prev) => [...prev, optimistic]);
     setInput("");
     try {
-      // 过渡态：project_id 暂传空串（可见智能体必 400），Task 10 换成所选项目 id
-      const resp = await chatSend(activeId ?? "", text, agentId, "");
+      const resp = await chatSend(activeId ?? "", text, agentId, projectId);
       setMessages((prev) => [...prev, {
         role: "assistant", content: resp.reply, ts: Date.now(), steps: resp.steps,
       }]);
@@ -166,7 +197,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       busyRef.current = false;
       setBusy(false);
     }
-  }, [activeId, agentId, guard, input, reloadSessions]);
+  }, [activeId, agentId, guard, input, projectId, reloadSessions]);
 
   const newSession = useCallback(() => {
     if (!guard()) return;
@@ -202,7 +233,16 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     }
   }, [toast]);
 
-  const agent = agents.find((a) => a.id === agentId);
+  // 切项目与切智能体同构：guard → 清列表 → 回欢迎态；列表由 reloadSessions 的 effect 按新项目重拉
+  const onProjectChange = useCallback((id: string) => {
+    if (!guard()) return;
+    window.localStorage.setItem(PROJECT_STORAGE_KEY, id);
+    setProjectId(id);
+    setSessions([]);
+    void openSession(null);
+  }, [guard, openSession]);
+
+  const agent = agentOptions.find((a) => a.id === agentId);
 
   // healthError 只有 App 的 refreshHealth 成功才会清（App.tsx:20-27），本页自己拉不动它，
   // 所以两个错误态的重试都同时打回 App 与本页，否则后端恢复后仍永久停在「后端未就绪」
@@ -210,7 +250,8 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     onRetryHealth();
     void reloadMeta();
     void reloadSessions();   // 失败前 agentId 可能已经有值，effect 不会再触发整表拉取，重试必须把侧栏一起补回来
-  }, [onRetryHealth, reloadMeta, reloadSessions]);
+    void reloadProjects();   // 引导态的「重试」必须能救回项目列表本身，否则列表拉失败会永远卡在「还没有项目」
+  }, [onRetryHealth, reloadMeta, reloadSessions, reloadProjects]);
 
   // toast 是 fixed 定位，三个 return 分支都要挂：错误页的「重试」若只失败在拉整表上，
   // 这条是用户唯一的可见结果，只挂主布局会被提前 return 丢掉
@@ -232,17 +273,34 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       </div>
     );
   }
+  // projectsLoaded 必须先为真，否则首帧会闪一下「还没有项目」；拉失败（loaded 恒假）走 toast 而不进引导态
+  if (projectsLoaded && !projects.length) {
+    return (
+      <div className="page">
+        <p className="p-empty">
+          📁 还没有项目<br />
+          请先到项目页添加需求文档所在目录，智能体就在那里读写文件
+          {" "}<button className="mini-btn" onClick={() => navigate("/projects")}>去项目页</button>
+          {" "}<button className="mini-btn" onClick={retryAll}>重试</button>
+        </p>
+        {toastEl}
+      </div>
+    );
+  }
 
   return (
     <div className="layout">
       <SessionPane
-        agents={agents}
+        projects={projects}
+        projectId={projectId}
+        agents={agentOptions}
         agentId={agentId}
         sessions={sessions}
         activeId={activeId}
         query={query}
         busy={busy}
         collapsed={collapsed}
+        onProjectChange={onProjectChange}
         onAgentChange={(id) => { if (!guard()) return; setAgentId(id); setSessions([]); void openSession(null); }}
         onQueryChange={setQuery}
         onNew={newSession}
@@ -270,6 +328,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
         <MessageList
           messages={messages}
           agentName={agent?.name ?? "用例设计智能体"}
+          projectName={projects.find((p) => p.id === projectId)?.name ?? ""}
           busy={busy}
           onCopy={(t) => void copy(t)}
           onChip={(t) => {
@@ -285,6 +344,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
           cap={cap}
           systemPrompt={systemPrompt}
           messages={messages}
+          projectName={projects.find((p) => p.id === projectId)?.name ?? ""}
           inputRef={inputRef}
           onInput={setInput}
           onSubmit={() => void send()}
