@@ -36,10 +36,19 @@ uv run python -m aitester.main
   （提示词 / 有效模型 / 携带工具 / 图拓扑），该智能体的默认模型可用则用、否则回落全局默认，未知 `agent_id` 返回 404。
   守门在流开始前同步跑完（配置缺失 / 项目不可达 → 普通 400·404，prepare 阶段其余上游失败 → 502，
   detail 与迁移前逐字相同），
-  过后响应 `text/event-stream`，逐 token 推 `start / delta / call / step / draft / done / error` 七类事件，
-  终态恒为一条（`done`，或被停止时 `done{stopped:true}`；流中模型失败 → `error`）
+  过后响应 `text/event-stream`，逐 token 推 `start / delta / call / step / draft / wait / done / error`
+  八类事件，终态恒为一条（`done`，或被停止时 `done{stopped:true}`；流中模型失败 → `error`；
+  待授权时不发终态，`wait` 之后直接断流，本轮一个字都不落盘）
 - `POST /api/chat/stop`：`{run_id}` 置取消位终止在途回答；`run_id` 已结束返回 404「这条回答已经结束」，
-  已生成的部分文本与已完成步骤照旧落盘，会话行标 `stopped`
+  已生成的部分文本与已完成步骤照旧落盘，会话行标 `stopped`；待批期间同样可停：命中在途流优先，
+  否则摘除待批条目并以已生成的前缀落一条 stopped 行
+- `POST /api/chat/approve`：`{run_id, call_id, decision: approve|reject, remember}` 登记一条授权决策，
+  成功 204 无体；`run_id` 已结束 / 已重启 → 404，这条已答过 → 409；`remember` 为真时同一会话内
+  同「工具 + 目标」不再询问
+- `POST /api/chat/resume/stream`：`{run_id}` 把挂起的那一回合用 `Command(resume=…)` 续跑，帧序与
+  `send/stream` 同形（可能再次以 `wait` 收尾）；守门仍在 HTTP 空间，目录不可达回 400 且文案与发送时逐字相同
+- `GET /api/chat/pending?agent_id=&project_id=`：待批表（进程内内存态，后端重启即空）；
+  返回每条挂起回答的 `run_id / session_id / perm_mode / prefix / steps / waiting / decided / created_at`
 - `GET /api/models` + 三个 `PUT`：模型配置运行期读写（Key 掩码返回，明文永不出口），
   对应前端顶栏「⚙ 设置」弹窗
 - `POST /api/models/providers/{pid}/test`：测试连接 —— 只验证模型能否应答，

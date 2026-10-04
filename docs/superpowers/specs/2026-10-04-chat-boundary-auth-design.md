@@ -229,6 +229,9 @@ chip 三档文案（`free` 与 `strict` 的 `desc` 逐字取原型 `:1452-1453`�
 | 5 | `strict` 档的执法范围含 `save_to_knowledge`，`boundary` 档不含 | 它的写入路径由服务端构造，无「界外」语义；裁定 6 表 |
 | 6 | 待批态下停止按钮兼任唯一退出出口（拒绝按钮不终止本轮） | 用户裁定 3：拒绝只管单条 |
 | 7 | 第 2 片 spec `:18` 的「越界拦截」措辞在本片扩为三档（含界内全批） | 用户裁定 1；回写第 2 片 spec 的裁定 8 与本条由实施计划最后一个任务执行 |
+| 8 | `wait` 之后 live 气泡让位给 pending 气泡（R12）：本文「事件与前端折叠」那句「授权期间 live 气泡保留并显示『⏳ 等待授权』」由 pending 气泡的 meta 行承担（`MessageList.tsx:104-124`），live 侧只留乐观 user 行（`ChatPage.tsx:251-255`） | 挂起收尾时 live 已无内容可保留，同一条回答画两个气泡是第二套真相 |
+| 9 | 权限 chip 用 `span[role=button]` + `tabIndex` + `aria-disabled`，不是 `button`（`Composer.tsx:80-90`） | `.pop` 弹层是 div，塞进 `button` 是非法内容模型，浏览器会把弹层挪出锚点；键盘可达性由 role/tabIndex 补齐 |
+| 10 | 前端折叠的 `call_id` 幂等无 vitest 单测，由 `tsc` 穷尽检查 + 走查 11 钉（T8 就地登记，本条补齐文末） | 本项目前端无 vitest 设施（第 4 片同口径）；决策真相在服务端 `answers` 表，那条已由 `test_answer_requires_known_call_id` 锁死，走查时别把它当「已测」 |
 
 ## 自检结论
 
