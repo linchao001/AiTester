@@ -284,7 +284,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     chatStop(rid).catch((err: unknown) => {
       // 404「这条回答已经结束」是与终态并发的正常竞态：界面随后自己收到 done，这里只把原因说出来
       // 非 ApiError（网络层 TypeError）不给英文原文，中文兜底
-      toast(err instanceof ApiError ? err.message : "停止请求未送达，本条回答仍在继续");
+      toast(err instanceof ApiError ? err.message : "停止请求失败，本条回答可能仍在继续");
     });
   }, [toast]);
 

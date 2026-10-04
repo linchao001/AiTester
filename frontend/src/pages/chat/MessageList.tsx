@@ -101,7 +101,7 @@ export default function MessageList(p: Props) {
           <span className="typing"><i /><i /><i /></span>
         </div>
       )}
-      {p.busy && p.live && !isWaiting(p.live) && (
+      {p.busy && p.live && !isWaiting(p.live) && !p.live.terminal && (
         <div className="msg agent">
           <div className="who"><span className="avatar">Ai</span>AiTester</div>
           <Steps steps={p.live.steps} pending={p.live.pending} />
