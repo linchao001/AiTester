@@ -3568,7 +3568,7 @@ Run: `cd frontend && npm run build` → 0 error、0 warning 新增。
 
 ```bash
 export MSYS2_ARG_CONV_EXCL='*'
-curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:5173/api/chat/pending?agent_id=case_design&project_id=nope'
+curl -s -w '\n%{http_code}\n' 'http://localhost:5173/api/chat/pending?agent_id=case_design&project_id=nope'
 ```
 期望 **200** 且体为 `{"runs":[]}`——`/chat/pending` 已经挂上、vite 代理通；未知项目 id 不报 404 是设计（待批表按内存取，不做项目存在性校验）。回 404 说明后端还是旧代码，先按第 0 项重启/热更。
 
