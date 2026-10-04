@@ -322,6 +322,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       else errMsg = err instanceof ApiError ? err.message : "连接中断，本条回答未完成";
     }
     await drain({ optimistic, text, aborted, errMsg });
+  // 依赖里故意不列 activeId：它经 drain 进来（drain 自己列了 activeId）。摘掉 drain 那条依赖，这条回答就会写进上一个会话。
   }, [agentId, drain, guard, input, permMode, projectId]);
 
   const stop = useCallback(() => {
