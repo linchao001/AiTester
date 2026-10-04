@@ -18,8 +18,8 @@ from aitester.main import create_app
 from aitester.services import ChatService
 
 
-def _app(tmp_path: Path, provider=None):
-    application = create_app(
+def _default_app(tmp_path: Path):
+    return create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
@@ -27,6 +27,10 @@ def _app(tmp_path: Path, provider=None):
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
         kb_manager=_NoopKbManager(),
     )
+
+
+def _app(tmp_path: Path, provider=None):
+    application = _default_app(tmp_path)
     # 待批表必须用 app.state 那一份：端点读的是它，服务写的也必须是它（同一条内存表两个口）
     application.state.chat_service = ChatService(
         provider=provider if provider is not None else _Scripted([_call_round("../escape.md"),
@@ -121,6 +125,18 @@ def test_approve_twice_is_409(tmp_path: Path) -> None:
     assert r.json()["detail"] == "这条授权请求已经处理过了"
 
 
+def test_approve_with_unknown_decision_is_422_and_not_registered(tmp_path: Path) -> None:
+    """决策只认 approve/reject：坏值必须在 pydantic 就被挡下——表里的 pending 队列会把任何
+    字符串当合法决策收下，坏值要等喂进 gate 的 interrupt 才炸，那时这条已经 consumed。"""
+    client, pid, run_id, _sid = _hold(tmp_path)
+    r = client.post("/api/chat/approve", json={"run_id": run_id, "call_id": "c1",
+                                               "decision": "maybe", "remember": False})
+    assert r.status_code == 422
+    assert _pending(client, pid)[0]["decided"] == []      # 一条决策都没进表
+    r2 = client.post("/api/chat/resume/stream", json={"run_id": run_id})
+    assert r2.status_code == 400                          # 也没被误当成「已批准可续跑」
+
+
 def test_resume_without_decision_is_400(tmp_path: Path) -> None:
     """R6：只批准不续跑是正常态，但没有任何决策就要求续跑必须被拦下。"""
     client, _, run_id, _sid = _hold(tmp_path)
@@ -196,3 +212,13 @@ def test_delete_session_cascades_pending(tmp_path: Path) -> None:
     assert _pending(client, pid) != []
     assert client.delete(f"/api/chat/sessions/{sid}").status_code == 204
     assert _pending(client, pid) == []
+
+
+def test_default_assembly_injects_the_state_registry(tmp_path: Path) -> None:
+    """装配级联的唯一锁：create_app 装进服务的待批表必须就是 app.state 那一份对象。
+
+    各测试自建服务覆盖 chat_service，走不到这条默认装配；若 main.py 改成服务自持实例，
+    /chat/pending 读的是空表、挂起却写在另一张表上，而全套测试照样绿。
+    """
+    application = _default_app(tmp_path)
+    assert application.state.chat_service.pending is application.state.pending_registry
