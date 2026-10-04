@@ -143,11 +143,11 @@ def chat_send_stream(req: SendRequest, request: Request) -> StreamingResponse:
             except ProviderError as exc:
                 # 流中失败：HTTP 已经 200，只能走事件；detail 原样（key 已在 provider 侧打星）
                 yield _frame("error", {"detail": exc.detail})
-            except Exception as exc:
-                # brief 的 _Boom 契约钉死：provider 抛出的非 ProviderError 异常同样只能
-                # 走 error 事件（流已开始后没有任何 5xx 通道）；detail 取异常文案原文
+            except Exception:
+                # 非 ProviderError 一律是内部异常（含装配 bug）：str(exc) 不是用户文案，
+                # 只落固定中文，诊断留在 exc_info 日志（spec「detail 一律中文」）
                 logger.warning("流中非 ProviderError 异常", exc_info=True)
-                yield _frame("error", {"detail": str(exc)})
+                yield _frame("error", {"detail": "流式输出异常，本条回答未完成"})
         finally:
             runs.finish(run_id)
 

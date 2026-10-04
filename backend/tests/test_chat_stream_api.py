@@ -145,7 +145,8 @@ def test_provider_failure_travels_as_error_event(tmp_path: Path) -> None:
                      {"message": "hi", "agent_id": "case_design", "project_id": pid})
     kinds = [e for e, _ in events]
     assert kinds[-1] == "error"
-    assert "fake/model-x" in events[-1][1]["detail"]
+    # _Boom 抛的是非 ProviderError 的内部异常：detail 只落固定中文，str(exc) 不进用户文案
+    assert events[-1][1]["detail"] == "流式输出异常，本条回答未完成"
     # 失败不落盘：一条也不写（与迁移前同口径）
     assert TestClient(application).get(
         "/api/chat/sessions", params={"agent_id": "case_design", "project_id": pid}
