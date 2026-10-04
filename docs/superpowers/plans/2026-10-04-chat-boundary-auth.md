@@ -440,6 +440,7 @@ def test_thread_id_isolates_two_runs(tmp_path: Path) -> None:
         assert len(_thread_state(graph, tid).values["messages"]) == 2      # human + ai
     drop_thread("runA")
     assert _thread_state(graph, "runA").next == ()                   # 摘干净：不留残断
+    assert not _thread_state(graph, "runA").values                   # 删除判据：只有真删了才空
     assert len(_thread_state(graph, "runB").values["messages"]) == 2 # 另一条线程不受牵连
 
 
@@ -542,6 +543,17 @@ from aitester.orchestration.checkpoint import drop_thread, get_checkpointer, new
 ```
 
 `__all__` 按现有字母序补 `"drop_thread" "get_checkpointer" "needs_approval" "new_thread_id" "plan_target" "validate_perm_mode"`。
+
+- [ ] **Step 5b: 给 `tests/test_run_control.py` 的两处裸 `graph.invoke` 补 `thread_id`**
+
+进程级 checkpointer 一装，langgraph 对每次运行强制要 `thread_id`；这两条用例不经 `stream_graph`
+直接 `invoke`，会当场缺键失败（实测）。只许给 `config` 补键——两条各用互不相同、也不与
+`runA`/`runB` 相撞的 id，断言本体与 `_ToolCallingProvider` 一字不动。这不是「改既有断言」，
+是新拓扑要求的必填参数；红线那条只管 `test_agent_graph.py` / `test_stream_graph.py` /
+`test_chat_stream.py` 三个文件。
+
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_run_control.py -q`
+Expected: 全 passed，条数与改动前一致
 
 - [ ] **Step 6: 跑测试 + 全量**
 
