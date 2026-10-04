@@ -2063,6 +2063,19 @@ _WAIT_KEYS = ("call_id", "tool", "action", "target", "command", "cwd")
         prepared = self.prepare(session_id, message, agent_id, project_id, perm_mode)
 ```
 
+`test_chat_service.py::_RecordingService.prepare` 是全仓唯一覆写 `ChatService.prepare` 的测试替身（`:251`），`send` 多一个透传形参它就要跟着多一个，否则 5 个位置参数打不进 4 参覆写：
+
+```python
+from aitester.orchestration.auth_rules import DEFAULT_PERM_MODE   # 补在 aitester.config 之后，按字母序
+
+
+    def prepare(self, session_id: str, message: str, agent_id: str,
+                project_id: str = "", perm_mode: str = DEFAULT_PERM_MODE):
+        prepared = super().prepare(session_id, message, agent_id, project_id, perm_mode)
+```
+
+这是签名搬运不是断言改动——「`test_chat_service.py` 一条断言都不许改」那条红线照旧守着。
+
 - [ ] **Step 7: 跑测试 + 全量**
 
 Run: `cd backend && python -m pytest tests/test_chat_pending.py -q`
