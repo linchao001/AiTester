@@ -1,4 +1,9 @@
+import json
+import logging
+from typing import Any, Iterator
+
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
 from aitester.adapters.llm import ProviderConfigError, ProviderError
@@ -21,8 +26,9 @@ from aitester.interaction.schemas import (
     ProviderTestRequest,
     ProviderTestResponse,
     SendRequest,
-    SendResponse,
     StepInfo,
+    StreamStopRequest,
+    StreamStopResponse,
     ToolEnabledUpdate,
 )
 from aitester.services import ChatService
@@ -30,12 +36,26 @@ from aitester.services.capability_config import (
     CapabilityConfigError,
     CapabilityConfigService,
 )
+from aitester.services.chat import PreparedRun
 from aitester.services.kb.manager import KbUnavailableError
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
 from aitester.services.project_config import ProjectConfigError
+from aitester.services.run_registry import new_run_id
 from aitester.services.session_store import SessionStoreError
 
 router = APIRouter(prefix="/api")
+
+logger = logging.getLogger(__name__)
+
+# 流开始前 = HTTP，流开始后 = error 事件（spec 错误口径表）
+_GUARD_MAP = (
+    (ConfigNotFoundError, 404),
+    (ProjectConfigError, 400),
+    (SessionStoreError, 404),
+    (ProviderConfigError, 400),
+)
+# prepare 的全部失败面：_GUARD_MAP 四类 + 其余 ProviderError（→502）
+_GUARD_TYPES = tuple(klass for klass, _ in _GUARD_MAP) + (ProviderError,)
 
 
 @router.get("/health")
@@ -55,41 +75,91 @@ def chat_echo(req: EchoRequest, request: Request) -> EchoResponse:
     return EchoResponse(reply=result["reply"], trace=["interaction"] + result["trace"])
 
 
-@router.post("/chat/send", response_model=SendResponse)
-def chat_send(req: SendRequest, request: Request) -> SendResponse:
-    service: ChatService = request.app.state.chat_service
+def _frame(event: str, data: dict[str, Any]) -> str:
+    # data 必须单行：SSE 按行切帧，负载里的裸换行会把一帧撕成两帧
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _draft_frame(artifact: Any) -> str | None:
+    """草案逐条容错（终审项 5 原口径）：畸形草案丢一条，不砸整条流。"""
     try:
-        result = service.send(req.session_id, req.message, req.agent_id, req.project_id)
-    except ConfigNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=exc.detail) from exc
-    except ProjectConfigError as exc:
-        raise HTTPException(status_code=400, detail=exc.detail) from exc
-    except SessionStoreError as exc:
-        raise HTTPException(status_code=404, detail=exc.detail) from exc
-    except ProviderConfigError as exc:
-        raise HTTPException(status_code=400, detail=exc.detail) from exc
-    except ProviderError as exc:
+        draft = KbDraft.model_validate(artifact)
+    except ValidationError:
+        logger.warning("丢弃畸形草案：%r", artifact)
+        return None
+    return _frame("draft", {"draft": draft.model_dump()})
+
+
+def _step_payload(step: dict[str, Any]) -> dict[str, Any]:
+    # steps 严格构造、不做逐条容错：事件恒为本轮 stream_graph 新产物，畸形即装配 bug，须响亮失败
+    return StepInfo(tool=step["tool"], ok=step["ok"], round=step["round"],
+                    detail=step["detail"]).model_dump()
+
+
+@router.post("/chat/send/stream")
+def chat_send_stream(req: SendRequest, request: Request) -> StreamingResponse:
+    """真实链路的唯一传输：守门同步跑，过后逐事件推流，终态恒为一条 done 或一条 error。"""
+    service: ChatService = request.app.state.chat_service
+    runs = request.app.state.run_registry
+    try:
+        prepared: PreparedRun = service.prepare(
+            req.session_id, req.message, req.agent_id, req.project_id)
+    except _GUARD_TYPES as exc:
+        # brief 原码只包 ProviderError：ProjectConfigError/SessionStoreError/
+        # ConfigNotFoundError 与它无继承关系（实测），漏包会把守门 4xx 炸成 500；
+        # 码值对应与迁移前逐字相同（ProviderConfigError 子类 → 400，其余 ProviderError → 502）
+        for klass, code in _GUARD_MAP:
+            if isinstance(exc, klass):
+                raise HTTPException(status_code=code, detail=exc.detail) from exc
         raise HTTPException(status_code=502, detail=exc.detail) from exc
-    # 草案容错（终审项 5）：模型偶发产出缺必填键的畸形 dict，逐条丢弃而非整响应 500，
-    # 回复与其余合法草案照常返回
-    drafts: list[KbDraft] = []
-    for d in result.get("drafts", []):
+
+    run_id = new_run_id()
+    control = runs.start(run_id)
+
+    def frames() -> Iterator[str]:
+        # Task 5 的欠条：finish 必须在每条退出路径上跑（正常收尾、error 帧、客户端断开），
+        # 否则在途条目永久泄漏，/chat/stop 会对已结束的 run 恒回成功
         try:
-            drafts.append(KbDraft.model_validate(d))
-        except ValidationError:
-            continue
-    # steps 严格构造、不做逐条容错：send 的 steps 恒为本轮 run_graph 新产物，
-    # 此处若畸形是装配 bug，须响亮失败（裁定 3：落盘行容错只留在读路径 sessions.py）
-    steps = [StepInfo(**s) for s in result.get("steps", [])]
-    return SendResponse(
-        reply=result["reply"],
-        trace=["interaction"] + result["trace"],
-        model=result["model"],
-        drafts=drafts,
-        session_id=str(result.get("session_id", "")),
-        title=str(result.get("title", "")),
-        steps=steps,
-    )
+            yield _frame("start", {"run_id": run_id, "session_id": prepared.session_id})
+            try:
+                for event in service.stream_turn(prepared, control=control):
+                    kind = event["type"]
+                    if kind == "draft":
+                        frame = _draft_frame(event["draft"])
+                        if frame is not None:
+                            yield frame
+                    elif kind == "step":
+                        yield _frame(kind, _step_payload(event))
+                    elif kind == "done":
+                        yield _frame(kind, {
+                            "reply": event["reply"],
+                            "steps": [_step_payload(s) for s in event["steps"]],
+                            "session_id": event["session_id"],
+                            "title": event["title"],
+                            "stopped": event["stopped"],
+                        })
+                    else:                                   # delta / call
+                        yield _frame(kind, {k: v for k, v in event.items() if k != "type"})
+            except ProviderError as exc:
+                # 流中失败：HTTP 已经 200，只能走事件；detail 原样（key 已在 provider 侧打星）
+                yield _frame("error", {"detail": exc.detail})
+            except Exception as exc:
+                # brief 的 _Boom 契约钉死：provider 抛出的非 ProviderError 异常同样只能
+                # 走 error 事件（流已开始后没有任何 5xx 通道）；detail 取异常文案原文
+                logger.warning("流中非 ProviderError 异常", exc_info=True)
+                yield _frame("error", {"detail": str(exc)})
+        finally:
+            runs.finish(run_id)
+
+    return StreamingResponse(frames(), media_type="text/event-stream")
+
+
+@router.post("/chat/stop", response_model=StreamStopResponse)
+def chat_stop(req: StreamStopRequest, request: Request) -> StreamStopResponse:
+    """服务端真停：置取消位；节点在下一个检查点停笔，截断内容照落盘。"""
+    if not request.app.state.run_registry.cancel(req.run_id):
+        raise HTTPException(status_code=404, detail="这条回答已经结束")
+    return StreamStopResponse(ok=True)
 
 
 def _view(request: Request) -> ModelsResponse:

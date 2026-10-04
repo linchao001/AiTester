@@ -181,6 +181,7 @@ services/stream_turn(...) -> Iterator[dict]   # 事件即 SSE 载荷
 | 6 | UI | 首 token 前保留三点占位，有 delta 后立刻让位 | 占位表达的正是「连接活着、模型还没开口」，删掉它这段等待就没有反馈（违反「动作必须有可见结果」） |
 | 7 | 口径 | 上下文 meter 从「全部可见历史」改成「最近 40 条」 | 裁定 6，与 `HISTORY_MAX` 对齐；这是第 1 片登记、第 2 片转来的欠账 |
 | 9 | 装配 | `RunRegistry` 只挂 `app.state.run_registry` 由路由取用，不注入 `ChatService` | 契约表已把 `control` 定为 `stream_turn` 的形参；服务再持一份注册表就是无用字段（「0 个死按钮」的字段版） |
+| 10 | 测试 | 一次性口的锁是 404（不是测试策略写的 405） | Step 1 实测：删除后 `/api/chat/send` 这条路径上没有任何方法注册，FastAPI 对未注册路径回 404；第 3 片能锁 405 是因为同路径还有 GET/PUT |
 
 ## 自检结论
 

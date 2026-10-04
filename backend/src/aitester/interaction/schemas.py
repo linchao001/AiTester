@@ -22,6 +22,15 @@ class SendRequest(BaseModel):
     project_id: str = ""
 
 
+class StreamStopRequest(BaseModel):
+    # start 事件里下发的 uuid4().hex；已结束或不存在的 run 一律 404
+    run_id: str
+
+
+class StreamStopResponse(BaseModel):
+    ok: bool
+
+
 class KbDraft(BaseModel):
     op: str
     path: str
@@ -37,17 +46,6 @@ class StepInfo(BaseModel):
     ok: bool
     round: int
     detail: str
-
-
-class SendResponse(BaseModel):
-    reply: str
-    trace: list[str]
-    model: str
-    drafts: list[KbDraft] = []
-    # 默认值不可省：既有测试用 SimpleNamespace 替身返回缺键 dict，靠默认兜住旧形态
-    session_id: str = ""
-    title: str = ""
-    steps: list[StepInfo] = []
 
 
 class ModelInfo(BaseModel):

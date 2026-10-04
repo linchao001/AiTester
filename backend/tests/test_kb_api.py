@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -5,6 +6,18 @@ from fastapi.testclient import TestClient
 from aitester.config import Settings
 from aitester.main import create_app
 from aitester.services.kb.manager import KbUnavailableError
+
+
+def _kb_frames(resp) -> list[tuple[str, dict]]:
+    """把 SSE 响应读成 (事件名, 载荷) 表：草案用例只吃帧序列，不吃传输细节。"""
+    out: list[tuple[str, dict]] = []
+    event = ""
+    for line in resp.iter_lines():
+        if line.startswith("event:"):
+            event = line.split(":", 1)[1].strip()
+        elif line.startswith("data:"):
+            out.append((event, json.loads(line.split(":", 1)[1].strip())))
+    return out
 
 
 class _RecordingKbManager:
@@ -90,14 +103,23 @@ def test_chat_send_returns_drafts(tmp_path):
         model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
         sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
-    app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid, project_id="": {
-        "reply": "r", "trace": ["services"], "model": "m",
-        "session_id": "", "title": "", "steps": [],
-        "drafts": [{"op": "create", "path": "a.md", "abs_display": "P",
-                     "summary": "s", "content": "c", "base": None, "mtime": 0}]})
+    draft = {"op": "create", "path": "a.md", "abs_display": "P", "summary": "s",
+             "content": "c", "base": None, "mtime": 0}
+    app.state.chat_service = SimpleNamespace(
+        prepare=lambda sid, msg, aid, project_id="": SimpleNamespace(session_id="s9"),
+        stream_turn=lambda prepared, control=None: iter([
+            {"type": "draft", "draft": draft},
+            {"type": "done", "reply": "r", "steps": [], "session_id": "s9",
+             "title": "", "stopped": False},
+        ]),
+    )
     with TestClient(app) as c:
-        j = c.post("/api/chat/send", json={"message": "写点什么"}).json()
-    assert j["drafts"][0]["path"] == "a.md"
+        with c.stream("POST", "/api/chat/send/stream", json={"message": "写点什么"}) as r:
+            assert r.status_code == 200
+            events = _kb_frames(r)
+    assert events[-1][0] == "done"
+    assert [e for e, _ in events].count("draft") == 1
+    assert events[1][1]["draft"]["path"] == "a.md"
 
 
 def test_chat_send_drafts_defaults_empty(tmp_path):
@@ -105,29 +127,45 @@ def test_chat_send_drafts_defaults_empty(tmp_path):
         model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
         sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
-    # 保留旧形态返回（无 session_id/title/steps 键）：验 SendResponse 默认值兜底
-    app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid, project_id="": {
-        "reply": "r", "trace": ["services"], "model": "m"})  # 旧形态返回：无 drafts 键
+    # 一次性口的「缺 drafts 键 → 默认空列表」迁到流上：没有 draft 事件就是同一口径
+    app.state.chat_service = SimpleNamespace(
+        prepare=lambda sid, msg, aid, project_id="": SimpleNamespace(session_id="s9"),
+        stream_turn=lambda prepared, control=None: iter([
+            {"type": "done", "reply": "r", "steps": [], "session_id": "s9",
+             "title": "", "stopped": False},
+        ]),
+    )
     with TestClient(app) as c:
-        j = c.post("/api/chat/send", json={"message": "echo 我"}).json()
-    assert j["drafts"] == []  # 向后兼容：SendResponse 默认空列表
+        with c.stream("POST", "/api/chat/send/stream", json={"message": "echo 我"}) as r:
+            assert r.status_code == 200
+            events = _kb_frames(r)
+    assert "draft" not in [e for e, _ in events]
 
 
 def test_chat_send_skips_malformed_drafts(tmp_path):
-    # 终审项 5：缺必填键/非 dict 的畸形草案逐条跳过，不整响应 500，回复不丢
+    # 终审项 5 原口径迁到流上：缺必填键/非 dict 的畸形草案逐条丢弃，整条流不塌，回复不丢
     app = create_app(
         model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
         sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
     valid = {"op": "create", "path": "a.md", "abs_display": "P",
              "summary": "s", "content": "c", "base": None, "mtime": 0}
-    app.state.chat_service = SimpleNamespace(send=lambda sid, msg, aid, project_id="": {
-        "reply": "回复还在", "trace": ["services"], "model": "m",
-        "session_id": "", "title": "", "steps": [],
-        "drafts": [valid, {"op": "create"}, "garbage", None]})
+    malformed = [{"op": "create"}, "garbage", None]
+    events_iter = iter(
+        [{"type": "draft", "draft": m} for m in malformed] +
+        [{"type": "draft", "draft": valid},
+         {"type": "done", "reply": "回复还在", "steps": [], "session_id": "s9",
+          "title": "", "stopped": False}])
+    app.state.chat_service = SimpleNamespace(
+        prepare=lambda sid, msg, aid, project_id="": SimpleNamespace(session_id="s9"),
+        stream_turn=lambda prepared, control=None: events_iter,
+    )
     with TestClient(app) as c:
-        r = c.post("/api/chat/send", json={"message": "写点什么"})
-    assert r.status_code == 200
-    j = r.json()
-    assert j["reply"] == "回复还在"
-    assert [d["path"] for d in j["drafts"]] == ["a.md"]  # 仅合法草案存活
+        with c.stream("POST", "/api/chat/send/stream", json={"message": "写点什么"}) as r:
+            assert r.status_code == 200
+            events = _kb_frames(r)
+    kinds = [e for e, _ in events]
+    assert kinds[-1] == "done"
+    assert kinds.count("draft") == 1                       # 仅合法草案存活
+    assert events[kinds.index("draft")][1]["draft"]["path"] == "a.md"
+    assert events[-1][1]["reply"] == "回复还在"

@@ -27,6 +27,26 @@ ALL_LAYERS = [
 ]
 
 
+def _stream_reply(client, payload: dict) -> dict:
+    """POST /api/chat/send/stream 折成「终态载荷 dict」：迁移期让既有断言只改一行。"""
+    import json as _json
+
+    with client.stream("POST", "/api/chat/send/stream", json=payload) as resp:
+        assert resp.status_code == 200, resp.read().decode("utf-8")
+        done: dict = {}
+        deltas: list[str] = []
+        for line in resp.iter_lines():
+            if not line.startswith("data:"):
+                continue
+            data = _json.loads(line.split(":", 1)[1].strip())
+            if line.startswith("data:") and "text" in data and "round" in data:
+                deltas.append(data["text"])
+            elif "reply" in data:
+                done = data
+        done["deltas"] = deltas
+        return done
+
+
 def _isolated_client(
     tmp_path: Path,
     name: str = "model_config.json",
@@ -92,15 +112,12 @@ def test_send_uses_injected_provider_and_reports_model(tmp_path: Path) -> None:
         projects=application.state.project_config,
     )
     pid = _seed_project(application, tmp_path)
-    resp = TestClient(application).post(
-        "/api/chat/send",
-        json={"session_id": "s2", "message": "生成用例", "project_id": pid},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
+    body = _stream_reply(TestClient(application),
+                         {"session_id": "s2", "message": "生成用例", "project_id": pid})
     assert body["reply"] == "[mock] 生成用例"
-    assert body["trace"] == ALL_LAYERS
-    assert body["model"] == "mock/mock"
+    # trace/model 随一次性端点一起消失（spec 裁定 1 与偏离登记 3）：
+    # 七层穿透的验收物仍由 echo 用例锁（test_chat_echo_traverses_all_seven_layers）
+    assert body["deltas"] and "".join(body["deltas"]) == "[mock] 生成用例"
 
 
 def test_send_with_unknown_agent_returns_404(tmp_path: Path) -> None:
@@ -119,7 +136,7 @@ def test_send_with_unknown_agent_returns_404(tmp_path: Path) -> None:
     # 项目段先于装配：给个真项目让流程走到 build，才能验「未知智能体」的 404
     pid = _seed_project(application, tmp_path)
     resp = TestClient(application).post(
-        "/api/chat/send",
+        "/api/chat/send/stream",
         json={"session_id": "s3", "message": "hi", "agent_id": "ghost", "project_id": pid},
     )
     assert resp.status_code == 404
@@ -142,7 +159,7 @@ def test_send_with_legacy_agent_id_returns_404(tmp_path: Path) -> None:
     )
     pid = _seed_project(application, tmp_path)
     resp = TestClient(application).post(
-        "/api/chat/send",
+        "/api/chat/send/stream",
         json={"message": "hi", "agent_id": "a1", "project_id": pid},
     )
     assert resp.status_code == 404
@@ -179,26 +196,22 @@ def test_send_uses_agent_prompt_and_default_agent_id(tmp_path: Path) -> None:
         projects=application.state.project_config,
     )
     pid = _seed_project(application, tmp_path)
-    resp = TestClient(application).post(
-        "/api/chat/send",
-        json={"session_id": "s4", "message": "生成登录用例", "project_id": pid},
-    )
-    assert resp.status_code == 200
     # 请求体不带 agent_id 时取 SendRequest 默认值 case_design；系统提示词来自 md
+    assert _stream_reply(TestClient(application),
+                         {"session_id": "s4", "message": "生成登录用例", "project_id": pid})["reply"] == "[spy] 收到"
     assert str(seen[0][0].content) == find_agent("case_design").prompt
-    assert resp.json()["reply"] == "[spy] 收到"
 
 
 def test_send_without_configured_default_returns_400(tmp_path: Path) -> None:
     c = _isolated_client(tmp_path)
     # 项目段先于 build：项目齐备才能走到「未配置默认模型」那条 400，而非「请先选择项目」
     pid = _seed_project(c.app, tmp_path)
-    resp = c.post("/api/chat/send", json={"message": "hi", "project_id": pid})
+    resp = c.post("/api/chat/send/stream", json={"message": "hi", "project_id": pid})
     assert resp.status_code == 400
     assert "设置 · 模型设置" in resp.json()["detail"]
 
 
-def test_send_upstream_failure_returns_502(tmp_path: Path) -> None:
+def test_send_upstream_failure_travels_as_error_event(tmp_path: Path) -> None:
     class FailingProvider(ChunkedStreamMixin):
         name = "fake"
         model_ref = "fake/model-x"
@@ -226,11 +239,14 @@ def test_send_upstream_failure_returns_502(tmp_path: Path) -> None:
         projects=application.state.project_config,
     )
     pid = _seed_project(application, tmp_path)
-    resp = TestClient(application).post(
-        "/api/chat/send", json={"message": "hi", "project_id": pid}
-    )
-    assert resp.status_code == 502
-    assert "fake/model-x" in resp.json()["detail"]
+    with TestClient(application).stream(
+        "POST", "/api/chat/send/stream", json={"message": "hi", "project_id": pid}
+    ) as resp:
+        assert resp.status_code == 200          # 流已开始，失败只能走事件
+        # brief 原码对每条 data 行取 ["detail"] 会先撞 start 帧（它没有这个键）；改取末条
+        last_data = [line for line in resp.iter_lines() if line.startswith("data: ")][-1]
+    detail = json.loads(last_data.split(":", 1)[1].strip())["detail"]
+    assert "fake/model-x" in detail
 
 
 def test_chat_service_is_per_app_instance(tmp_path: Path) -> None:

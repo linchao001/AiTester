@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -42,6 +43,21 @@ def _app(tmp_path: Path):
 
 def _client(tmp_path: Path) -> TestClient:
     return TestClient(_app(tmp_path))
+
+
+def _send_body(client, payload: dict) -> dict:
+    """POST /api/chat/send/stream 折成 done 载荷 dict（与 test_api._stream_reply 同思路）：
+    一次性端点删除后，既有 body["session_id"]/["title"]/["steps"] 断言原样吃终态。"""
+    with client.stream("POST", "/api/chat/send/stream", json=payload) as resp:
+        assert resp.status_code == 200, resp.read().decode("utf-8")
+        done: dict = {}
+        for line in resp.iter_lines():
+            if not line.startswith("data:"):
+                continue
+            data = json.loads(line.split(":", 1)[1].strip())
+            if "reply" in data:
+                done = data
+        return done
 
 
 def _seed(tmp_path: Path, agent_id: str = "case_design") -> tuple[TestClient, str, str]:
@@ -160,10 +176,7 @@ def test_delete_returns_204_and_removes_everything(tmp_path: Path) -> None:
 def test_send_defaults_to_empty_session_id(tmp_path: Path) -> None:
     client = _wired_client(tmp_path)
     pid = _seed_project(client.app, tmp_path)
-    r = client.post("/api/chat/send",
-                    json={"message": "生成用例", "agent_id": "case_design", "project_id": pid})
-    assert r.status_code == 200
-    body = r.json()
+    body = _send_body(client, {"message": "生成用例", "agent_id": "case_design", "project_id": pid})
     assert body["session_id"].startswith("sess_")   # 请求体不带 session_id 也能建会话
     assert body["title"] == "生成用例"
     assert body["steps"] == []                       # MockProvider 不调工具
@@ -176,11 +189,9 @@ def test_send_defaults_to_empty_session_id(tmp_path: Path) -> None:
 def test_send_with_temporary_key_does_not_appear_in_list(tmp_path: Path) -> None:
     client = _wired_client(tmp_path)
     pid = _seed_project(client.app, tmp_path)
-    r = client.post("/api/chat/send",
-                    json={"session_id": "kb-console", "message": "hi",
-                          "agent_id": "case_design", "project_id": pid})
-    assert r.status_code == 200
-    assert r.json()["session_id"] == "kb-console"   # 临时键原样回显
+    body = _send_body(client, {"session_id": "kb-console", "message": "hi",
+                               "agent_id": "case_design", "project_id": pid})
+    assert body["session_id"] == "kb-console"   # 临时键原样回显
     assert client.get("/api/chat/sessions",
                       params={"agent_id": "case_design", "project_id": pid}).json() == {"sessions": []}
 
@@ -188,7 +199,7 @@ def test_send_with_temporary_key_does_not_appear_in_list(tmp_path: Path) -> None
 def test_send_unknown_session_id_returns_404(tmp_path: Path) -> None:
     client = _wired_client(tmp_path)
     pid = _seed_project(client.app, tmp_path)
-    r = client.post("/api/chat/send",
+    r = client.post("/api/chat/send/stream",
                     json={"session_id": "sess_deadbeef", "message": "hi",
                           "agent_id": "case_design", "project_id": pid})
     assert r.status_code == 404
@@ -229,20 +240,17 @@ def test_send_to_foreign_session_returns_404(tmp_path: Path) -> None:
     application.state.sessions.create(sid, "case_design", pid, "订单退款")
     client = TestClient(application)
     r = client.post(
-        "/api/chat/send",
+        "/api/chat/send/stream",
         json={"session_id": sid, "message": "hi", "agent_id": "kb_assistant",
               "project_id": pid},
     )
     assert r.status_code == 404
     assert r.json()["detail"] == "会话不属于该智能体"
     # 归属正确时照常成功，且原样续写同一条会话
-    ok = client.post(
-        "/api/chat/send",
-        json={"session_id": sid, "message": "再加一条", "agent_id": "case_design",
-              "project_id": pid},
-    )
-    assert ok.status_code == 200
-    assert ok.json()["session_id"] == sid
+    assert _send_body(client, {
+        "session_id": sid, "message": "再加一条", "agent_id": "case_design",
+        "project_id": pid,
+    })["session_id"] == sid
 
 
 def test_send_returns_nonempty_steps_at_http_level(tmp_path: Path) -> None:
@@ -279,11 +287,8 @@ def test_send_returns_nonempty_steps_at_http_level(tmp_path: Path) -> None:
         projects=application.state.project_config,
     )
     client = TestClient(application)
-    r = client.post(
-        "/api/chat/send",
-        json={"message": "读文件", "agent_id": "case_design", "project_id": pid})
-    assert r.status_code == 200
-    body = r.json()
+    body = _send_body(client,
+                      {"message": "读文件", "agent_id": "case_design", "project_id": pid})
     assert body["steps"] == [
         {"tool": "read", "ok": True, "round": 1, "detail": '{"path": "a.md"}'}]
     # 落盘后从 messages 端点读回，痕迹与 send 同一份
