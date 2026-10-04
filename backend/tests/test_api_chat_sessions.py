@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +9,7 @@ from aitester.config import Settings
 from aitester.main import create_app
 from aitester.services import ChatService
 from aitester.services.session_store import SessionStore
+from streaming_fakes import sse_frames
 
 
 # 与 test_api_projects.py:12 同款假 manager：会话端点不碰 reme，免起真实实例
@@ -50,14 +50,9 @@ def _send_body(client, payload: dict) -> dict:
     一次性端点删除后，既有 body["session_id"]/["title"]/["steps"] 断言原样吃终态。"""
     with client.stream("POST", "/api/chat/send/stream", json=payload) as resp:
         assert resp.status_code == 200, resp.read().decode("utf-8")
-        done: dict = {}
-        for line in resp.iter_lines():
-            if not line.startswith("data:"):
-                continue
-            data = json.loads(line.split(":", 1)[1].strip())
-            if "reply" in data:
-                done = data
-        return done
+        frames = sse_frames(resp)
+        last = frames[-1] if frames else ("", {})
+        return dict(last[1]) if last[0] == "done" else {}
 
 
 def _seed(tmp_path: Path, agent_id: str = "case_design") -> tuple[TestClient, str, str]:

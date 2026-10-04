@@ -1,4 +1,3 @@
-import json
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -6,18 +5,7 @@ from fastapi.testclient import TestClient
 from aitester.config import Settings
 from aitester.main import create_app
 from aitester.services.kb.manager import KbUnavailableError
-
-
-def _kb_frames(resp) -> list[tuple[str, dict]]:
-    """把 SSE 响应读成 (事件名, 载荷) 表：草案用例只吃帧序列，不吃传输细节。"""
-    out: list[tuple[str, dict]] = []
-    event = ""
-    for line in resp.iter_lines():
-        if line.startswith("event:"):
-            event = line.split(":", 1)[1].strip()
-        elif line.startswith("data:"):
-            out.append((event, json.loads(line.split(":", 1)[1].strip())))
-    return out
+from streaming_fakes import sse_frames
 
 
 class _RecordingKbManager:
@@ -116,7 +104,7 @@ def test_chat_send_returns_drafts(tmp_path):
     with TestClient(app) as c:
         with c.stream("POST", "/api/chat/send/stream", json={"message": "写点什么"}) as r:
             assert r.status_code == 200
-            events = _kb_frames(r)
+            events = sse_frames(r)
     assert events[-1][0] == "done"
     assert [e for e, _ in events].count("draft") == 1
     assert events[1][1]["draft"]["path"] == "a.md"
@@ -138,7 +126,7 @@ def test_chat_send_drafts_defaults_empty(tmp_path):
     with TestClient(app) as c:
         with c.stream("POST", "/api/chat/send/stream", json={"message": "echo 我"}) as r:
             assert r.status_code == 200
-            events = _kb_frames(r)
+            events = sse_frames(r)
     assert "draft" not in [e for e, _ in events]
 
 
@@ -163,7 +151,7 @@ def test_chat_send_skips_malformed_drafts(tmp_path):
     with TestClient(app) as c:
         with c.stream("POST", "/api/chat/send/stream", json={"message": "写点什么"}) as r:
             assert r.status_code == 200
-            events = _kb_frames(r)
+            events = sse_frames(r)
     kinds = [e for e, _ in events]
     assert kinds[-1] == "done"
     assert kinds.count("draft") == 1                       # 仅合法草案存活

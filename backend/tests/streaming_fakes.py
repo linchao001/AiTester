@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Iterable, Iterator
 
@@ -72,3 +73,15 @@ def local_tools(tmp_path: Path) -> list:
         cwd=str(tmp_path), session_id="s1", observed=FileObservationStore()
     )
     return registry.as_langchain_tools()
+
+
+def sse_frames(resp) -> list[tuple[str, dict]]:
+    """把 SSE 响应体读成 (事件名, 载荷) 表；节奏不在断言范围，见 TestClient 缓冲实测。"""
+    out: list[tuple[str, dict]] = []
+    event = ""
+    for line in resp.iter_lines():
+        if line.startswith("event:"):
+            event = line.split(":", 1)[1].strip()
+        elif line.startswith("data:"):
+            out.append((event, json.loads(line.split(":", 1)[1].strip())))
+    return out

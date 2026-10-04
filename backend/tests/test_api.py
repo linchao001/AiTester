@@ -12,7 +12,7 @@ from aitester.main import app, create_app
 from aitester.services import model_config
 from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.chat import ChatService
-from streaming_fakes import ChunkedStreamMixin
+from streaming_fakes import ChunkedStreamMixin, sse_frames
 
 client = TestClient(app)
 
@@ -29,21 +29,11 @@ ALL_LAYERS = [
 
 def _stream_reply(client, payload: dict) -> dict:
     """POST /api/chat/send/stream 折成「终态载荷 dict」：迁移期让既有断言只改一行。"""
-    import json as _json
-
     with client.stream("POST", "/api/chat/send/stream", json=payload) as resp:
         assert resp.status_code == 200, resp.read().decode("utf-8")
-        done: dict = {}
-        deltas: list[str] = []
-        for line in resp.iter_lines():
-            if not line.startswith("data:"):
-                continue
-            data = _json.loads(line.split(":", 1)[1].strip())
-            if line.startswith("data:") and "text" in data and "round" in data:
-                deltas.append(data["text"])
-            elif "reply" in data:
-                done = data
-        done["deltas"] = deltas
+        frames = sse_frames(resp)
+        done = dict(frames[-1][1]) if frames and frames[-1][0] == "done" else {}
+        done["deltas"] = [data["text"] for event, data in frames if event == "delta"]
         return done
 
 

@@ -4,7 +4,6 @@
 所以这里只断「帧的顺序与内容」，不断节奏——逐字观感属真机走查。
 """
 
-import json
 import threading
 import time
 from importlib import import_module
@@ -18,7 +17,7 @@ from aitester.adapters.llm import MockProvider
 from aitester.config import Settings
 from aitester.main import create_app
 from aitester.services import ChatService
-from streaming_fakes import ChunkedStreamMixin
+from streaming_fakes import ChunkedStreamMixin, sse_frames
 
 
 class _NoopKbManager:
@@ -64,21 +63,10 @@ def _pid(application, tmp_path: Path) -> str:
         name="订单系统", desc="", dir_=str(root), agents=["case_design"])["id"]
 
 
-def _frames(resp) -> list[tuple[str, dict]]:
-    out: list[tuple[str, dict]] = []
-    event = ""
-    for line in resp.iter_lines():
-        if line.startswith("event:"):
-            event = line.split(":", 1)[1].strip()
-        elif line.startswith("data:"):
-            out.append((event, json.loads(line.split(":", 1)[1].strip())))
-    return out
-
-
 def _stream(client: TestClient, payload: dict) -> list[tuple[str, dict]]:
     with client.stream("POST", "/api/chat/send/stream", json=payload) as resp:
         assert resp.status_code == 200, resp.read().decode("utf-8")
-        return _frames(resp)
+        return sse_frames(resp)
 
 
 def test_stream_event_sequence_and_single_terminal(tmp_path: Path) -> None:
@@ -213,7 +201,7 @@ def test_stop_hits_an_in_flight_run(tmp_path: Path, monkeypatch) -> None:
                 json={"message": "慢一点", "agent_id": "case_design", "project_id": pid}
             ) as resp:
                 assert resp.status_code == 200
-                collected["frames"] = _frames(resp)
+                collected["frames"] = sse_frames(resp)
         except BaseException as exc:          # 后台线程的失败要能在主线程响亮复现
             collected["error"] = exc
 
