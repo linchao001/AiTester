@@ -103,8 +103,8 @@ export function finalize(state: StreamingState, done: DoneEvent): FinalizedTurn 
   const notes: ChatStep[] = state.rounds
     .filter((r) => r.toolCalled && r.text)
     .map((r) => ({ tool: "📝", ok: true, round: r.round, detail: r.text }));
-  // done.steps 的前缀是前段携带（续跑不重发那些 step 帧），本段的帧才在 state.steps 里；
-  // 两段长度相加恒等于 done.steps 全长——漏收一帧只会让它落进前缀，不会把过程行变没。
+  // done.steps 的前缀是前段携带（续跑不重发那些 step 帧），本段的帧才在 state.steps 里。
+  // 本段一帧不漏时 carried 就是前段全集；坏帧容错丢过一帧只会让归属错位一格，行数不变。
   // 按 round 的 sort 只折本段：续跑段的 round 从 0 重启（agent_graph 每段独立计数），
   // 若像原来那样对 done.steps 全局 sort，本段的 📝 行会插到前段过程行之前（T6 评审 →交 T8 的硬要求）
   const carried = done.steps.slice(0, Math.max(0, done.steps.length - state.steps.length));
