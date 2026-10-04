@@ -174,6 +174,7 @@ def stream_graph(
     带 checkpointer 后 stream() 必须给 thread_id（缺键直接 ValueError，实测），所以这里一律
     给值：SSE 路由给 run_id（P4：pending→resume 复用同一个），run_graph 这类历史入口给空串自造。
     resume 非 None 表示「从 gate 的中断处续跑」，此时不再投新输入——投了就变成新回合语义。
+    挂起时 finish.pending=True，且它前面一定有至少一条 wait 事件。
     """
     graph = build(provider, tools)
     configurable: dict[str, Any] = {"thread_id": thread_id or new_thread_id()}
@@ -190,6 +191,7 @@ def stream_graph(
     reply = ""
     round_no = 0
     stopped = False
+    pending = False
     tool_traces: list[dict[str, Any]] = []
     drafts: list[dict[str, Any]] = []
     calls_by_id: dict[str, dict[str, Any]] = {}
@@ -215,6 +217,18 @@ def stream_graph(
                 elif payload.get("text"):
                     # 与迁移前同口径：后写的非工具轮 content 覆盖前面的（中间轮文本因此不落盘）
                     reply = str(payload["text"])
+            continue
+
+        hits = payload.get("__interrupt__")
+        if hits:
+            # P1：挂起以 updates 分片多一个 __interrupt__ 键出现，流干净结束、不抛异常。
+            # 载荷由 gate 备齐，这里严格取键：缺字段即 KeyError，正是 spec 测试 7 要的响亮失败。
+            for hit in hits:
+                value = hit.value
+                yield {"type": "wait", "call_id": value["call_id"], "tool": value["tool"],
+                       "action": value["action"], "target": value["target"],
+                       "command": value["command"], "cwd": value["cwd"]}
+            pending = True
             continue
 
         produced = payload.get("tools") or {}
@@ -249,6 +263,7 @@ def stream_graph(
         "tool_traces": tool_traces,
         "drafts": drafts,
         "stopped": stopped,
+        "pending": pending,
     }
 
 

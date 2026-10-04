@@ -225,7 +225,6 @@ def test_build_gate_context_short_circuits_free_and_platform(tmp_path: Path) -> 
     assert build_gate_context("strict", "", "k", set()) is None       # 平台智能体无项目落点
 
 
-@pytest.mark.xfail(strict=True, reason="wait 事件要到 Task 4 从 __interrupt__ 折出来；Task 4 Step 4 删掉本行")
 def test_boundary_out_of_bounds_waits_before_executing(tmp_path: Path) -> None:
     counter = _Counting()
     provider = ScriptProvider([_calls(("c1", "write", _outside()))])
@@ -239,7 +238,6 @@ def test_boundary_out_of_bounds_waits_before_executing(tmp_path: Path) -> None:
     assert wait[0]["action"] == "写入项目目录外的文件"
 
 
-@pytest.mark.xfail(strict=True, reason="wait 事件要到 Task 4 从 __interrupt__ 折出来；Task 4 Step 4 删掉本行")
 def test_two_parallel_calls_execute_exactly_once_each(tmp_path: Path) -> None:
     """P5 否决形态的正面锁：两个都批 → 真执行恰为两次，gate 重跑不重复副作用。"""
     counter = _Counting()
@@ -373,3 +371,27 @@ def test_decision_from_rejects_garbage(tmp_path: Path) -> None:
     for bad in (None, "approve", {"decision": "yes"}, {}):
         with pytest.raises(GateAuthError):
             decision_from(bad)
+
+
+def test_wait_event_strict_keys_and_pending_finish(tmp_path: Path) -> None:
+    counter = _Counting()
+    provider = ScriptProvider([_calls(("c1", "pwsh", {"command": "pytest -q", "cwd": "D:/elsewhere"}))])
+    ctx = _gate_ctx(tmp_path, "boundary")
+    shell = build_default_registry(cwd=str(tmp_path / "proj"), session_id="s1",
+                                   observed=counter).get_many(["pwsh"])
+    events = list(stream_graph(build_agent_graph, provider, shell,
+                               [HumanMessage(content="跑命令")], thread_id="w2", gate=ctx))
+    wait = [e for e in events if e["type"] == "wait"][0]
+    assert sorted(wait) == sorted(["type", "call_id", "tool", "action", "target",
+                                   "command", "cwd"])
+    assert wait["call_id"] == "c1" and wait["tool"] == "pwsh"
+    assert wait["command"] == "pytest -q"                  # 批准前必须看全
+    assert wait["cwd"] == "D:/elsewhere"
+    assert events[-1]["pending"] is True
+
+
+def test_run_graph_shell_shape_unchanged(tmp_path: Path) -> None:
+    from aitester.orchestration.agent_graph import run_graph
+    out = run_graph(build_agent_graph, ScriptProvider([AIMessage(content="直答")]), [],
+                    [HumanMessage(content="生成用例")])
+    assert set(out) == {"reply", "tool_traces", "drafts"}     # 壳形状一字不动
