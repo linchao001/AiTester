@@ -106,6 +106,23 @@ def test_disconnect_persists_truncated_row(tmp_path, project) -> None:
     assert rows[-1].content == "[moc"                 # 停笔点在第二块的检查位：落的就是第一块
 
 
+def test_close_after_done_persists_turn_once(tmp_path, project) -> None:
+    """Task 7 的 SSE 路由就是「收到 done 就 break」的消费者：close() 不得二次落盘。"""
+    svc_proj, pid, _ = project
+    store = SessionStore(tmp_path / "sessions")
+    svc = _service(tmp_path, svc_proj)
+    prepared = svc.prepare("", "生成用例", "case_design", pid)
+    stream = svc.stream_turn(prepared)
+    for event in stream:
+        if event["type"] == "done":
+            break
+    stream.close()
+    rows = store.messages(prepared.session_id)
+    assert [r.role for r in rows] == ["user", "assistant"]   # 至多一写：没有第二对行
+    assert rows[-1].content == "[mock] 生成用例"              # finish 全文，不是截断前缀
+    assert rows[-1].stopped is False
+
+
 class _Boom(ChunkedStreamMixin):
     name = "boom"
     model_ref = "boom/model"

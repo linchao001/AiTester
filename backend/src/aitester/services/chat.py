@@ -232,12 +232,11 @@ class ChatService:
                     r = int(event["round"])
                     visible[r] = visible.get(r, "") + str(event["text"])
                 yield event
-            if outcome is None:
-                # 图没产出 finish 属装配缺陷，但界面不能永久挂在 busy 上：按空回合收尾
-                outcome = {"reply": "", "tool_traces": [], "drafts": [], "stopped": True}
+            # stream_graph 保证终帧 finish（Task 3 钉死）：走到这里 outcome 必非空，无需兜底
             reply = str(outcome["reply"])
             stopped = bool(outcome["stopped"])
             self._persist(prepared, reply, steps, stopped)
+            outcome = None               # 已落盘：done 帧后再被 close() 不得二次落盘
             stored = (
                 self.sessions.get(prepared.session_id)
                 if self.sessions is not None else None
