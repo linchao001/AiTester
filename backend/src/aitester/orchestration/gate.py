@@ -114,13 +114,18 @@ def make_gate_node(lookup: Callable[[RunnableConfig | None], GateContext | None]
         if not items:
             return {"messages": []}
         rejected_ids: set[str] = set()
+        remembered_keys: list[str] = []
         for item in items:
             decision = decision_from(interrupt(item.payload))
             if decision["decision"] == APPROVE:
                 if decision["remember"]:
-                    ctx.remembered.add(item.plan.remember_key)   # 唯一允许的副作用（幂等）
+                    remembered_keys.append(item.plan.remember_key)
             else:
                 rejected_ids.add(item.call_id)
+        # 唯一允许的副作用（同键同值覆盖幂等），但必须等整条循环跑完才落表：
+        # langgraph 的续跑值按「第几次挂起」位置匹配（实测 scratchpad.resume[idx]），
+        # 中途改 remembered 会让下一次重跑的 plan_items 变短，后面的调用继承前一条的决策。
+        ctx.remembered.update(remembered_keys)
         if not rejected_ids:
             return {"messages": []}
         kept = [c for c in last.tool_calls if str(c.get("id")) not in rejected_ids]
