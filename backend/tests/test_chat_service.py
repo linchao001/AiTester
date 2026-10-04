@@ -7,6 +7,7 @@ from aitester.agents import find_agent
 from aitester.adapters.llm import MockProvider, ProviderConfigError
 from aitester.adapters.llm import openai_compat
 from aitester.config import Settings
+from aitester.orchestration.auth_rules import DEFAULT_PERM_MODE
 from aitester.services import ChatService
 from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.capability_config import CapabilityConfigService
@@ -249,8 +250,8 @@ class _RecordingService(ChatService):
         self.seen_memory: list[object] = []
 
     def prepare(self, session_id: str, message: str, agent_id: str,
-                project_id: str = ""):
-        prepared = super().prepare(session_id, message, agent_id, project_id)
+                project_id: str = "", perm_mode: str = DEFAULT_PERM_MODE):
+        prepared = super().prepare(session_id, message, agent_id, project_id, perm_mode)
         self.seen_memory.append(prepared.memory)
         return prepared
 

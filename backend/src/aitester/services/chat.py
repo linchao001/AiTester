@@ -10,10 +10,18 @@ from aitester.adapters.tools.base import AiTooler
 from aitester.agents import is_platform_agent
 from aitester.context import ContextBuilder, PassthroughContextBuilder
 from aitester.memory import InMemoryMemoryStore, MemoryStore
-from aitester.orchestration import run_echo, stream_graph
+from aitester.orchestration import drop_thread, new_thread_id, run_echo, stream_graph
+from aitester.orchestration.auth_rules import DEFAULT_PERM_MODE, validate_perm_mode
+from aitester.orchestration.gate import GateContext, build_gate_context
 from aitester.orchestration.graph_registry import GraphBuilder
 from aitester.orchestration.run_control import RunControl
 from aitester.services.agent_runtime import AgentRuntime
+from aitester.services.pending import (
+    PENDING_GONE_DETAIL,
+    PendingEntry,
+    PendingGoneError,
+    PendingRegistry,
+)
 from aitester.services.project_config import (
     ProjectConfigError,
     ProjectService,
@@ -38,6 +46,9 @@ logger = logging.getLogger(__name__)
 # done/step 事件里喂给 UI 与磁盘的过程块字段：严格取键，缺字段即 KeyError（不兜默认防假绿）
 _STEP_KEYS = ("tool", "ok", "round", "detail")
 
+# wait 事件喂给 pending 队列的字段：严格取键，缺字段即 KeyError（与 _STEP_KEYS 同口径）
+_WAIT_KEYS = ("call_id", "tool", "action", "target", "command", "cwd")
+
 
 @dataclass(frozen=True)
 class PreparedRun:
@@ -55,6 +66,11 @@ class PreparedRun:
     tools: list[AiTooler]
     memory: MemoryStore
     messages: list[BaseMessage]
+    perm_mode: str = DEFAULT_PERM_MODE
+    agent_id: str = ""
+    project_id: str = ""
+    project_dir: str = ""         # expanduser 再 resolve：判定与续跑守卫都认它
+    gate: GateContext | None = None
 
 
 class ChatService:
@@ -69,6 +85,7 @@ class ChatService:
         agent_runtime: AgentRuntime | None = None,
         sessions: SessionStore | None = None,
         projects: ProjectService | None = None,
+        pending: PendingRegistry | None = None,
     ) -> None:
         self.provider = provider
         self.agent_runtime = agent_runtime
@@ -77,6 +94,8 @@ class ChatService:
         self.repo = repo or InMemoryRepository()
         self.sessions = sessions
         self.projects = projects
+        # 待批表：装配位注入（与 run_registry 同处 app.state），单测直调时自持一份
+        self.pending = pending if pending is not None else PendingRegistry()
 
     def _complete(
         self,
@@ -103,8 +122,28 @@ class ChatService:
         result = self._complete(session_id, message, MockProvider(), SYSTEM_PROMPT)
         return {"reply": result["reply"], "trace": result["trace"]}
 
+    def _guard_project(self, project_id: str) -> dict[str, Any]:
+        """守门只有一段：send 与 resume 复用同一函数、同一条 detail（第 2 片教训）。
+
+        复用项目页读侧同一只探测（裁定 3）：展开 ~、绝不 mkdir、吞 (OSError, ValueError)，
+        畸形 dir（NUL 走 ValueError）在此同样答「不可达」→ 中文 400，绝不外泄成 500。
+        """
+        pid = (project_id or "").strip()
+        if not pid:
+            raise ProjectConfigError("请先选择项目，再发送消息")
+        if self.projects is None:
+            raise ProjectConfigError("服务未装配项目配置，请通过 create_app 启动后端")
+        project = self.projects.get(pid)          # 未知项目 → ConfigNotFoundError → 路由 404
+        if not dir_exists(project["dir"]):
+            raise ProjectConfigError(
+                f"项目「{project['name']}」的目录 {project['dir']} 不存在或不可访问，"
+                "请到项目页确认路径"
+            )
+        return project
+
     def prepare(
-        self, session_id: str, message: str, agent_id: str, project_id: str = ""
+        self, session_id: str, message: str, agent_id: str, project_id: str = "",
+        perm_mode: str = DEFAULT_PERM_MODE,
     ) -> PreparedRun:
         """守门 + 装配 + 记忆选择 + 上下文拼装：全部会以 4xx 结束的段落只在这里存在一份。
 
@@ -115,23 +154,13 @@ class ChatService:
             raise ProviderConfigError(
                 "服务未装配智能体运行时，请通过 create_app 启动后端"
             )
+        mode = validate_perm_mode(perm_mode)      # 第一句：非法档位在任何副作用之前 400
         platform = is_platform_agent(agent_id)
         project: dict[str, Any] | None = None
         pid = ""
         if not platform:
+            project = self._guard_project(project_id)
             pid = (project_id or "").strip()
-            if not pid:
-                raise ProjectConfigError("请先选择项目，再发送消息")
-            if self.projects is None:
-                raise ProjectConfigError("服务未装配项目配置，请通过 create_app 启动后端")
-            project = self.projects.get(pid)          # 未知项目 → ConfigNotFoundError → 路由 404
-            # 复用项目页读侧同一只探测（裁定 3）：展开 ~、绝不 mkdir、吞 (OSError, ValueError)，
-            # 畸形 dir（NUL 走 ValueError）在此同样答「不可达」→ 中文 400，绝不外泄成 500
-            if not dir_exists(project["dir"]):
-                raise ProjectConfigError(
-                    f"项目「{project['name']}」的目录 {project['dir']} 不存在或不可访问，"
-                    "请到项目页确认路径"
-                )
         sid = (session_id or "").strip()
         if not sid:
             if self.sessions is None or platform:
@@ -170,6 +199,9 @@ class ChatService:
         else:
             memory = self.memory
 
+        # 判定与落点认同一个展开：dir 配成 ~/x 时两侧都看到家目录（第 2 片教训的对称面）
+        project_dir = (str(Path(project["dir"]).expanduser().resolve())
+                       if project is not None else "")
         key = f"{instance.agent_id}:{sid}"
         history = memory.recall(key)[-HISTORY_MAX:]
         messages = _to_langchain_messages(
@@ -185,6 +217,11 @@ class ChatService:
             tools=instance.tools,
             memory=memory,
             messages=messages,
+            perm_mode=mode,
+            agent_id=instance.agent_id,
+            project_id=pid,
+            project_dir=project_dir,
+            gate=build_gate_context(mode, project_dir, key, self.pending.remembered_for(key)),
         )
 
     def _persist(
@@ -197,7 +234,7 @@ class ChatService:
                       {"session_id": prepared.key, "last_reply": reply})
 
     def stream_turn(
-        self, prepared: PreparedRun, control: RunControl | None = None
+        self, prepared: PreparedRun, control: RunControl | None = None, run_id: str = ""
     ) -> Iterator[dict[str, Any]]:
         """事件流 + 终态落盘：done 之前一条也不写盘（失败不留痕，与迁移前同口径）。
 
@@ -213,31 +250,54 @@ class ChatService:
         落盘正文取「已交付给消费者的 delta 前缀」而非 finish 的 reply：langgraph 同步流
         在一个 next() 里跑完整个节点，GeneratorExit 送达时图侧早已产完——用户看到的只有
         已经推出去的那半截，钉死的断开用例（"[moc"）锁的就是交付前缀口径。
+
+        run_id 非空时它就是图线程 id（P4：pending→resume 复用同一个），空串则自造。
         """
         control = control or RunControl()
+        thread_id = run_id or new_thread_id()
         events = stream_graph(
-            prepared.build, prepared.provider, prepared.tools, prepared.messages, control=control
+            prepared.build, prepared.provider, prepared.tools, prepared.messages,
+            control=control, thread_id=thread_id, gate=prepared.gate,
         )
+        return self._fold_turn(events, prepared, control, thread_id)
+
+    def _fold_turn(
+        self, events: Iterator[dict[str, Any]], prepared: PreparedRun,
+        control: RunControl, thread_id: str, entry: PendingEntry | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """首回合与续跑共用的一条折叠：collect → 挂起入表 / 终态落盘 → 线程收摊。
+
+        挂起分支 return 在 persist 之前（裁定 8：不落盘），且不发 done——流就在 wait 之后断掉
+        （裁定 7）。R8：finish.pending 同时 control.cancelled 时停止优先，落 stopped 截断行。
+        """
         steps: list[dict[str, Any]] = []
-        # visible[round] = 已 yield 出去的该轮 delta 文本；断开时取最后一轮的前缀落盘
+        # visible[round] = 已 yield 出去的该轮 delta 文本；断开或挂起时取最后一轮的前缀
         visible: dict[int, str] = {}
+        waiting: list[dict[str, Any]] = []
         outcome: dict[str, Any] | None = None
         try:
             for event in events:
-                if event["type"] == "finish":
+                kind = event["type"]
+                if kind == "finish":
                     outcome = event
                     continue
-                if event["type"] == "step":
+                if kind == "wait":
+                    waiting.append({k: event[k] for k in _WAIT_KEYS})
+                elif kind == "step":
                     steps.append({k: event[k] for k in _STEP_KEYS})
-                elif event["type"] == "delta":
+                elif kind == "delta":
                     r = int(event["round"])
                     visible[r] = visible.get(r, "") + str(event["text"])
                 yield event
-            # stream_graph 保证终帧 finish（Task 3 钉死）：走到这里 outcome 必非空，无需兜底
+            if outcome is not None and outcome["pending"] and not control.cancelled:
+                self._hold(prepared, thread_id, entry, visible, steps, waiting)
+                return
+            # stream_graph 保证终帧 finish：走到这里 outcome 必非空，无需兜底
             reply = str(outcome["reply"])
             stopped = bool(outcome["stopped"])
             self._persist(prepared, reply, steps, stopped)
             outcome = None               # 已落盘：done 帧后再被 close() 不得二次落盘
+            self._release(thread_id, entry)
             stored = (
                 self.sessions.get(prepared.session_id)
                 if self.sessions is not None else None
@@ -256,6 +316,8 @@ class ChatService:
                 for event in events:      # 无人消费也要跑到停笔点，只为拿到 finish
                     if event["type"] == "step":
                         steps.append({k: event[k] for k in _STEP_KEYS})
+                    elif event["type"] == "wait":
+                        waiting.append({k: event[k] for k in _WAIT_KEYS})
                     elif event["type"] == "finish":
                         outcome = event
             except Exception:             # 收尾路径的失败绝不能盖掉原始断开
@@ -263,17 +325,96 @@ class ChatService:
             if outcome is not None:
                 prefix = visible[max(visible)] if visible else ""
                 self._persist(prepared, prefix, steps, stopped=True)
+            # 断开 == 停止（第 4 片同语义）：留下的条目一律作废，线程也不再等批准
+            self._release(thread_id, entry)
             raise
 
+    def _hold(self, prepared: PreparedRun, thread_id: str,
+              entry: PendingEntry | None, visible: dict[int, str],
+              steps: list[dict[str, Any]], waiting: list[dict[str, Any]]) -> None:
+        """挂起入表：首挂开条目，续跑又撞卡就原地更新（队列按 call_id 去重）。"""
+        prefix = visible[max(visible)] if visible else ""
+        if entry is not None:
+            self.pending.update_hold(entry, prefix=prefix, steps=steps, waiting=waiting)
+            return
+        self.pending.open(PendingEntry(
+            run_id=thread_id, thread_id=thread_id, prepared=prepared,
+            perm_mode=prepared.perm_mode, project_id=prepared.project_id,
+            project_dir=prepared.project_dir, session_key=prepared.key,
+            session_id=prepared.session_id, agent_id=prepared.agent_id,
+            prefix_text=prefix, steps=list(steps), queue=list(waiting)))
+
+    def _release(self, thread_id: str, entry: PendingEntry | None) -> None:
+        """终态收摊：条目摘除 + 检查点线程删除。带 checkpointer 后不删就是每轮泄漏一条线程。"""
+        if entry is not None:
+            self.pending.take(entry.run_id)
+        drop_thread(thread_id)
+
+    def resume_stream(self, run_id: str,
+                      control: RunControl | None = None) -> tuple[str, Iterator[dict[str, Any]]]:
+        """从 gate 的中断处续跑一条已登记的待批。
+
+        守门全部留在 HTTP 空间（第 4 片「守门同步跑」同口径）：PendingGoneError /
+        ProjectConfigError / ResumeNotReadyError 都在返回迭代器之前抛出，路由据此回 404/400。
+        判定按条目创建时那一档（prepared.gate 是锁档的对象），不读请求当下的字段值。
+        messages 在这里只是占位：resume 投的是 Command，图从检查点续，不再吃新输入。
+        """
+        entry = self.pending.peek(run_id)
+        if entry is None:
+            raise PendingGoneError(PENDING_GONE_DETAIL)
+        self._guard_project(entry.project_id)        # 同函数、同 detail：挂起期间目录可能被删
+        self.pending.peek_resume(run_id)   # 只守卫：无决策可喂 → ResumeNotReadyError（R6），不烧决策
+        prepared = entry.prepared
+        control = control or RunControl()
+
+        def events() -> Iterator[dict[str, Any]]:
+            # 决策要在续跑真开跑时才落 consumed：请求死在首帧之前的话，提前烧掉会让下一条
+            # 决策喂进上一条的中断位——langgraph 的续跑值按位置匹配（实测），错一位就串味。
+            taken = self.pending.take_resume(run_id)
+            yield from stream_graph(
+                prepared.build, prepared.provider, prepared.tools, prepared.messages,
+                control=control, thread_id=entry.thread_id, gate=prepared.gate,
+                resume={"decision": taken["decision"], "remember": taken["remember"]},
+            )
+
+        return prepared.session_id, self._fold_turn(
+            events(), prepared, control, entry.thread_id, entry)
+
+    def approve(self, run_id: str, call_id: str, decision: str, remember: bool) -> None:
+        """只登记决策：续跑由 resume_stream 触发（批准与续跑分开，双弹层与重复提交才好收敛）。"""
+        self.pending.answer(run_id, call_id, decision, remember)
+
+    def cancel_pending(self, run_id: str) -> bool:
+        """待批期间的停止（裁定 10 第二条）：原子摘除 → 以已投递前缀落 stopped 行 → 线程收摊。
+
+        这是本片唯一一次在收尾之前落盘，与第 4 片的断开落盘同语义；摘除后 resume 必 404。
+        """
+        entry = self.pending.take(run_id)
+        if entry is None:
+            return False
+        self._persist(entry.prepared, entry.prefix_text, entry.steps, True)
+        drop_thread(entry.thread_id)
+        return True
+
+    def pending_view_for(self, agent_id: str, project_id: str) -> list[PendingEntry]:
+        # UI 只按「智能体 × 项目」取数（R14）：挂起会话没落盘，按会话查在刷新后必然查空
+        return self.pending.view_for(agent_id, project_id)
+
+    def drop_session(self, session_id: str) -> None:
+        """删会话级联：pending 条目与对应的检查点线程一起清。"""
+        for thread_id in self.pending.drop_session(session_id):
+            drop_thread(thread_id)
+
     def send(
-        self, session_id: str, message: str, agent_id: str, project_id: str = ""
+        self, session_id: str, message: str, agent_id: str, project_id: str = "",
+        perm_mode: str = DEFAULT_PERM_MODE,
     ) -> dict[str, Any]:
         """一次性折返壳：prepare + 事件流折回迁移前的响应形状。
 
         留着它的两个理由：既有 22 处 `svc.send(` 用例是真实链路的回归锁；`trace`/`model`
         两字段只在服务层存活（SSE 协议不带它们，spec 偏离登记 3）。
         """
-        prepared = self.prepare(session_id, message, agent_id, project_id)
+        prepared = self.prepare(session_id, message, agent_id, project_id, perm_mode)
         reply = ""
         sid = prepared.session_id
         title = ""

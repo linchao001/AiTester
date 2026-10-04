@@ -1,9 +1,18 @@
 """pending 表：同会话多条并存、决策按队列顺序消费、级联清理。全是进程内内存态（裁定 2）。"""
 
+import shutil
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
+from langchain_core.messages import AIMessage
 
+from test_chat_stream import _runtime, project  # noqa: F401  复用服务层夹具，本片不重写一遍装配
+from streaming_fakes import ChunkedStreamMixin
+
+from aitester.config import Settings
+from aitester.orchestration.checkpoint import get_checkpointer
+from aitester.services import ChatService
 from aitester.services.pending import (
     CALL_DECIDED_DETAIL,
     PENDING_GONE_DETAIL,
@@ -14,6 +23,48 @@ from aitester.services.pending import (
     PendingRegistry,
     ResumeNotReadyError,
 )
+from aitester.services.project_config import ProjectConfigError
+from aitester.services.session_store import SessionStore
+
+
+class _Scripted(ChunkedStreamMixin):
+    """剧本用完仍要答得出：续跑后模型还要收一句，脚本见底不能炸测试。"""
+
+    name = "scripted"
+    model_ref = "scripted/model"
+
+    def __init__(self, script: list[AIMessage]) -> None:
+        self._script = list(script)
+
+    def complete(self, messages: list) -> str:
+        return ""
+
+    def bind_tools(self, tools: list) -> "_Scripted":
+        return self
+
+    def invoke_messages(self, messages: list) -> AIMessage:
+        return self._script.pop(0) if self._script else AIMessage(content="收到")
+
+
+def _call_round(*paths: str, text: str = "") -> AIMessage:
+    """write 调用轮：c1/c2… 依序编号，正文可给（停止用例要有前缀可落）。"""
+    return AIMessage(content=text, tool_calls=[
+        {"id": f"c{i}", "name": "write", "args": {"file_path": p, "content": "x"},
+         "type": "tool_call"} for i, p in enumerate(paths, start=1)])
+
+
+def _svc(tmp_path: Path, svc_proj, provider) -> ChatService:
+    return ChatService(provider=provider, agent_runtime=_runtime(tmp_path),
+                       sessions=SessionStore(tmp_path / "sessions"), projects=svc_proj)
+
+
+def _hold(tmp_path: Path, svc_proj, pid: str, perm_mode: str, run_id: str,
+          script: list[AIMessage]) -> tuple[ChatService, str]:
+    """发到挂起：回服务与 session_id，pending 表里躺着一条等待的。"""
+    svc = _svc(tmp_path, svc_proj, _Scripted(script))
+    prepared = svc.prepare("", "写界外", "case_design", pid, perm_mode)
+    list(svc.stream_turn(prepared, run_id=run_id))
+    return svc, prepared.session_id
 
 
 @dataclass
@@ -190,3 +241,161 @@ def test_drop_session_clears_entries_and_remembered() -> None:
     assert reg.peek("r1") is None and reg.peek("r2") is not None
     assert reg.view("sess_1") == []
     assert reg.remembered_for("case_design:sess_1") == set()
+
+
+# —— 服务层接线（Task 6）：run_id 一律 cs 前缀。_SAVER 是进程级单例，
+# test_chat_auth.py 收尾时 r2/r3/r7 线程上挂着中断态，同名开局即串台。
+
+
+def test_free_mode_never_holds(tmp_path, project) -> None:
+    """默认档零行为（红线）：gate 不在场、事件流照旧收到 done、pending 表空。"""
+    svc_proj, pid, _ = project
+    svc = _svc(tmp_path, svc_proj, _Scripted([AIMessage(content="直答")]))
+    prepared = svc.prepare("", "生成用例", "case_design", pid, "free")
+    assert prepared.gate is None and prepared.perm_mode == "free"
+    assert prepared.project_dir == str(Path(str(tmp_path / "reqs")).resolve())
+    events = list(svc.stream_turn(prepared, run_id="csf"))
+    assert events[-1]["type"] == "done"
+    assert svc.pending.view(prepared.session_id) == []
+
+
+def test_invalid_perm_mode_detail_verbatim(tmp_path, project) -> None:
+    from aitester.orchestration.auth_rules import PERM_MODE_DETAIL, PermModeError
+    svc_proj, pid, _ = project
+    svc = _svc(tmp_path, svc_proj, _Scripted([AIMessage(content="直答")]))
+    with pytest.raises(PermModeError) as exc:
+        svc.prepare("", "hi", "case_design", pid, "yolo")
+    assert exc.value.detail == PERM_MODE_DETAIL
+
+
+def test_boundary_out_of_bounds_holds_without_persisting(tmp_path, project) -> None:
+    """裁定 7+8：挂起即断流、一条不落；界外文件确实还没被写出去（走查项 4 的单测锁）。"""
+    svc_proj, pid, root = project
+    store = SessionStore(tmp_path / "sessions")
+    svc = _svc(tmp_path, svc_proj, _Scripted([_call_round("../escape.md"), AIMessage(content="好的")]))
+    prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
+    events = list(svc.stream_turn(prepared, run_id="cs1"))
+    assert [e["type"] for e in events][-1] == "wait"
+    assert store.messages(prepared.session_id) == []
+    assert not (tmp_path / "escape.md").exists()
+    entry = svc.pending.peek("cs1")
+    assert entry is not None and entry.thread_id == "cs1"
+    assert [c["call_id"] for c in entry.queue] == ["c1"]
+    assert entry.prefix_text == "" and entry.perm_mode == "boundary"
+
+
+def test_approve_then_resume_persists_exactly_one_row(tmp_path, project) -> None:
+    """裁定 8 的正面锁：批准续跑到收尾，磁盘只有一 user 一 assistant；线程收摊。"""
+    svc_proj, pid, _ = project
+    store = SessionStore(tmp_path / "sessions")
+    svc = _svc(tmp_path, svc_proj, _Scripted([_call_round("../escape.md"), AIMessage(content="写好了")]))
+    prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
+    list(svc.stream_turn(prepared, run_id="cs2"))
+    svc.approve("cs2", "c1", "approve", False)
+    sid, stream = svc.resume_stream("cs2")
+    events = list(stream)
+    assert sid == prepared.session_id
+    assert events[-1]["type"] == "done" and events[-1]["reply"] == "写好了"
+    assert (tmp_path / "escape.md").read_text(encoding="utf-8") == "x"
+    rows = store.messages(sid)
+    assert [r.role for r in rows] == ["user", "assistant"]
+    assert svc.pending.peek("cs2") is None
+    assert get_checkpointer().get_tuple({"configurable": {"thread_id": "cs2"}}) is None
+
+
+def test_reject_then_resume_answers_without_writing(tmp_path, project) -> None:
+    svc_proj, pid, _ = project
+    store = SessionStore(tmp_path / "sessions")
+    svc = _svc(tmp_path, svc_proj, _Scripted([_call_round("../escape.md"), AIMessage(content="好的，不写了")]))
+    prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
+    list(svc.stream_turn(prepared, run_id="cs3"))
+    svc.approve("cs3", "c1", "reject", False)
+    _, stream = svc.resume_stream("cs3")
+    done = list(stream)[-1]
+    assert done["type"] == "done" and done["reply"] == "好的，不写了"
+    assert not (tmp_path / "escape.md").exists()
+    assert done["steps"] == []                                   # R9：拒绝不进过程行（事件侧口径）
+    # 磁盘侧同一条锁：空过程行落盘归一为 null（session_store.append 的 `steps or None`，
+    # test_session_store.py:65 钉死），所以这里断「没有过程行」而不是「是空 list」——brief 写的
+    # `== []` 在这一层永远不成立，除非改第 4 片的落盘契约。
+    assert not store.messages(prepared.session_id)[-1].steps
+
+
+def test_second_interrupt_appends_to_the_same_entry(tmp_path, project) -> None:
+    """两条待批串行挂：第二条的 wait 追加进同一条目，已答的不丢、去重按 call_id。"""
+    svc_proj, pid, _ = project
+    svc = _svc(tmp_path, svc_proj,
+               _Scripted([_call_round("../a.md", "../b.md"), AIMessage(content="两个都写了")]))
+    prepared = svc.prepare("", "并行两个", "case_design", pid, "strict")
+    list(svc.stream_turn(prepared, run_id="cs4"))
+    svc.approve("cs4", "c1", "approve", False)
+    _, stream = svc.resume_stream("cs4")
+    assert [e["type"] for e in stream][-1] == "wait"               # 又挂一次：仍是断流收尾
+    entry = svc.pending.peek("cs4")
+    assert [c["call_id"] for c in entry.queue] == ["c1", "c2"]
+    assert entry.decided == [{**entry.queue[0], "decision": "approve"}]   # R14：六键跟着一起回显
+    assert not (tmp_path / "a.md").exists()                        # 批准的也要等 c2 决策后才执行（spec 风险节）
+
+
+def test_abandoned_resume_feeds_the_same_decision(tmp_path, project) -> None:
+    """评审锁：续跑请求拿到决策却没开跑（客户端在首帧前断开）时，决策绝不能被烧掉。
+
+    烧掉之后队列里下一条「已答未喂」会被喂进上一条的中断位——位置匹配（实测），
+    最坏情形是用户拒过的操作被当成批准执行。
+    """
+    svc_proj, pid, _ = project
+    svc = _svc(tmp_path, svc_proj, _Scripted([_call_round("../a.md"), AIMessage(content="写好了")]))
+    prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
+    list(svc.stream_turn(prepared, run_id="cs7"))
+    svc.approve("cs7", "c1", "approve", False)
+    _, abandoned = svc.resume_stream("cs7")                 # 一次 next 都没跑
+    assert svc.pending.peek("cs7").consumed == []           # 没开跑就不该落 consumed
+    _, stream = svc.resume_stream("cs7")                    # 同一条决策仍喂得出同一个中断位
+    done = list(stream)[-1]
+    assert done["type"] == "done" and done["reply"] == "写好了"
+    assert (tmp_path / "a.md").exists()                    # 批准的那次写入真发生了
+
+
+def test_stop_while_pending_persists_prefix_and_kills_resume(tmp_path, project) -> None:
+    """裁定 10 第二条：待批期间停止 → 落 stopped 截断行、条目摘除、再续跑必 404 文案。"""
+    svc_proj, pid, _ = project
+    store = SessionStore(tmp_path / "sessions")
+    svc = _svc(tmp_path, svc_proj,
+               _Scripted([_call_round("../escape.md", text="我先想想"), AIMessage(content="好的")]))
+    prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
+    list(svc.stream_turn(prepared, run_id="cs5"))
+    assert svc.pending.peek("cs5").prefix_text == "我先想想"
+    assert svc.cancel_pending("cs5") is True
+    assert svc.cancel_pending("cs5") is False                       # 已摘除：二次停止不再落盘
+    rows = store.messages(prepared.session_id)
+    assert rows[-1].content == "我先想想" and rows[-1].stopped is True
+    assert svc.pending.peek("cs5") is None
+    with pytest.raises(PendingGoneError) as exc:               # 顶部已 import（Task 5 那组用过）
+        svc.resume_stream("cs5")
+    assert exc.value.detail == PENDING_GONE_DETAIL
+
+
+def test_resume_reuses_the_same_project_guard_detail(tmp_path, project) -> None:
+    """守门只有一段：挂起后删掉项目目录，续跑必被同一条中文 detail 拦下且没建出目录。"""
+    svc_proj, pid, root = project
+    svc, _ = _hold(tmp_path, svc_proj, pid, "boundary", "cs6",
+                   [_call_round("../escape.md"), AIMessage(content="好的")])
+    shutil.rmtree(root)
+    svc.approve("cs6", "c1", "approve", False)
+    with pytest.raises(ProjectConfigError) as exc:
+        svc.resume_stream("cs6")
+    assert exc.value.detail == (
+        f"项目「订单系统」的目录 {root} 不存在或不可访问，请到项目页确认路径")
+    assert not root.exists()
+    assert not (tmp_path / "escape.md").exists()
+
+
+def test_drop_session_releases_pending_and_thread(tmp_path, project) -> None:
+    """验收 10 的服务侧：删会话级联摘 pending 并释放检查点线程。"""
+    svc_proj, pid, _ = project
+    svc, sid = _hold(tmp_path, svc_proj, pid, "boundary", "cs8",
+                     [_call_round("../escape.md"), AIMessage(content="好的")])
+    assert svc.pending.peek("cs8") is not None
+    svc.drop_session(sid)
+    assert svc.pending.peek("cs8") is None
+    assert get_checkpointer().get_tuple({"configurable": {"thread_id": "cs8"}}) is None
