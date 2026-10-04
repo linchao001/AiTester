@@ -3007,8 +3007,8 @@ git commit -m "feat(chat): 前端认 wait 事件——传输层三函数、perm_
 **Interfaces:**
 - Consumes: T8 的 `PendingCallInfo` / `AuthDecision`；`.kb-draft` 一族既有类（`d-head`/`d-op`/`d-path`/`d-sum`/`d-diff`/`d-acts`/`d-state`）、`.ws-btn.main`、`.mini-btn`
 - Produces（T10 逐字按此消费）:
-  - `interface AuthCardProps { ask: PendingCallInfo; decided: AuthDecision | null; queued: boolean; busy: boolean; onDecide: (decision: AuthDecision, remember: boolean) => void }`
-  - `export default function AuthCard(p: AuthCardProps)`
+  - 组件的 props 形状：`{ ask: PendingCallInfo; decided: AuthDecision | null; queued: boolean; busy: boolean; onDecide: (decision: AuthDecision, remember: boolean) => void }`——接口按本仓 chat/ 组件的文件内惯例叫 `Props`（Composer/MessageList/SessionPane 皆此名，`WorkspacePaneProps` 是 pages/ 根上的孤例），不导出：T10 只以 JSX 属性消费它，没有任何文件 import 这个类型名
+  - `export default function AuthCard(p: Props)`
 
 - [ ] **Step 1: 组件**
 
