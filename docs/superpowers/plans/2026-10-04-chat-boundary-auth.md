@@ -1601,7 +1601,7 @@ def _hold(tmp_path: Path, svc_proj, pid: str, perm_mode: str, run_id: str,
 ```python
 def test_resume_carries_forward_the_hung_segment_steps_and_prefix(tmp_path, project) -> None:
     """续跑接着算：前一段已执行的过程行与已投递正文不能因为换了一段流就丢。"""
-    svc_proj, pid, _ = project
+    svc_proj, pid, root = project
     store = SessionStore(tmp_path / "sessions")
     first = AIMessage(content="先写个界内的", tool_calls=[
         {"id": "k1", "name": "write", "args": {"file_path": "notes.md", "content": "n"},
@@ -1616,7 +1616,7 @@ def test_resume_carries_forward_the_hung_segment_steps_and_prefix(tmp_path, proj
     done = list(stream)[-1]
     assert [s["tool"] for s in done["steps"]] == ["write", "write"]             # 界内 + 批准后执行的界外
     assert [s["tool"] for s in store.messages(prepared.session_id)[-1].steps] == ["write", "write"]
-    assert (tmp_path / "notes.md").exists() and (tmp_path / "a.md").exists()
+    assert (root / "notes.md").exists() and (tmp_path / "a.md").exists()   # 界内落项目目录，界外落在其外
 
 
 def test_stop_during_a_live_pending_fold_lands_the_prefix_as_stopped(tmp_path, project) -> None:
@@ -1779,7 +1779,7 @@ def test_stop_while_pending_persists_prefix_and_kills_resume(tmp_path, project) 
     assert rows[-1].content == "我先想想" and rows[-1].stopped is True
     assert get_checkpointer().get_tuple({"configurable": {"thread_id": "cs5"}}) is None
     assert svc.pending.peek("cs5") is None
-    with pytest.raises(PendingGoneError) as exc:               # 顶部已 import（Task 5 那组用过）
+    with pytest.raises(PendingGoneError) as exc:      # 摘除后再续跑：必须撞 pending 表那一条 404 文案
         svc.resume_stream("cs5")
     assert exc.value.detail == PENDING_GONE_DETAIL
 

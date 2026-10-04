@@ -434,7 +434,7 @@ def test_stop_while_pending_persists_prefix_and_kills_resume(tmp_path, project) 
     assert rows[-1].content == "我先想想" and rows[-1].stopped is True
     assert get_checkpointer().get_tuple({"configurable": {"thread_id": "cs5"}}) is None
     assert svc.pending.peek("cs5") is None
-    with pytest.raises(PendingGoneError) as exc:               # 顶部已 import（Task 5 那组用过）
+    with pytest.raises(PendingGoneError) as exc:      # 摘除后再续跑：必须撞 pending 表那一条 404 文案
         svc.resume_stream("cs5")
     assert exc.value.detail == PENDING_GONE_DETAIL
 
