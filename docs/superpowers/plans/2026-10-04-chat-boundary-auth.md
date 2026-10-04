@@ -202,7 +202,7 @@ def test_perm_mode_validation_words() -> None:
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd backend && python -m pytest tests/test_chat_auth.py -q`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_auth.py -q`
 Expected: collection error — `ModuleNotFoundError: No module named 'aitester.orchestration.auth_rules'`
 
 - [ ] **Step 3: `resolve_path` 落地，`_resolve` 改为委托**
@@ -360,12 +360,12 @@ def needs_approval(tool_id: str, args: dict[str, Any], perm_mode: str,
 
 - [ ] **Step 5: 跑测试确认通过**
 
-Run: `cd backend && python -m pytest tests/test_chat_auth.py -q`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_auth.py -q`
 Expected: `9 passed`
 
 - [ ] **Step 6: 确认委托没砸既有工具套件**
 
-Run: `cd backend && python -m pytest tests/test_file_tools.py tests/test_command_tools.py tests/test_file_search_tools.py -q`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_file_tools.py tests/test_command_tools.py tests/test_file_search_tools.py -q`
 Expected: 全 passed，数量与改动前一致
 
 - [ ] **Step 7: Commit**
@@ -455,7 +455,7 @@ def test_threadless_callers_still_work() -> None:
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd backend && python -m pytest tests/test_chat_auth.py -q -k "checkpointer or thread"`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_auth.py -q -k "checkpointer or thread"`
 Expected: collection error — `ModuleNotFoundError: No module named 'aitester.orchestration.checkpoint'`
 
 - [ ] **Step 3: 写 `checkpoint.py`**
@@ -559,10 +559,10 @@ Expected: 全 passed，条数与改动前一致
 
 - [ ] **Step 6: 跑测试 + 全量**
 
-Run: `cd backend && python -m pytest tests/test_chat_auth.py -q`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_auth.py -q`
 Expected: `12 passed`
 
-Run: `cd backend && python -m pytest -q`
+Run: `cd backend && .venv/Scripts/python -m pytest -q`
 Expected: `499 passed, 0 skipped`（487 基线 + Task 1 的 9 + 本任务 3），**0 failed**。特别是 `test_agent_graph.py` / `test_stream_graph.py` / `test_chat_stream.py` 一条断言都不改就继续绿——那是 `free` 零行为变化的第一道锁。
 
 - [ ] **Step 7: Commit**
@@ -825,7 +825,7 @@ def test_decision_from_rejects_garbage(tmp_path: Path) -> None:
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd backend && python -m pytest tests/test_chat_auth.py -q -k "gate or reject or parallel or remembered or boundary or free_context or decision"`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_auth.py -q -k "gate or reject or parallel or remembered or boundary or free_context or decision"`
 Expected: collection error — `ModuleNotFoundError: No module named 'aitester.orchestration.gate'`
 
 - [ ] **Step 3: 写 `gate.py`（最终形态，一次写对）**
@@ -1052,10 +1052,10 @@ def stream_graph(
 @pytest.mark.xfail(strict=True, reason="wait 事件要到 Task 4 从 __interrupt__ 折出来；Task 4 Step 4 删掉本行")
 ```
 
-Run: `cd backend && python -m pytest tests/test_chat_auth.py -q`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_auth.py -q`
 Expected: `0 failed`——通过的 + 两条 `xfailed` = 本文件全部用例数。不许用 `--deselect` 或 `skip` 绕过（那等于把要求从账上抹掉）。
 
-Run: `cd backend && python -m pytest -q`
+Run: `cd backend && .venv/Scripts/python -m pytest -q`
 Expected: `0 failed`——拓扑多一个节点，但 `free` 档（`gate=None`）下既有事件序列逐字不变，`test_stream_graph.py` / `test_chat_stream.py` 不许改断言。总数按实测报（估算：Task 2 后 499 + 本任务新增数）。
 
 - [ ] **Step 7: Commit**
@@ -1110,7 +1110,7 @@ def test_run_graph_shell_shape_unchanged(tmp_path: Path) -> None:
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd backend && python -m pytest tests/test_chat_auth.py -q -k "wait_event or run_graph_shell"`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_auth.py -q -k "wait_event or run_graph_shell"`
 Expected: FAIL — `IndexError: list index out of range`（没有 `wait` 事件）/ `KeyError: 'pending'`
 
 - [ ] **Step 3: 折叠 `__interrupt__` 分片**
@@ -1148,10 +1148,10 @@ Expected: FAIL — `IndexError: list index out of range`（没有 `wait` 事件�
 
 - [ ] **Step 4: 跑测试 + 全量**
 
-Run: `cd backend && python -m pytest tests/test_chat_auth.py -q`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_auth.py -q`
 Expected: Task 1~4 全 passed——本任务 Step 4 落地后**删掉 Task 3 那两条的 `xfail(strict=True)` 标记**，让它们真跑（留着不删会被 XPASS 顶成失败）
 
-Run: `cd backend && python -m pytest -q`
+Run: `cd backend && .venv/Scripts/python -m pytest -q`
 Expected: `0 failed`。若既有测试对 `finish` 帧做「等值字典」断言，按新增的 `"pending": False` 就地补一条（spec 数据流节明写这一契约变更）；除此之外一条断言不许改。
 
 - [ ] **Step 5: Commit**
@@ -1313,7 +1313,7 @@ def test_drop_session_clears_entries_and_remembered() -> None:
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd backend && python -m pytest tests/test_chat_pending.py -q`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_pending.py -q`
 Expected: collection error（模块不存在）
 
 跑绿判据里的一处改动：`test_answer_requires_known_call_id` 的 `decided` 断言由
@@ -1498,7 +1498,7 @@ class PendingRegistry:
 
 - [ ] **Step 4: 跑测试**
 
-Run: `cd backend && python -m pytest tests/test_chat_pending.py -q`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_pending.py -q`
 Expected: `9 passed`（Step 1 共 9 条测试；绝对条数以实测为准）
 
 - [ ] **Step 5: Commit**
@@ -1820,7 +1820,7 @@ from aitester.services.pending import PENDING_GONE_DETAIL, PendingGoneError
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd backend && python -m pytest tests/test_chat_pending.py -q -k "free_mode or perm_mode or holds or resume or reject_then or second_interrupt or stop_while or drop_session"`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_pending.py -q -k "free_mode or perm_mode or holds or resume or reject_then or second_interrupt or stop_while or drop_session"`
 Expected: FAIL — `TypeError: ChatService.prepare() got an unexpected keyword argument` / `AttributeError: 'ChatService' object has no attribute 'pending'`
 
 - [ ] **Step 3: `PreparedRun` 与构造口**
@@ -2155,10 +2155,10 @@ from aitester.orchestration.auth_rules import DEFAULT_PERM_MODE   # 补在 aites
 
 - [ ] **Step 7: 跑测试 + 全量**
 
-Run: `cd backend && python -m pytest tests/test_chat_pending.py -q`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_pending.py -q`
 Expected: `27 passed`（Task 5 的 14 条 + 本任务 13 条；绝对条数以实测为准）
 
-Run: `cd backend && python -m pytest -q`
+Run: `cd backend && .venv/Scripts/python -m pytest -q`
 Expected: `0 failed`。`test_chat_stream.py` / `test_chat_service.py` 一条断言都不许改——它们就是 `free` 零行为的服务层回归锁。
 
 - [ ] **Step 8: Commit**
@@ -2422,7 +2422,7 @@ def test_default_assembly_injects_the_state_registry(tmp_path: Path) -> None:
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cd backend && python -m pytest tests/test_chat_auth_api.py -q`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_auth_api.py -q`
 Expected: FAIL — `AttributeError: 'State' object has no attribute 'pending_registry'` / 404 on `/api/chat/approve`
 
 - [ ] **Step 3: schemas**
@@ -2765,10 +2765,10 @@ def sessions_delete(request: Request, session_id: str) -> None:
 
 - [ ] **Step 8: 跑测试 + 全量**
 
-Run: `cd backend && python -m pytest tests/test_chat_auth_api.py -q`
+Run: `cd backend && .venv/Scripts/python -m pytest tests/test_chat_auth_api.py -q`
 Expected: `12 passed`
 
-Run: `cd backend && python -m pytest -q`
+Run: `cd backend && .venv/Scripts/python -m pytest -q`
 Expected: `0 failed`，`test_chat_stream_api.py` 整套不改断言继续绿（`_stream_response` 抽口是逐字搬运，第 4 片的 13 项修复不许回退）。
 
 - [ ] **Step 9: Commit**
@@ -3510,8 +3510,8 @@ git commit -m "feat(chat): 聊天页接线——三档权限 chip、待批气泡
 
 - [ ] **Step 1: 后端全量**
 
-Run: `cd backend && python -m pytest -q`
-Expected: `0 failed`，总数 = 基线 **487** + T1 起的本片新增数（T1~T7 各自 Step 的 passed 数相加）。若对不上：先 `python -m pytest -q --collect-only | wc -l` 定位差在哪一层的增删，**不许为凑数删既有用例或改断言**；`test_chat_stream_api.py` 整套必须一字不改继续绿（默认档零行为那条回归锁）。
+Run: `cd backend && .venv/Scripts/python -m pytest -q`（仓根裸 `python` 会加载坏掉的 zframe pytest 插件，收集就炸；本计划所有后端门禁同此）
+Expected: `0 failed`，总数 = 基线 **487** + T1 起的本片新增数（T1~T7 各自 Step 的 passed 数相加）。若对不上：先 `.venv/Scripts/python -m pytest -q --collect-only | wc -l` 定位差在哪一层的增删，**不许为凑数删既有用例或改断言**；`test_chat_stream_api.py` 整套必须一字不改继续绿（默认档零行为那条回归锁）。
 
 - [ ] **Step 2: 前端门禁**
 
