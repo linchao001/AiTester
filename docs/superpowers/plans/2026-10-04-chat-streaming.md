@@ -2561,7 +2561,7 @@ Run: `cd frontend && npm run build` → 0 error。
 | `delta{round:2,text:"完成"}` | `[…,{2,"完成",false}]` | `[]` | 同上 | 同上 |
 | `done{reply:"完成",steps:[read],session_id:"s9",title:"t",stopped:false}` | 不变 | 不变 | 不变 | 不变 |
 
-`finalize` 的产出必须是 `content:"完成"`、`steps` 只含 1 条 `read`（第 2 轮 `toolCalled=false`，不折 📝）、`sessionId:"s9"`、`title:"t"`、`stopped:false`；此时状态上 `terminal=true`、`done` 就是那条 done 事件（页面靠 `state.done` 判终态，不靠自设局部变量）。
+`finalize` 的产出必须是 `content:"完成"`、`steps` 含 2 行——`done.steps` 的 `read` 行之后折出第 1 轮的 `{tool:"📝", ok:true, round:1, detail:"先读需求"}`（第 1 轮收到 `call` → `toolCalled=true`，其中间轮文本在 `done` 时折进过程块，spec:119/:167；第 2 轮是最终答复，`toolCalled=false`，不折）、`sessionId:"s9"`、`title:"t"`、`stopped:false`；此时状态上 `terminal=true`、`done` 就是那条 done 事件（页面靠 `state.done` 判终态，不靠自设局部变量）。（Task 12 校正：原文「只含 1 条 `read`」系 prose 笔误，T8 桌检 check.cjs 实测即 2 条，代码正确勿改动。）
 再把 `delta{round:2}` 换成 `delta{round:3}` 并让第 2 轮带 `call`：`finalize` 的 `steps` 必须在真实步骤之后多一条 `{tool:"📝", ok:true, round:2, detail:"完成"}`。
 
 - [ ] **Step 4: 提交**
