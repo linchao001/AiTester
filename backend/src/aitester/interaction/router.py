@@ -1,8 +1,11 @@
+import asyncio
 import json
 import logging
-from typing import Any, Iterator
+import threading
+from typing import Any, AsyncIterator, Iterator
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 
@@ -97,13 +100,23 @@ def _step_payload(step: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.post("/chat/send/stream")
-def chat_send_stream(req: SendRequest, request: Request) -> StreamingResponse:
-    """真实链路的唯一传输：守门同步跑，过后逐事件推流，终态恒为一条 done 或一条 error。"""
+async def chat_send_stream(req: SendRequest, request: Request) -> StreamingResponse:
+    """真实链路的唯一传输：守门同步跑，过后逐事件推流，终态恒为一条 done 或一条 error。
+
+    这里的泵线程不是风格选择，是走查第 13 项的修复本体。原形态「同步生成器直接交给
+    StreamingResponse」在客户端真断开（SPA 跳页/关页触发的 fetch abort）时会把这一回合
+    整个丢掉了：Starlette 1.7 对 spec_version>=2.4 不再派监听断开的任务，同步迭代器经
+    iterate_in_threadpool 包装，取消只落在「等下一次 next()」上——既不 close 生成器，
+    也不给那个线程再投取消。生成器从此冻结在 yield 上：既不落截断盘也不落全量盘，
+    runs.finish 永不执行（真机实测该 run 的 /chat/stop 在 165 s 后仍回 200）。
+    现在 async relay 一被取消就在 finally 里置 stop，泵线程据此跳出并显式 close()，
+    GeneratorExit 才真正落进 stream_turn 的断开分支（截断落盘）与 frames 的 finally。
+    """
     service: ChatService = request.app.state.chat_service
     runs = request.app.state.run_registry
     try:
-        prepared: PreparedRun = service.prepare(
-            req.session_id, req.message, req.agent_id, req.project_id)
+        prepared: PreparedRun = await run_in_threadpool(
+            service.prepare, req.session_id, req.message, req.agent_id, req.project_id)
     except _GUARD_TYPES as exc:
         # brief 原码只包 ProviderError：ProjectConfigError/SessionStoreError/
         # ConfigNotFoundError 与它无继承关系（实测），漏包会把守门 4xx 炸成 500；
@@ -115,6 +128,9 @@ def chat_send_stream(req: SendRequest, request: Request) -> StreamingResponse:
 
     run_id = new_run_id()
     control = runs.start(run_id)
+    # 内层事件生成器具名持有，且只由泵线程触碰：close() 是唯一能把 GeneratorExit
+    # 准时送进 stream_turn 断开分支的通道（等 GC 回收等于不落盘）
+    turn = service.stream_turn(prepared, control=control)
 
     def frames() -> Iterator[str]:
         # Task 5 的欠条：finish 必须在每条退出路径上跑（正常收尾、error 帧、客户端断开），
@@ -122,7 +138,7 @@ def chat_send_stream(req: SendRequest, request: Request) -> StreamingResponse:
         try:
             yield _frame("start", {"run_id": run_id, "session_id": prepared.session_id})
             try:
-                for event in service.stream_turn(prepared, control=control):
+                for event in turn:
                     kind = event["type"]
                     if kind == "draft":
                         frame = _draft_frame(event["draft"])
@@ -151,7 +167,44 @@ def chat_send_stream(req: SendRequest, request: Request) -> StreamingResponse:
         finally:
             runs.finish(run_id)
 
-    return StreamingResponse(frames(), media_type="text/event-stream")
+    q: asyncio.Queue[str | None] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    stop = threading.Event()
+
+    def post(item: str | None) -> None:
+        try:
+            loop.call_soon_threadsafe(q.put_nowait, item)
+        except RuntimeError:                    # 事件循环已关（进程退出中）：丢帧即可
+            pass
+
+    def pump() -> None:
+        gen = frames()
+        try:
+            for frame in gen:
+                post(frame)
+                if stop.is_set():               # 客户端已走：下一帧前停笔
+                    break
+        finally:
+            try:
+                gen.close()                     # 先让 frames 跑完自己的 finally
+            finally:
+                if hasattr(turn, "close"):      # 桩测试用 iter() 替身，关闭通道不是它的契约
+                    turn.close()                # 再触发 stream_turn 的截断落盘
+                post(None)
+
+    threading.Thread(target=pump, daemon=True, name=f"chat-stream-{run_id[:8]}").start()
+
+    async def relay() -> AsyncIterator[str]:
+        try:
+            while True:
+                frame = await q.get()
+                if frame is None:
+                    return
+                yield frame
+        finally:
+            stop.set()                          # 取消与正常收尾都经此通知泵线程
+
+    return StreamingResponse(relay(), media_type="text/event-stream")
 
 
 @router.post("/chat/stop", response_model=StreamStopResponse)

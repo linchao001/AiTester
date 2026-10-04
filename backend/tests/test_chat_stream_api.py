@@ -4,12 +4,17 @@
 所以这里只断「帧的顺序与内容」，不断节奏——逐字观感属真机走查。
 """
 
+import json
+import re
+import socket
+import struct
 import threading
 import time
 from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 
+import uvicorn
 from langchain_core.messages import AIMessage
 from fastapi.testclient import TestClient
 
@@ -248,3 +253,71 @@ def test_registry_releases_the_run_when_the_stream_completes(tmp_path: Path) -> 
     r = client.post("/api/chat/stop", json={"run_id": events[0][1]["run_id"]})
     assert r.status_code == 404
     assert r.json()["detail"] == "这条回答已经结束"
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_client_abort_lands_truncated_row_and_frees_the_run(tmp_path: Path, monkeypatch) -> None:
+    """客户端真断开 → 截断行落盘 + 注册表条目释放（真机走查第 13 项的自动化锁）。
+
+    为什么非得起真 uvicorn 打真 socket：这条缺陷的触发面是「客户端 abort 那一刻，请求任务
+    被取消在写 socket / 取下一帧的 await 上，同步迭代器既不 close 也等不到 GC」。TestClient
+    整段缓冲（模块 docstring），手搓裸 ASGI 取消在旧代码上照样能收尾——实测都不红，
+    等于没锁。这里用 0 token 的 _Slow 假 provider 把真链路复现出来。
+    """
+    known_run_id = "b" * 32
+    chat_router = import_module("aitester.interaction.router")
+    monkeypatch.setattr(chat_router, "new_run_id", lambda: known_run_id)
+    application = _app(tmp_path, provider=_Slow())
+    pid = _pid(application, tmp_path)
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(application, host="127.0.0.1", port=port,
+                                          log_level="critical", access_log=False))
+    threading.Thread(target=server.run, daemon=True).start()
+    try:
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(0.05)
+        assert server.started, "真 uvicorn 没起来"
+
+        body = json.dumps({"message": "别停在这半截", "agent_id": "case_design",
+                           "project_id": pid}).encode("utf-8")
+        head = (f"POST /api/chat/send/stream HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n\r\n").encode("ascii")
+        sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+        sock.sendall(head + body)
+        buf = b""
+        while buf.count(b"event:") < 3:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            buf += chunk
+        assert buf.count(b"event:") >= 3, f"没读到在途的三帧：{buf[:200]!r}"
+        # SO_LINGER 0 直接 RST：最接近 fetch.abort() 的断开法
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        sock.close()
+
+        found = re.search(rb'"session_id":\s*"(sess_[0-9a-f]+)"', buf)
+        assert found is not None, f"start 帧里没有 session_id：{buf[:200]!r}"
+        client = TestClient(application)
+        rows: list[dict] = []
+        for _ in range(60):                 # 断开方要到停笔点才收摊：给它 3 秒，够慢机
+            rows = client.get(
+                f"/api/chat/sessions/{found.group(1).decode()}/messages"
+            ).json().get("messages", [])
+            if len(rows) >= 2:
+                break
+            time.sleep(0.05)
+        assert [r["role"] for r in rows] == ["user", "assistant"], f"断开这一回合没落盘：{rows}"
+        assert rows[1]["stopped"] is True
+        assert 0 < len(rows[1]["content"]) < 160    # 只留已交付的那半截：非空也非全量
+        r = client.post("/api/chat/stop", json={"run_id": known_run_id})
+        assert r.status_code == 404, "断开后 run 仍挂在注册表上：条目泄漏＝/chat/stop 恒回成功"
+    finally:
+        server.should_exit = True
