@@ -32,9 +32,13 @@ uv run python -m aitester.main
 - `GET /api/health`：联通检查（`llm_provider` 为运行期默认模型 uid，未配置时 `mock`）
 - `POST /api/chat/echo`：窄链路演示，响应 trace 穿透七层
   （interaction → services → context → orchestration → adapters → memory → storage），恒走 mock
-- `POST /api/chat/send`：真实 LLM 链路，按 `agent_id` 现装一个一次性智能体实例
-  （提示词 / 有效模型 / 携带工具 / 图拓扑），该智能体的默认模型可用则用、否则回落全局默认，未知 `agent_id` 返回 404
-  （配置缺失 → 400 指引；上游失败 → 502）
+- `POST /api/chat/send/stream`：真实 LLM 链路的唯一传输，按 `agent_id` 现装一个一次性智能体实例
+  （提示词 / 有效模型 / 携带工具 / 图拓扑），该智能体的默认模型可用则用、否则回落全局默认，未知 `agent_id` 返回 404。
+  守门在流开始前同步跑完（配置缺失 / 项目不可达 → 普通 400·404，detail 与迁移前逐字相同），
+  过后响应 `text/event-stream`，逐 token 推 `start / delta / call / step / draft / done / error` 七类事件，
+  终态恒为一条（`done`，或被停止时 `done{stopped:true}`；流中模型失败 → `error`）
+- `POST /api/chat/stop`：`{run_id}` 置取消位终止在途回答；`run_id` 已结束返回 404「这条回答已经结束」，
+  已生成的部分文本与已完成步骤照旧落盘，会话行标 `stopped`
 - `GET /api/models` + 三个 `PUT`：模型配置运行期读写（Key 掩码返回，明文永不出口），
   对应前端顶栏「⚙ 设置」弹窗
 - `POST /api/models/providers/{pid}/test`：测试连接 —— 只验证模型能否应答，
