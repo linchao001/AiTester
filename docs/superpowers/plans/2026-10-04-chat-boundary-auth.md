@@ -1724,7 +1724,9 @@ def test_reject_then_resume_answers_without_writing(tmp_path, project) -> None:
     done = list(stream)[-1]
     assert done["type"] == "done" and done["reply"] == "好的，不写了"
     assert not (tmp_path / "escape.md").exists()
-    assert store.messages(prepared.session_id)[-1].steps == []      # R9：拒绝不进过程行
+    assert done["steps"] == []                                   # R9：拒绝不进过程行（事件侧口径）
+    # 磁盘侧同一条锁：空过程行落盘归一为 null（session_store.append 的 `steps or None`，
+    # test_session_store.py:65 钉死），所以这里断「没有过程行」而不是「是空列表」
 
 
 def test_second_interrupt_appends_to_the_same_entry(tmp_path, project) -> None:
