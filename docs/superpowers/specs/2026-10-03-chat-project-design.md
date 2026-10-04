@@ -16,6 +16,7 @@
 
 - **本片（归属 + 落点）**：会话绑定项目、列表按项目过滤、产出物落进项目目录、删项目级联删会话、目录可达性验真。
 - **第 5 片（边界与权限）**：越界拦截、界外授权、`strict` 模式、逐次批准。它需要 LangGraph `interrupt` + checkpointer + pending 落盘 + 批准端点 + 弹层，而现状是 `agent_graph.py:84` 的一次性 `invoke`，请求里没有「挂起等人」的位置——这套基础设施与第 4 片（流式 + 停止按钮）同源，建议连着排。
+  > 2026-10-04 第 5 片定稿回写（第 5 片 spec 偏离登记 2、4、7）：「越界拦截」措辞扩为三档 `free`/`boundary`/`strict`（含界内全批）；拦截点在 `gate` 节点逐条 `interrupt`，不在工具内部；pending 存进程内存、不落盘——本行「pending 落盘」作废。
 
 ## 用户裁定（2026-10-03，逐条确认）
 
@@ -33,6 +34,7 @@
    存量 `projects.json` 为空 → 零迁移。
 7. **`project_id` 对平台智能体可空**：`is_platform_agent(agent_id)` 为真时该字段忽略（不校验、不落盘），判据并入 `chat.py:117-121` 既有的平台短路。理由：`KbPage.tsx:325` 的 `chatSend("kb-console", text, "kb_assistant")` 不属于任何项目，必填会同时打脸 /kb 页和一批回归测试。
 8. **命令执行不受影响**：本片不摘 `pwsh`/`bash`，不新增权限面板，composer 的 🛡 chip 维持第 1 片的 toast 降级（`PERM_MODES.strict` 那条 `desc` 由第 5 片兑现）。
+   > 2026-10-04 第 5 片改裁本条（第 5 片 spec 偏离登记 1、5、7）：权限面板真做——composer 的 🛡 chip 从 toast 降级改为三档弹层，那条 toast 文案下线；`pwsh`/`bash` 不再「不受影响」，`boundary` 拦全部命令与界外写，`strict` 连界内写和 `save_to_knowledge` 一起逐次批。本片的零拦截语义仍成立于 `free`：它是默认档，`/kb` 与旧客户端不发 `perm_mode` 即走 free。
 
 ## 数据流
 
@@ -104,6 +106,7 @@ POST /api/chat/send { project_id, agent_id, session_id, message }
 - **第 3 片** 右栏工作区（项目目录浏览 + 预览/编辑，届时复用本片的 `dir_exists` 与项目 `dir`）
 - **第 4 片** 流式（`graph.stream` + SSE + 停止按钮）
 - **第 5 片** 边界与权限（越界拦截、界外授权、`strict` 模式、逐次批准；与第 4 片共用长任务基础设施）
+  > 2026-10-04 已兑现，三档口径与实现形态见上文「第 5 片（边界与权限）」那条回写。
 - rename/pin/归档、会话级选模型、富卡片、token 统计
 
 ## 风险与已知限制
