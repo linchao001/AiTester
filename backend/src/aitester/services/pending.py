@@ -112,18 +112,32 @@ class PendingRegistry:
                 raise CallDecidedError(CALL_DECIDED_DETAIL)
             entry.answers[call_id] = {"decision": decision, "remember": remember}
 
-    def take_resume(self, run_id: str) -> dict[str, Any]:
-        """按队列顺序取下一条「已答未喂」的决策，喂给 Command(resume=…)。"""
+    def _next_resumable(self, run_id: str) -> tuple[PendingEntry, str]:
+        entry = self._runs.get(run_id)
+        if entry is None:
+            raise PendingGoneError(PENDING_GONE_DETAIL)
+        for call in entry.queue:
+            cid = call["call_id"]
+            if cid in entry.answers and cid not in entry.consumed:
+                return entry, cid
+        raise ResumeNotReadyError()
+
+    def peek_resume(self, run_id: str) -> dict[str, Any]:
+        """只回答「现在能不能续」，不烧决策：路由据此在返回迭代器之前就能回 400。
+
+        真正的消费必须等到续跑真的开跑（Task 6 在生成器体里调 take_resume）——提前落 consumed
+        会让「取到决策却没喂出去」的那次请求把下一条决策喂进上一条的中断位（位置匹配，实测）。
+        """
         with self._lock:
-            entry = self._runs.get(run_id)
-            if entry is None:
-                raise PendingGoneError(PENDING_GONE_DETAIL)
-            for call in entry.queue:
-                cid = call["call_id"]
-                if cid in entry.answers and cid not in entry.consumed:
-                    entry.consumed.append(cid)
-                    return {"call_id": cid, **entry.answers[cid]}
-            raise ResumeNotReadyError()
+            entry, cid = self._next_resumable(run_id)
+            return {"call_id": cid, **entry.answers[cid]}
+
+    def take_resume(self, run_id: str) -> dict[str, Any]:
+        """按队列顺序取下一条「已答未喂」的决策并标记已喂，喂给 Command(resume=…)。"""
+        with self._lock:
+            entry, cid = self._next_resumable(run_id)
+            entry.consumed.append(cid)
+            return {"call_id": cid, **entry.answers[cid]}
 
     def view(self, session_id: str) -> list[PendingEntry]:
         with self._lock:
@@ -145,10 +159,6 @@ class PendingRegistry:
         """返回活对象：gate 拿到决策后往里加，判定函数读同一个集合。"""
         with self._lock:
             return self._remembered.setdefault(session_key, set())
-
-    def thread_ids_for_session(self, session_id: str) -> list[str]:
-        with self._lock:
-            return [e.thread_id for e in self._runs.values() if e.session_id == session_id]
 
     def drop_session(self, session_id: str) -> list[str]:
         """删会话级联（裁定 10 第三条）：返回要清的检查点 thread_id，由调用方交给 drop_thread。"""
