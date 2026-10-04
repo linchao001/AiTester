@@ -293,24 +293,6 @@ export interface ChatStep {
   detail: string;
 }
 
-export interface SendResponse {
-  reply: string;
-  trace: string[];
-  model: string;
-  drafts: KbDraft[];
-  session_id: string;
-  title: string;
-  steps: ChatStep[];
-}
-
-export function chatSend(
-  sessionId: string, message: string, agentId: string, projectId: string,
-): Promise<SendResponse> {
-  return apiFetch<SendResponse>("/api/chat/send", {
-    method: "POST", headers: JSON_HEADERS,
-    body: JSON.stringify({ session_id: sessionId, message, agent_id: agentId, project_id: projectId }) });
-}
-
 /** 一条 SSE 帧的落地形态：`event:` 名进 type，`data:` 的单行 JSON 摊平进来（与 router `_frame` 一一对应）。 */
 type Frame<T extends string, P> = { type: T } & P;
 export type StreamEvent =

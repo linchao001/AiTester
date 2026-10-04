@@ -17,16 +17,21 @@ export interface KbChatMsg {
   text: string;
   pending?: boolean;
   error?: boolean;
+  /** 被停止的回复：气泡尾部挂「（已停止）」，与聊天页 assistant 行同款标注。 */
+  stopped?: boolean;
   drafts?: KbDraftEntry[];
 }
 
 export interface KbAssistantPaneProps {
   messages: KbChatMsg[];
   busy: boolean;
+  /** 停止已发出、等后端把 stopped=true 的 done 送回来：期间停止钮置灰防重复请求。 */
+  stopRequested: boolean;
   /** 右栏 scope 徽标：界面知识库根名（恒为别名，原型 :2381 处读 KB 根目录名）。 */
   root: string;
   onHide: () => void;
   onAsk: (text: string) => void;
+  onStop: () => void;
   /** (消息下标, 草案下标, 草案) —— KbPage 侧 confirmDraft 接线。 */
   onConfirmDraft: (msgIdx: number, draftIdx: number, draft: KbDraft) => void;
   onCancelDraft: (msgIdx: number, draftIdx: number) => void;
@@ -44,7 +49,7 @@ const QUICK_COMMANDS = [
 /** 原型助手栏 :737-750 + kbAsk/kbSay（:2556-2563、:2675-2689、:2690-2701）的 React 转写。
     整列 aside.kb-chat 迁入本组件（与 KbEditorPane 同构）；消息状态由 KbPage 持有。 */
 export default function KbAssistantPane({
-  messages, busy, root, onHide, onAsk, onConfirmDraft, onCancelDraft,
+  messages, busy, stopRequested, root, onHide, onAsk, onStop, onConfirmDraft, onCancelDraft,
 }: KbAssistantPaneProps) {
   const [input, setInput] = useState("");
   const msgsRef = useRef<HTMLDivElement>(null);
@@ -90,6 +95,9 @@ export default function KbAssistantPane({
             ) : (
               <span className="md-preview" dangerouslySetInnerHTML={{ __html: mdRender(m.text) }} />
             )}
+            {m.stopped ? (
+              <span style={{ color: "var(--text-2)" }}>（已停止）</span>
+            ) : null}
             {m.drafts?.map((e, di) => (
               <KbDraftCard
                 key={di}
@@ -116,7 +124,12 @@ export default function KbAssistantPane({
           onKeyDown={onKeyDown}
         />
         <div className="bar"><span className="tip">助手只生成草案，写入磁盘前需你确认</span><div className="spacer"></div>
-          <button className="ws-btn main" disabled={busy} onClick={send}>发送</button>
+          {busy ? (
+            <button className="ws-btn" disabled={stopRequested}
+              title={stopRequested ? "停止中…" : "停止生成"} onClick={onStop}>■ 停止</button>
+          ) : (
+            <button className="ws-btn main" disabled={busy} onClick={send}>发送</button>
+          )}
         </div>
       </div>
     </aside>

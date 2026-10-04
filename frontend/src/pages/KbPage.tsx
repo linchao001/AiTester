@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  ApiError,
-  chatSend, kbPostFile, kbPutFile, kbReadFile, kbSearchFiles, kbTree,
+  ApiError, chatSendStream, chatStop,
+  kbPostFile, kbPutFile, kbReadFile, kbSearchFiles, kbTree,
   type KbBrowseItem, type KbDraft, type KbSearchHit, type KbWriteResponse,
 } from "../api/client";
+import { applyEvent, finalize, liveText, newStreamState } from "./chat/streamState";
 import { bindDragBar } from "../components/dragBar";
 import KbTreePane from "./kb/KbTreePane";
 import KbEditorPane from "./kb/KbEditorPane";
@@ -269,48 +270,112 @@ export default function KbPage() {
       });
     }, 300);
   }, []);
-  useEffect(() => () => { window.clearTimeout(searchTimer.current); window.clearTimeout(toastTimer.current); }, []);
+  useEffect(() => () => {
+    window.clearTimeout(searchTimer.current); window.clearTimeout(toastTimer.current);
+    kbAbortRef.current?.abort();   // 离开 /kb 即断流：后端不再无人消费地跑完（与聊天页同构）
+  }, []);
 
-  // —— 助手栏（Task 10：原型 kbAsk/kbSay/kbDraftCard :2556-2596/:2675-2689 的接线；
-  //     真实 LLM 链路走 /api/chat/send，本任务门禁仅 build，不起对话）——
+  // —— 助手栏（Task 10：原型 kbAsk/kbSay/kbDraftCard :2556-2596/:2675-2689 的接线迁进流式通道，
+  //     与聊天页同一条 /api/chat/send/stream；kb-console 是临时键 use_file=False，会话行不落 jsonl）——
   const [msgs, setMsgs] = useState<KbChatMsg[]>([]);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false); // 原型 KB.busy 的同步重入锁（不依赖重渲染时序）
+  const runIdRef = useRef("");
+  const stopRequestedRef = useRef(false);
+  const [stopRequested, setStopRequested] = useState(false);
+  const kbAbortRef = useRef<AbortController | null>(null);
 
-  /** 原型 :2682-2685 —— 用最新回复（+逐条 pending 草案卡 / 错误行）替换「思考中…」占位气泡。
-      逆序找最后一条 pending ai 消息；防御性：占位缺失则追加新气泡。 */
-  const replaceLastAi = useCallback((text: string, drafts: KbDraft[], error = false) => {
+  /** 原型 :2682-2685 —— 用最新回复（+逐条草案卡 / 错误行）更新「思考中…」占位气泡。
+      keepPending=true 时气泡仍是 pending 态（流式中的 live 更新），false 即终态替换。
+      逆序找最后一条 pending ai 消息；终态却找不到占位（异常路径）则追加，不让已到手的回复消失。 */
+  const setLastAi = useCallback((
+    text: string, drafts: KbDraft[], keepPending: boolean, error = false, stopped = false,
+  ) => {
     setMsgs((prev) => {
       const next = [...prev];
-      const msg: KbChatMsg = {
-        who: "ai", text,
-        error: error || undefined,
-        drafts: drafts.length ? drafts.map((d) => ({ draft: d, state: "pending" as const })) : undefined,
-      };
       let i = next.length - 1;
       while (i >= 0 && !(next[i].who === "ai" && next[i].pending)) i--;
-      if (i >= 0) next[i] = msg; else next.push(msg);
+      // 草案卡流内即刻挂上后，用户可能在两条事件之间就点了确认：按「下标+草案对象身份」
+      // 沿用旧卡状态（applyEvent 对 drafts 追加不改写，对象引用稳定），否则下一个 delta
+      // 就把 writing/done 打回 pending，露出二次写盘窗口。
+      const carried = i >= 0 ? next[i].drafts : undefined;
+      const msg: KbChatMsg = {
+        who: "ai", text,
+        pending: keepPending || undefined,
+        error: error || undefined,
+        stopped: stopped || undefined,
+        drafts: drafts.length
+          ? drafts.map((d, di) => {
+            const e = carried?.[di];
+            return e && e.draft === d ? e : { draft: d, state: "pending" as const };
+          })
+          : undefined,
+      };
+      if (i >= 0) next[i] = msg;
+      else if (!keepPending) next.push(msg);   // 终态却找不到占位（异常路径）：宁可追加，也不能让已到手的回复消失
       return next;
     });
   }, []);
 
+  const replaceLastAi = useCallback((text: string, drafts: KbDraft[], error = false, stopped = false) => {
+    setLastAi(text, drafts, false, error, stopped);
+  }, [setLastAi]);
+
   /** brief Step 3 ask 原样转写：session_id/agent_id 固定值不可改（后端记忆键 kb_assistant:kb-console）。
-   * project_id 传空串——平台助手不属于项目，后端对该字段短路忽略。 */
+   *  project_id 传空串——平台助手不属于项目，后端对该字段短路忽略。kb-console 是临时键：
+   *  流式照旧，但会话行不写 jsonl，停止后不留痕（spec 真机行为定义）。 */
   const ask = useCallback(async (text: string) => {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
+    runIdRef.current = "";
+    stopRequestedRef.current = false;
+    setStopRequested(false);
     setMsgs((prev) => [...prev, { who: "me", text }, { who: "ai", text: "思考中…", pending: true }]);
+    const st = newStreamState();
+    const controller = new AbortController();
+    kbAbortRef.current = controller;
+    let errMsg = "";
     try {
-      const resp = await chatSend("kb-console", text, "kb_assistant", "");
-      replaceLastAi(resp.reply, resp.drafts ?? []);
+      await chatSendStream(
+        { session_id: "kb-console", message: text, agent_id: "kb_assistant", project_id: "" },
+        (ev) => {
+          if (ev.type === "start") runIdRef.current = ev.run_id;
+          Object.assign(st, applyEvent(st, ev));   // 折叠就地推进：本栏只需一份累加器
+          if (st.terminal) return;                 // 终态不 patch 气泡，交给下面的收尾一次落定
+          // live 文本进「思考中…」占位气泡（pending 保持真），草案卡在流内即刻挂上
+          setLastAi(liveText(st) || "思考中…", st.drafts, true);
+        }, controller.signal);
     } catch (err) {
-      replaceLastAi(err instanceof Error ? err.message : String(err), [], true);
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
+      // 离开 /kb 触发的 abort：组件已不在，连接已断，后端走 GeneratorExit 收尾
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      // 非 ApiError 的断流（如网络 TypeError）不给英文原文，中文兜底（Task 9 裁定 1）
+      errMsg = err instanceof ApiError ? err.message : "连接中断，助手未完成";
     }
-  }, [replaceLastAi]);
+    kbAbortRef.current = null;
+    busyRef.current = false;
+    setBusy(false);
+    const done = st.done;
+    if (done) {
+      const f = finalize(st, done);
+      replaceLastAi(f.content, f.drafts, false, f.stopped);
+      return;
+    }
+    // 与迁移前同款：失败进气泡（红色），不抢 toast
+    replaceLastAi(errMsg || st.fail || "连接中断，助手未完成", [], true);
+  }, [replaceLastAi, setLastAi]);
+
+  const stopAsk = useCallback(() => {
+    if (stopRequestedRef.current) return;
+    const rid = runIdRef.current;
+    if (!rid) { toast("还在建立连接，请稍候"); return; }   // start 未到没有 run_id 可停：给可见反馈，不留死按钮
+    stopRequestedRef.current = true;
+    setStopRequested(true);
+    chatStop(rid).catch((err: unknown) => {
+      // 404「这条回答已经结束」是与终态并发的正常竞态；非 ApiError 中文兜底（Task 9 裁定 1）
+      toast(err instanceof ApiError ? err.message : "停止请求失败，助手可能仍在继续");
+    });
+  }, [toast]);
 
   /** 草案态迁移：drafts 内嵌于消息（原型卡片挂在 ai 气泡内），以 (消息下标, 草案下标) 定位。 */
   const setDraftState = useCallback((mi: number, di: number, state: KbDraftState, writtenAt?: number) => {
@@ -414,9 +479,11 @@ export default function KbPage() {
         <KbAssistantPane
           messages={msgs}
           busy={busy}
+          stopRequested={stopRequested}
           root={root}
           onHide={() => setChatHidden(true)}
           onAsk={(t) => void ask(t)}
+          onStop={stopAsk}
           onConfirmDraft={(mi, di, d) => void confirmDraft(mi, di, d)}
           onCancelDraft={cancelDraft}
         />
