@@ -759,6 +759,31 @@ def test_rejected_call_is_rewritten_out_of_the_pending_list(tmp_path: Path) -> N
     assert counter.writes == [str(resolve_path(str(tmp_path), "good.md"))]
 
 
+def test_remember_lands_only_after_the_whole_loop(tmp_path: Path) -> None:
+    """位置匹配的下标钉死：中途落记住表会让后一条继承前一条的决策（Critical 回归锁）。"""
+    from langchain_core.messages import ToolMessage
+    counter = _Counting()
+    provider = ScriptProvider([
+        _calls(("c1", "write", _outside("a.md")), ("c2", "write", _outside("b.md"))),
+        AIMessage(content="一个记住一个拒绝"),
+    ])
+    ctx = _gate_ctx(tmp_path, "strict")
+    tools = _project_tools(tmp_path, counter)
+    graph = build_agent_graph(provider, tools)
+    args = dict(build=build_agent_graph, provider=provider, tools=tools,
+                messages=[HumanMessage(content="并行两个")], thread_id="r9", gate=ctx)
+    list(stream_graph(**args))                              # 挂起在 c1
+    list(stream_graph(resume=decision_from({"decision": APPROVE, "remember": True}), **args))
+    assert counter.writes == []                              # 批 c1 并记住 → 挂起在 c2，一条都没执行
+    list(stream_graph(resume=decision_from({"decision": REJECT}), **args))
+    msgs = _thread_state(graph, "r9").values["messages"]
+    rejected = [m for m in msgs if isinstance(m, ToolMessage) and m.status == "error"]
+    assert [m.tool_call_id for m in rejected] == ["c2"]      # 拒绝必须落在 c2 自己头上
+    assert counter.writes == [str(resolve_path(str(tmp_path), "a.md"))]   # b.md 一个字都没写
+    assert ctx.remembered == {plan_target("write", _outside("a.md"),
+                                          ctx.project_dir).remember_key}
+
+
 def test_all_rejected_routes_back_to_agent(tmp_path: Path) -> None:
     """全拒不经过 tools 节点：断言路由函数本身，不吃 ToolNode 拿到空清单时「恰好不报错」的巧合。"""
     from aitester.orchestration.agent_graph import route_after_gate
@@ -922,13 +947,18 @@ def make_gate_node(lookup: Callable[[RunnableConfig | None], GateContext | None]
         if not items:
             return {"messages": []}
         rejected_ids: set[str] = set()
+        remembered_keys: list[str] = []
         for item in items:
             decision = decision_from(interrupt(item.payload))
             if decision["decision"] == APPROVE:
                 if decision["remember"]:
-                    ctx.remembered.add(item.plan.remember_key)   # 唯一允许的副作用（幂等）
+                    remembered_keys.append(item.plan.remember_key)
             else:
                 rejected_ids.add(item.call_id)
+        # 唯一允许的副作用（同键同值覆盖幂等），但必须等整条循环跑完才落表：
+        # langgraph 的续跑值按「第几次挂起」位置匹配（实测 scratchpad.resume[idx]），
+        # 中途改 remembered 会让下一次重跑的 plan_items 变短，后面的调用继承前一条的决策。
+        ctx.remembered.update(remembered_keys)
         if not rejected_ids:
             return {"messages": []}
         kept = [c for c in last.tool_calls if str(c.get("id")) not in rejected_ids]
