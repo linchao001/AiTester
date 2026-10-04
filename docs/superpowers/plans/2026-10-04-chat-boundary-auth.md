@@ -150,7 +150,8 @@ def test_boundary_shell_always_asks_even_with_cwd_inside(project: str) -> None:
         assert needs_approval(tool, {"command": "pytest"}, "boundary", project, set()) is True
         assert needs_approval(tool, {"command": "pytest", "cwd": project},
                               "boundary", project, set()) is True
-        assert needs_approval(tool, {"command": "pytest"}, "boundary", project, {"pytest"}) is False
+        assert needs_approval(tool, {"command": "pytest"},
+                              "boundary", project, {f"{tool}|pytest"}) is False
 
 
 def test_boundary_kb_write_counts_as_in_bounds(project: str) -> None:
@@ -295,6 +296,11 @@ def _root(project_dir: str) -> Path:
     return Path(project_dir).resolve()
 
 
+def _inside(project_dir: str, raw: str) -> bool:
+    """界内判定：与展示、执行同一个解析口，resolve 后再比根。"""
+    return resolve_path(project_dir, raw).is_relative_to(_root(project_dir))
+
+
 def _shown(project_dir: str, resolved: Path, raw: str) -> str:
     """界内给相对项目根的展示串，界外给模型原文——KB 卡片不外泄 abs_display 的同一条口径。"""
     root = _root(project_dir)
@@ -340,15 +346,20 @@ def needs_approval(tool_id: str, args: dict[str, Any], perm_mode: str,
     plan = plan_target(tool_id, args or {}, project_dir)
     if plan is None:
         return False
-    if plan.category == "knowledge" and perm_mode == "boundary":
-        return False
+    if perm_mode == "boundary":
+        # 只批界外：界内写入与知识库写入直接放行；shell 一律往下走（裁定 6）
+        if plan.category == "knowledge":
+            return False
+        if plan.category in ("write", "edit") and _inside(
+                project_dir, str((args or {}).get("file_path") or "")):
+            return False
     return plan.remember_key not in remembered
 ```
 
 - [ ] **Step 5: 跑测试确认通过**
 
 Run: `cd backend && python -m pytest tests/test_chat_auth.py -q`
-Expected: `10 passed`
+Expected: `9 passed`
 
 - [ ] **Step 6: 确认委托没砸既有工具套件**
 
@@ -535,10 +546,10 @@ from aitester.orchestration.checkpoint import drop_thread, get_checkpointer, new
 - [ ] **Step 6: 跑测试 + 全量**
 
 Run: `cd backend && python -m pytest tests/test_chat_auth.py -q`
-Expected: `13 passed`
+Expected: `12 passed`
 
 Run: `cd backend && python -m pytest -q`
-Expected: `490 passed, 0 skipped`（487 + 本片新增），**0 failed**。特别是 `test_agent_graph.py` / `test_stream_graph.py` / `test_chat_stream.py` 一条断言都不改就继续绿——那是 `free` 零行为变化的第一道锁。
+Expected: `499 passed, 0 skipped`（487 基线 + Task 1 的 9 + 本任务 3），**0 failed**。特别是 `test_agent_graph.py` / `test_stream_graph.py` / `test_chat_stream.py` 一条断言都不改就继续绿——那是 `free` 零行为变化的第一道锁。
 
 - [ ] **Step 7: Commit**
 
