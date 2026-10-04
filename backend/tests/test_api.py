@@ -97,7 +97,7 @@ def test_chat_echo_rejects_empty_message() -> None:
     assert resp.status_code == 422
 
 
-def test_send_uses_injected_provider_and_reports_model(tmp_path: Path) -> None:
+def test_send_uses_injected_provider_and_deltas_match_reply(tmp_path: Path) -> None:
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
