@@ -19,6 +19,8 @@
 - 路径解析只认一个口：`fs_tool.resolve_path`（`_resolve` 委托它）；`project_dir` 一律取 `expanduser().resolve()` 后的值，绝不用 `projects.json` 原串。
 - 内存挂起（裁定 2）：不新建落盘件、不给 `SessionStore` 加改写能力，pending 与记住表只挂 `app.state`；不做鉴权、不做 TTL。
 - 门禁基线：后端 **487 passed / 0 skipped** 只增不减；前端 `npm run build` **0 error**。
+- 跑后端测试一律用 `cd backend && .venv/Scripts/python -m pytest …`：仓库根的 `python` 会加载一个坏掉的 zframe pytest 插件（实测）。下文各 Step 里的 `python -m pytest` 都按这条执行。
+- 每个任务收尾时全量必须 **0 failed**（不许带着红进下一个任务，也不许用 `--deselect`/`skip` 蒙）；确实要到后续任务才成立的要求，用 `@pytest.mark.xfail(strict=True, reason=…)` 钉住，由那个任务删标记（strict 会把 XPASS 变成失败，删不掉就是假账）。计划里的绝对条数只是估算，以实测数为准并写进报告。
 - 提交信息沿用仓库风格（`feat(chat): …` / `test(chat): …` / `refactor(chat): …`）；本地提交自由，**push 需用户另行授权**。
 - 真机走查（Task 11）需要真实模型调用与实写盘，**必须当面向用户取授权**；用户的后端在 `127.0.0.1:8000`、vite 在 `[::1]:5173`，不得占用或杀掉；绝不运行 `scripts/dev.ps1`。
 
@@ -647,9 +649,11 @@ def _outside(name: str = "out.md") -> dict:
 
 def _gate_ctx(tmp_path: Path, perm_mode: str, remembered: set[str] | None = None) -> "GateContext":
     from aitester.orchestration.gate import GateContext
+    # 传进来的集合必须原样挂上（哪怕还是空的）：记住表靠同一对象身份被 gate 回填
     return GateContext(perm_mode=perm_mode,
                        project_dir=str(resolve_path(str(tmp_path / "proj"), ".")),
-                       session_key="case_design:sess_1", remembered=remembered or set())
+                       session_key="case_design:sess_1",
+                       remembered=set() if remembered is None else remembered)
 ```
 
 测试本体：
@@ -746,7 +750,9 @@ def test_rejected_call_is_rewritten_out_of_the_pending_list(tmp_path: Path) -> N
     rewritten = [m for m in msgs if isinstance(m, AIMessage) and m.id == original.id]
     assert len(rewritten) == 1                                   # 同 id 覆盖，不是新追加一条
     assert [c["id"] for c in rewritten[0].tool_calls] == ["c2"]  # 只留批准的
-    rejected = [m for m in msgs if isinstance(m, ToolMessage)]
+    # 批准的 c2 执行后也有 ToolMessage（成功结果）：合成拒绝按 status=="error" 筛，
+    # 与 spec 测试 3「拒绝的形状」的判据一致。
+    rejected = [m for m in msgs if isinstance(m, ToolMessage) and m.status == "error"]
     assert [m.tool_call_id for m in rejected] == ["c1"]
     assert rejected[0].status == "error" and rejected[0].name == "write"
     assert rejected[0].content.startswith("用户拒绝了此操作：")
@@ -955,9 +961,12 @@ def route_after_gate(state: AgentState) -> str:
     """gate 之后：还有批准的就执行，一条不剩的就回模型。
 
     显式边走全拒（P6 场景 3 实测 ToolNode 空跑不抛，但那是未承诺行为，不能当语义用）。
+    同 id 覆盖是**就地替换**，合成的拒绝 ToolMessage 落在被改写 AIMessage 之后（实测），
+    所以判据取最后一条 AIMessage——与 ToolNode 自己的取消息口径一致（实测它反向找 AIMessage），
+    批准的那条才能真的开跑。
     """
-    last = state["messages"][-1]
-    if isinstance(last, AIMessage) and last.tool_calls:
+    last = next((m for m in reversed(state["messages"]) if isinstance(m, AIMessage)), None)
+    if last is not None and last.tool_calls:
         return "tools"
     return "agent"
 ```
@@ -1007,11 +1016,17 @@ def stream_graph(
 
 - [ ] **Step 6: 跑测试**
 
-Run: `cd backend && python -m pytest tests/test_chat_auth.py -q -k "gate or reject or parallel or remembered or boundary or free_context or decision or all_rejected" --deselect tests/test_chat_auth.py::test_boundary_out_of_bounds_waits_before_executing --deselect tests/test_chat_auth.py::test_two_parallel_calls_execute_exactly_once_each`
-Expected: 全 passed，**只有两条例外**——`test_boundary_out_of_bounds_waits_before_executing` 与 `test_two_parallel_calls_execute_exactly_once_each` 断言 `wait` 事件，而 `wait` 要到 Task 4 才从 `__interrupt__` 折出来，所以上面用 `--deselect` 暂放它们；Task 4 Step 4 整文件跑绿时一并收口，不许为了它们提前改折叠机。
+给 `test_boundary_out_of_bounds_waits_before_executing` 与 `test_two_parallel_calls_execute_exactly_once_each` 两条挂上判别性标记——它们断言的 `wait` 事件要到 Task 4 才从 `__interrupt__` 折出来，但「挂起时零副作用」这半边现在就已经成立，标记必须 strict，Task 4 落地后 XPASS 会把它自己顶成失败，逼着删：
+
+```python
+@pytest.mark.xfail(strict=True, reason="wait 事件要到 Task 4 从 __interrupt__ 折出来；Task 4 Step 4 删掉本行")
+```
+
+Run: `cd backend && python -m pytest tests/test_chat_auth.py -q`
+Expected: `0 failed`——通过的 + 两条 `xfailed` = 本文件全部用例数。不许用 `--deselect` 或 `skip` 绕过（那等于把要求从账上抹掉）。
 
 Run: `cd backend && python -m pytest -q`
-Expected: `0 failed`——拓扑多一个节点，但 `free` 档（`gate=None`）下既有事件序列逐字不变，`test_stream_graph.py` / `test_chat_stream.py` 不许改断言。
+Expected: `0 failed`——拓扑多一个节点，但 `free` 档（`gate=None`）下既有事件序列逐字不变，`test_stream_graph.py` / `test_chat_stream.py` 不许改断言。总数按实测报（估算：Task 2 后 499 + 本任务新增数）。
 
 - [ ] **Step 7: Commit**
 
@@ -1104,7 +1119,7 @@ Expected: FAIL — `IndexError: list index out of range`（没有 `wait` 事件�
 - [ ] **Step 4: 跑测试 + 全量**
 
 Run: `cd backend && python -m pytest tests/test_chat_auth.py -q`
-Expected: Task 1~4 全 passed（含 Task 3 Step 6 排除的两条）
+Expected: Task 1~4 全 passed——本任务 Step 4 落地后**删掉 Task 3 那两条的 `xfail(strict=True)` 标记**，让它们真跑（留着不删会被 XPASS 顶成失败）
 
 Run: `cd backend && python -m pytest -q`
 Expected: `0 failed`。若既有测试对 `finish` 帧做「等值字典」断言，按新增的 `"pending": False` 就地补一条（spec 数据流节明写这一契约变更）；除此之外一条断言不许改。
