@@ -13,6 +13,18 @@ from aitester.adapters.tools.file_tools.errors import (
 from aitester.adapters.tools.file_tools.observation import FileObservationStore, file_version
 
 
+def resolve_path(cwd: str, file_path: str) -> Path:
+    """唯一路径解析口：绝对路径直通、相对路径挂 cwd、最后 resolve。
+
+    边界执法（第 5 片）与工具执行必须走同一个口，否则会出现「判定说界内、执行落别处」。
+    与历史行为逐字一致：从不展 `~`（`~` 只在 services/chat.py 装配时展开那一次）。
+    """
+    target = Path(file_path)
+    if not target.is_absolute():
+        target = Path(cwd) / target
+    return target.resolve()
+
+
 class FsTool(AiTooler):
     """所有文件工具的公共上下文：工作目录、会话标识与观察记录。"""
 
@@ -21,10 +33,7 @@ class FsTool(AiTooler):
     observed: FileObservationStore | None = None
 
     def _resolve(self, file_path: str) -> Path:
-        target = Path(file_path)
-        if not target.is_absolute():
-            target = Path(self.cwd) / target
-        return target.resolve()
+        return resolve_path(self.cwd, file_path)
 
     def _mark_observed(self, target: Path) -> None:
         if self.observed is not None:
