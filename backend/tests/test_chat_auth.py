@@ -7,8 +7,11 @@
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 
+from aitester.adapters.llm import MockProvider
 from aitester.adapters.tools.file_tools.fs_tool import resolve_path
+from aitester.orchestration import build_agent_graph, stream_graph
 from aitester.orchestration.auth_rules import (
     PERM_MODE_DETAIL,
     PERM_MODES,
@@ -18,6 +21,8 @@ from aitester.orchestration.auth_rules import (
     tool_ids_for,
     validate_perm_mode,
 )
+from aitester.orchestration.checkpoint import drop_thread, get_checkpointer
+from streaming_fakes import ChunkedStreamMixin
 
 
 @pytest.fixture
@@ -102,3 +107,51 @@ def test_perm_mode_validation_words() -> None:
         validate_perm_mode("yolo")
     assert exc.value.detail == PERM_MODE_DETAIL
     assert PERM_MODE_DETAIL == "无效的权限模式，请选择自由权限、只批界外或严格权限"
+
+
+class ScriptProvider(ChunkedStreamMixin):
+    """剧本逐条给 AIMessage；bind_tools 返回自己（与 test_agent_graph.ScriptedProvider 同形）。"""
+
+    name = "scripted"
+    model_ref = "scripted/model"
+
+    def __init__(self, script: list[AIMessage]) -> None:
+        self._script = list(script)
+
+    def bind_tools(self, tools):
+        return self
+
+    def invoke_messages(self, messages):
+        return self._script.pop(0) if self._script else AIMessage(content="done")
+
+
+def _thread_state(graph, thread_id: str):
+    """StateSnapshot 是纯 NamedTuple（实测 4.2.0：字符串下标会 TypeError），必须走 .values。"""
+    return graph.get_state({"configurable": {"thread_id": thread_id}})
+
+
+def test_graph_compiles_with_the_shared_checkpointer(tmp_path: Path) -> None:
+    """P3：无 checkpointer 时 interrupt 静默通过 = 假执法。「装了、而且装的是单例」钉成回归锁。"""
+    graph = build_agent_graph(MockProvider(), [])
+    assert graph.checkpointer is get_checkpointer()      # 跨请求存活才谈得上续跑
+    graph2 = build_agent_graph(MockProvider(), [])
+    assert graph2.checkpointer is graph.checkpointer
+
+
+def test_thread_id_isolates_two_runs(tmp_path: Path) -> None:
+    """P4：thread_id 每轮新建；同会话连发两条线程的消息互不累积。"""
+    graph = build_agent_graph(MockProvider(), [])
+    for tid in ("runA", "runB"):
+        list(stream_graph(build_agent_graph, MockProvider(), [],
+                          [HumanMessage(content="生成用例")], thread_id=tid))
+        assert len(_thread_state(graph, tid).values["messages"]) == 2      # human + ai
+    drop_thread("runA")
+    assert _thread_state(graph, "runA").next == ()                   # 摘干净：不留残断
+    assert len(_thread_state(graph, "runB").values["messages"]) == 2 # 另一条线程不受牵连
+
+
+def test_threadless_callers_still_work() -> None:
+    """带 checkpointer 后缺 thread_id 会 ValueError（实测）：历史入口必须自造线程而不是炸。"""
+    events = list(stream_graph(build_agent_graph, MockProvider(), [],
+                               [HumanMessage(content="生成用例")]))
+    assert events[-1]["type"] == "finish"

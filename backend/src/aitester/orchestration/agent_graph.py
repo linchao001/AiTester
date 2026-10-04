@@ -12,10 +12,12 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
+from langgraph.types import Command
 from typing_extensions import TypedDict
 
 from aitester.adapters.llm import LlmProvider
 from aitester.adapters.tools.base import AiTooler
+from aitester.orchestration.checkpoint import get_checkpointer, new_thread_id
 from aitester.orchestration.run_control import RUN_CONTROL_KEY, RunControl
 
 
@@ -100,7 +102,7 @@ def build_agent_graph(provider: LlmProvider, tools: list[AiTooler]) -> CompiledS
         plain.add_node("agent", answer_node)
         plain.add_edge(START, "agent")
         plain.add_edge("agent", END)
-        return plain.compile()
+        return plain.compile(checkpointer=get_checkpointer())
 
     tool_node = ToolNode(tools, handle_tool_errors=_tool_error_message)
     bound = provider.bind_tools(tools)
@@ -122,7 +124,7 @@ def build_agent_graph(provider: LlmProvider, tools: list[AiTooler]) -> CompiledS
     graph.add_edge(START, "agent")
     graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
     graph.add_edge("tools", "agent")
-    return graph.compile()
+    return graph.compile(checkpointer=get_checkpointer())
 
 
 def _detail_of(call: dict[str, Any]) -> str:
@@ -139,18 +141,23 @@ def stream_graph(
     tools: list[AiTooler],
     messages: list[BaseMessage],
     control: RunControl | None = None,
+    thread_id: str = "",
+    resume: Any = None,
 ) -> Iterator[dict[str, Any]]:
     """按指定拓扑执行一轮，把执行过程实时折成事件流。
 
-    两路合成：节点内 get_stream_writer() 写的 custom（delta/turn）给正文与工具发起，
-    graph.stream 的 updates 分片给 ToolMessage（step/draft）。二者按写入顺序到达（P6 实测）。
-    末条恒为 finish：{reply, tool_traces, drafts, stopped}。
+    带 checkpointer 后 stream() 必须给 thread_id（缺键直接 ValueError，实测），所以这里一律
+    给值：SSE 路由给 run_id（P4：pending→resume 复用同一个），run_graph 这类历史入口给空串自造。
+    resume 非 None 表示「从 gate 的中断处续跑」，此时不再投新输入——投了就变成新回合语义。
     """
     graph = build(provider, tools)
-    # 只有真带 control 时才注入 config：空 config 等于「没有取消对象」，与 invoke 直调同形
-    config = {"configurable": {RUN_CONTROL_KEY: control}} if control is not None else {}
+    configurable: dict[str, Any] = {"thread_id": thread_id or new_thread_id()}
+    if control is not None:
+        configurable[RUN_CONTROL_KEY] = control
     stream = graph.stream(
-        {"messages": messages}, config=config, stream_mode=["custom", "updates"]
+        Command(resume=resume) if resume is not None else {"messages": messages},
+        config={"configurable": configurable},
+        stream_mode=["custom", "updates"],
     )
 
     reply = ""
