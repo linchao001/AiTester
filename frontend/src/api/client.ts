@@ -293,6 +293,10 @@ export interface ChatStep {
   detail: string;
 }
 
+/** 三档权限（第 5 片）：id 与后端 auth_rules 的三个常量逐字同值，前端不做第二套命名。 */
+export type PermMode = "free" | "boundary" | "strict";
+export type AuthDecision = "approve" | "reject";
+
 /** 一条 SSE 帧的落地形态：`event:` 名进 type，`data:` 的单行 JSON 摊平进来（与 router `_frame` 一一对应）。 */
 type Frame<T extends string, P> = { type: T } & P;
 export type StreamEvent =
@@ -301,6 +305,8 @@ export type StreamEvent =
   | Frame<"call", { tool: string; round: number; detail: string }>
   | Frame<"step", { tool: string; ok: boolean; round: number; detail: string }>
   | Frame<"draft", { draft: KbDraft }>
+  | Frame<"wait", { call_id: string; tool: string; action: string; target: string;
+                    command: string; cwd: string; run_id: string }>
   | Frame<"done", { reply: string; steps: ChatStep[]; session_id: string; title: string; stopped: boolean }>
   | Frame<"error", { detail: string }>;
 
@@ -309,18 +315,18 @@ export interface StreamBody {
   message: string;
   agent_id: string;
   project_id: string;
+  /** 缺省即 `free`：/kb 助手与旧客户端不发这个字段，后端也不报错（默认档零行为是红线）。 */
+  perm_mode?: PermMode;
 }
 
-const STREAM_EVENTS = new Set(["start", "delta", "call", "step", "draft", "done", "error"]);
+const STREAM_EVENTS = new Set(["start", "delta", "call", "step", "draft", "wait", "done", "error"]);
 
 /** POST + 流解析：EventSource 不能带 JSON body，WebSocket 又是多余的语义，故 fetch + getReader 手解。
- *  守门未过时后端回普通 JSON（400/404/502），照 apiFetch 口径抛 ApiError；守门过后才有事件。 */
-export async function chatSendStream(
-  body: StreamBody,
-  onEvent: (ev: StreamEvent) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const resp = await fetch("/api/chat/send/stream", {
+ *  守门未过时后端回普通 JSON（400/404/502），照 apiFetch 口径抛 ApiError；守门过后才有事件。
+ *  send 与 resume 共用这一段：两条流的帧格式、坏帧容错与断开语义完全同形，抄两份必漂。 */
+async function postSse(url: string, body: object, onEvent: (ev: StreamEvent) => void,
+  signal?: AbortSignal): Promise<void> {
+  const resp = await fetch(url, {
     method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body), signal });
   if (!resp.ok) {
     let detail = `请求失败: HTTP ${resp.status}`;
@@ -343,7 +349,7 @@ export async function chatSendStream(
       if (line.startsWith("event:")) name = line.slice(6).trim();
       else if (line.startsWith("data:")) data = line.slice(5).trim();
     }
-    if (!STREAM_EVENTS.has(name)) return;   // 未知事件静默忽略（spec 事件表：前端只认这 7 类）
+    if (!STREAM_EVENTS.has(name)) return;   // 未知事件静默忽略（spec 事件表：前端只认这 8 类）
     let payload: object;
     try {
       payload = JSON.parse(data) as object;
@@ -371,10 +377,66 @@ export async function chatSendStream(
   if (buf.trim()) feed(buf);
 }
 
+export function chatSendStream(
+  body: StreamBody,
+  onEvent: (ev: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return postSse("/api/chat/send/stream", body, onEvent, signal);
+}
+
+/** 批准后的续跑：帧序与首回合同形（start / delta / call / step / wait / done / error），
+ *  run_id 沿用挂起那一条，所以停止钮打的也是同一个 id（P4）。 */
+export function chatResumeStream(
+  runId: string,
+  onEvent: (ev: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  return postSse("/api/chat/resume/stream", { run_id: runId }, onEvent, signal);
+}
+
 /** 服务端真停：置取消位。404「这条回答已经结束」是正常竞态，调用方按竞态处理。 */
 export function chatStop(runId: string): Promise<{ ok: boolean }> {
   return apiFetch<{ ok: boolean }>("/api/chat/stop", {
     method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ run_id: runId }) });
+}
+
+export interface PendingCallInfo {
+  call_id: string;
+  tool: string;
+  action: string;      // 中文动作短语，卡片标题位（R11：不走 DETAIL_MAX 截断）
+  target: string;      // 写盘目标路径 / 命令的工作目录，读类调用为空串
+  command: string;     // 命令全文，非命令类为空串
+  cwd: string;
+}
+
+export interface PendingDecidedCall extends PendingCallInfo {
+  decision: AuthDecision;
+}
+
+export interface PendingRunInfo {
+  run_id: string;
+  session_id: string;   // 待批停止后这条会话第一次落盘：前端按它决定要不要重开正文（R14）
+  perm_mode: string;    // 挂起时锁的那一档，只用于展示，不受用户事后切档影响
+  prefix: string;       // 已投递正文前缀：刷新后气泡照显示
+  steps: ChatStep[];
+  waiting: PendingCallInfo[];
+  decided: PendingDecidedCall[];
+  created_at: number;
+}
+
+/** 登记一条决策：204 无体（apiFetch 短路成 null）。404=这条已结束，409=这条已答过。 */
+export function chatApprove(runId: string, callId: string, decision: AuthDecision,
+  remember: boolean): Promise<null> {
+  return apiFetch<null>("/api/chat/approve", {
+    method: "POST", headers: JSON_HEADERS,
+    body: JSON.stringify({ run_id: runId, call_id: callId, decision, remember }) });
+}
+
+/** 待批表按「智能体 × 项目」取（R14）：挂起那轮没落盘，刷新后前端只认得这两个键。 */
+export function getPending(agentId: string, projectId: string): Promise<{ runs: PendingRunInfo[] }> {
+  return apiFetch<{ runs: PendingRunInfo[] }>(
+    `/api/chat/pending?${new URLSearchParams({ agent_id: agentId, project_id: projectId }).toString()}`);
 }
 
 export interface ChatSession {

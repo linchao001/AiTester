@@ -10,6 +10,11 @@ export interface LiveRound { round: number; text: string; toolCalled: boolean }
 /** 已宣告但结果未回的调用：过程块里的 ⏳ 行。 */
 export interface PendingCall { key: string; tool: string; round: number; detail: string }
 
+/** 一条投过授权卡的调用：live 气泡只靠它判「挂起」，卡片正文由 pending 表那份渲染（R12）。 */
+export interface AuthAsk {
+  callId: string; tool: string; action: string; target: string; command: string; cwd: string
+}
+
 export interface StreamingState {
   runId: string;
   sessionId: string;
@@ -18,6 +23,7 @@ export interface StreamingState {
   pending: PendingCall[];
   steps: ChatStep[];
   drafts: KbDraft[];
+  auths: AuthAsk[];
   stopped: boolean;
   terminal: boolean;     // done/error 已收到：之后的事件一律忽略（终态恒为一条）
   done: DoneEvent | null; // 终态事件本身随状态走——页面不得另设闭包局部变量接终态（TS 对闭包内赋值的收窄不可靠）
@@ -26,7 +32,7 @@ export interface StreamingState {
 
 export function newStreamState(): StreamingState {
   return { runId: "", sessionId: "", title: "", rounds: [], pending: [], steps: [], drafts: [],
-    stopped: false, terminal: false, done: null, fail: "" };
+    auths: [], stopped: false, terminal: false, done: null, fail: "" };
 }
 
 const callKey = (round: number, tool: string) => `${round}::${tool}`;
@@ -64,6 +70,15 @@ export function applyEvent(state: StreamingState, ev: StreamEvent): StreamingSta
     }
     case "draft":
       return { ...state, drafts: [...state.drafts, ev.draft] };
+    case "wait": {
+      // 幂等（spec 测试 7）：同一 call_id 的 wait 重发不得复制卡片，也不得把已投的挪位
+      if (state.auths.some((a) => a.callId === ev.call_id)) return state;
+      return {
+        ...state,
+        auths: [...state.auths, { callId: ev.call_id, tool: ev.tool, action: ev.action,
+          target: ev.target, command: ev.command, cwd: ev.cwd }],
+      };
+    }
     case "done":
       return { ...state, terminal: true, done: ev, stopped: ev.stopped,
         sessionId: ev.session_id || state.sessionId, title: ev.title || state.title };
@@ -88,11 +103,16 @@ export function finalize(state: StreamingState, done: DoneEvent): FinalizedTurn 
   const notes: ChatStep[] = state.rounds
     .filter((r) => r.toolCalled && r.text)
     .map((r) => ({ tool: "📝", ok: true, round: r.round, detail: r.text }));
+  // done.steps 的前缀是前段携带（续跑不重发那些 step 帧），本段的帧才在 state.steps 里；
+  // 两段长度相加恒等于 done.steps 全长——漏收一帧只会让它落进前缀，不会把过程行变没。
+  // 按 round 的 sort 只折本段：续跑段的 round 从 0 重启（agent_graph 每段独立计数），
+  // 若像原来那样对 done.steps 全局 sort，本段的 📝 行会插到前段过程行之前（T6 评审 →交 T8 的硬要求）
+  const carried = done.steps.slice(0, Math.max(0, done.steps.length - state.steps.length));
   // 残留 pending 是「宣告了但没跑完」的调用：渲染成 ✓/✗ 都是假话，且 done.steps 才是落盘口径，
   // 故随 live 状态一起丢弃（重开会话看到的过程块与这里落库的那份一致）。
   return {
     content: done.reply,
-    steps: [...done.steps, ...notes].sort((a, b) => a.round - b.round),
+    steps: [...carried, ...[...state.steps, ...notes].sort((a, b) => a.round - b.round)],
     drafts: state.drafts,
     sessionId: done.session_id || state.sessionId,
     title: done.title || state.title,
@@ -112,5 +132,12 @@ export function liveText(state: StreamingState | null): string {
 /** 三点占位的判据：连接活着、模型还没开口、也还没有任何过程行。 */
 export function isWaiting(state: StreamingState | null): boolean {
   if (!state) return true;
-  return !state.terminal && state.rounds.length === 0 && state.pending.length === 0 && state.steps.length === 0;
+  return !state.terminal && state.rounds.length === 0 && state.pending.length === 0
+    && state.steps.length === 0 && state.auths.length === 0;
+}
+
+/** 挂起判据：流断了、没有终态、但投过授权卡——这是「等你批准」，不是「连接坏了」。
+ *  后端挂起时不发 done（裁定 7），所以 terminal 恒假；决策真相反而在 pending 表那侧。 */
+export function held(state: StreamingState): boolean {
+  return !state.terminal && state.auths.length > 0;
 }
