@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  ApiError, chatSend, deleteChatSession, getCapabilities, getModels,
+  ApiError, chatSendStream, chatStop, deleteChatSession, getCapabilities, getModels,
   getProjects, getSessionMessages, getSessions,
-  type AgentInfo, type ChatMessage, type ChatSession, type HealthResponse, type Project,
+  type AgentInfo, type ChatMessage, type ChatSession, type HealthResponse,
+  type Project, type StreamEvent,
 } from "../api/client";
+import { applyEvent, finalize, newStreamState, type StreamingState } from "./chat/streamState";
 import PageState from "../components/PageState";
 import Composer from "./chat/Composer";
 import MessageList from "./chat/MessageList";
@@ -37,6 +39,12 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);            // 与 KbPage 同款同步重入锁（不依赖重渲染时序）
+  const [live, setLive] = useState<StreamingState | null>(null);
+  const liveRef = useRef<StreamingState | null>(null);   // 终态折叠要同步读到最后一帧
+  const [stopRequested, setStopRequested] = useState(false);
+  const stopRequestedRef = useRef(false);
+  const runIdRef = useRef("");
+  const abortRef = useRef<AbortController | null>(null);
   const openSeq = useRef(0);                // 开会话的「最新一次点击」序号
   const listSeq = useRef(0);                // 拉整表的「最新一次请求」序号
   const projSeq = useRef(0);                // 拉项目列表的「最新一次请求」序号：迟到的成败都不得盖过更新的一轮
@@ -167,8 +175,6 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
 
   useEffect(() => { void reloadMeta(); }, [reloadMeta]);
   useEffect(() => { void reloadSessions(); }, [reloadSessions]);
-  // 卸载清定时器（KbPage/ProjectsPage 同款收尾约定）
-  useEffect(() => () => { window.clearTimeout(toastTimer.current); }, []);
 
   const openSession = useCallback(async (id: string | null) => {
     const seq = ++openSeq.current;                    // 只认最新一次点击，慢响应不得覆盖后点的会话
@@ -209,29 +215,84 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     const optimistic: ChatMessage = { role: "user", content: text, ts: Date.now(), steps: null };
     setMessages((prev) => [...prev, optimistic]);
     setInput("");
+    liveRef.current = newStreamState();
+    setLive(liveRef.current);
+    runIdRef.current = "";
+    stopRequestedRef.current = false;
+    setStopRequested(false);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let errMsg = "";                        // 只装「非事件」的失败（HTTP 守门 / 断流），终态一律从 state 读
+    const onEvent = (ev: StreamEvent) => {
+      if (ev.type === "start") runIdRef.current = ev.run_id;
+      const cur = liveRef.current ?? newStreamState();
+      liveRef.current = applyEvent(cur, ev);   // done/error 也照折：终态与 detail 都随状态回给下面
+      setLive(liveRef.current);
+    };
+    let aborted = false;
     try {
-      const resp = await chatSend(activeId ?? "", text, agentId, projectId);
+      await chatSendStream(
+        { session_id: activeId ?? "", message: text, agent_id: agentId, project_id: projectId },
+        onEvent, controller.signal);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") aborted = true;
+      // 非 ApiError 的断流（如网络 TypeError）不给英文原文，中文兜底
+      else errMsg = err instanceof ApiError ? err.message : "连接中断，本条回答未完成";
+    }
+    // 换页/卸载导致的 abort：连接已断，后端走 GeneratorExit 落截断盘，本页不再改任何 state
+    if (aborted) return;
+    abortRef.current = null;
+    busyRef.current = false;
+    setBusy(false);
+    setStopRequested(false);
+    runIdRef.current = "";
+    const st = liveRef.current;
+    const done = st ? st.done : null;
+    if (!done && !errMsg) errMsg = st?.fail || "连接中断，本条回答未完成";
+    if (done && st) {
+      const f = finalize(st, done);
+      liveRef.current = null;
+      setLive(null);
       setMessages((prev) => [...prev, {
-        role: "assistant", content: resp.reply, ts: Date.now(), steps: resp.steps,
+        role: "assistant", content: f.content, ts: Date.now(), steps: f.steps, stopped: f.stopped,
       }]);
-      if (resp.session_id !== activeId) setActiveId(resp.session_id);
-      setWsSeq((n) => n + 1);            // 模型可能刚写了产出物：工作区树静默重拉
+      if (f.sessionId !== activeId) setActiveId(f.sessionId);
+      setWsSeq((n) => n + 1);            // 模型可能刚写了产出物：工作区树静默重拉（被停止也照拉）
       const rows = await reloadSessions();
       // 新建会话后标题由服务端定，用返回的 title 就地补齐，避免等整表刷新才可见
-      const mine = rows.find((r) => r.id === resp.session_id);
-      if (mine && resp.title && mine.title !== resp.title) {
-        setSessions((prev) => prev.map((r) => (r.id === mine.id ? { ...r, title: resp.title } : r)));
+      const mine = rows.find((r) => r.id === f.sessionId);
+      if (mine && f.title && mine.title !== f.title) {
+        setSessions((prev) => prev.map((r) => (r.id === mine.id ? { ...r, title: f.title } : r)));
       }
-    } catch (err) {
-      // 失败必须可见：撤掉乐观 user 气泡并回填原文，不让用户对着「发出去了却没回」的空框
-      setMessages((prev) => prev.filter((m) => m !== optimistic));
-      setInput(text);
-      toast(err instanceof ApiError ? err.message : String(err));
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
+      return;
     }
-  }, [activeId, agentId, guard, input, projectId, reloadSessions]);
+    // 失败必须可见：撤掉乐观 user 气泡并回填原文，不让用户对着「发出去了却没回」的空框
+    liveRef.current = null;
+    setLive(null);
+    setMessages((prev) => prev.filter((m) => m !== optimistic));
+    setInput(text);
+    toast(errMsg);
+  }, [activeId, agentId, guard, input, projectId, reloadSessions, toast]);
+
+  const stop = useCallback(() => {
+    if (stopRequestedRef.current) return;
+    const rid = runIdRef.current;
+    // start 事件还没到时没有 run_id 可停：给一句可见反馈，而不是让按钮空转成死控件
+    if (!rid) { toast("还在建立连接，请稍候"); return; }
+    stopRequestedRef.current = true;
+    setStopRequested(true);
+    chatStop(rid).catch((err: unknown) => {
+      // 404「这条回答已经结束」是与终态并发的正常竞态：界面随后自己收到 done，这里只把原因说出来
+      // 非 ApiError（网络层 TypeError）不给英文原文，中文兜底
+      toast(err instanceof ApiError ? err.message : "停止请求未送达，本条回答仍在继续");
+    });
+  }, [toast]);
+
+  // 卸载清定时器（KbPage/ProjectsPage 同款收尾约定）并断流
+  useEffect(() => () => {
+    window.clearTimeout(toastTimer.current);
+    abortRef.current?.abort();   // 离开页面即断流：后端收 GeneratorExit，落截断行并标 stopped
+  }, []);
 
   const newSession = useCallback(() => {
     if (!guard()) return;
@@ -413,6 +474,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
           agentName={agent?.name ?? "用例设计智能体"}
           projectName={currentProject?.name ?? ""}
           busy={busy}
+          live={live}
           onCopy={(t) => void copy(t)}
           onChip={(t) => {
             // chip 只填值 + 聚焦，绝不自动发送；自增高交给 Composer 按 input 变化统一量
@@ -430,6 +492,8 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
           projectName={currentProject?.name ?? ""}
           sendBlock={sendBlock}
           inputRef={inputRef}
+          stopRequested={stopRequested}
+          onStop={stop}
           onInput={setInput}
           onSubmit={() => void send()}
           onToast={toast}

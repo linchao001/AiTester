@@ -12,6 +12,8 @@ interface Props {
   projectName: string;     // 只读橙 chip 的文案源（项目维度，第 2 片接入）；空串代表项目还没落地，chip 不渲染
   sendBlock: string;       // 非空即「现在还不能发」的原因，由 ChatPage 算（它是 agentId/projectId 的唯一持有者）：折进 canSend 并直接进 title
   inputRef: { current: HTMLTextAreaElement | null };  // 供 chip 点击后聚焦 + 输入框自增高（ChatPage 持有）
+  stopRequested: boolean;    // ■ 已按下、终态未到：停止钮置灰防二次点击
+  onStop: () => void;
   onInput: (v: string) => void;
   onSubmit: () => void;
   onToast: (msg: string) => void;
@@ -73,12 +75,19 @@ export default function Composer(p: Props) {
             onClick={() => p.onToast("「严格权限」暂未开放，敬请期待")}
           >🛡 自由权限 ▾</button>
           <div className="spacer" />
-          <button
-            className={`btn-send${canSend ? " on" : ""}`}
-            title={p.busy ? "正在执行…" : p.sendBlock || "发送"}
-            disabled={!canSend}
-            onClick={p.onSubmit}
-          >↑</button>
+          {p.busy ? (
+            /* busy 时钮位换成停止：带文字不裸图标（UI 约定），点下就置灰防二次点击，
+               终态到达后 busy 落真 → 变回 ↑（验收清单「0 个死按钮」那条） */
+            <button className="btn-send stop" disabled={p.stopRequested}
+              title={p.stopRequested ? "停止中…" : "停止生成"} onClick={p.onStop}>■ 停止</button>
+          ) : (
+            <button
+              className={`btn-send${canSend ? " on" : ""}`}
+              title={p.sendBlock || "发送"}
+              disabled={!canSend}
+              onClick={p.onSubmit}
+            >↑</button>
+          )}
         </div>
       </div>
       <div className="foot-tip">为测试人员而生 · 用例生成 / 脚本编写 / 失败分析</div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ChatMessage, ChatStep } from "../../api/client";
+import { isWaiting, liveText, type PendingCall, type StreamingState } from "./streamState";
 import { fmtTime } from "./utils";
 import { mdRender } from "../kb/utils";
 
@@ -16,20 +17,31 @@ interface Props {
   agentName: string;
   projectName: string;
   busy: boolean;
+  live: StreamingState | null;   // 流式中的唯一 live 状态（ChatPage 持有）：null 即没有进行中的一轮
   onCopy: (text: string) => void;
   onChip: (text: string) => void;   // 原型 :1322-1324：chip 只填输入框，绝不自动发送
 }
 
-function Steps({ steps }: { steps: ChatStep[] }) {
-  if (!steps.length) return null;  // 无工具调用时整个过程块不渲染（spec 裁定 4）
+function Steps({ steps, pending }: { steps: ChatStep[]; pending?: PendingCall[] }) {
+  const rows = pending ?? [];
+  if (!steps.length && !rows.length) return null;  // 无工具调用时整个过程块不渲染（spec 裁定 4）
   return (
-    <details className="thinking">
+    // 有 ⏳ 行时强制展开：真机行为定义写着「工具轮次期间过程块可见且逐条增长」；
+    // pending 清空后 prop 变 undefined，用户此前的开合状态不再被受控属性抢走
+    <details className="thinking" open={rows.length ? true : undefined}>
       <summary>🔧 执行过程</summary>
       {steps.map((s, i) => (
         <div className="t-step" key={`${s.round}-${s.tool}-${i}`}>
           <span className="n">{i + 1}.</span>
           <span>{s.tool} · {s.ok ? "成功" : "失败"}</span>
           <span className="args">{s.detail}</span>
+        </div>
+      ))}
+      {rows.map((p, i) => (
+        <div className="t-step pending" key={`p-${p.key}-${i}`}>
+          <span className="n">{steps.length + i + 1}.</span>
+          <span>{p.tool} · ⏳</span>
+          <span className="args">{p.detail}</span>
         </div>
       ))}
     </details>
@@ -41,7 +53,7 @@ export default function MessageList(p: Props) {
   useEffect(() => {
     const el = box.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [p.messages, p.busy]);
+  }, [p.messages, p.busy, p.live]);
 
   if (!p.messages.length && !p.busy) {
     return (
@@ -79,14 +91,25 @@ export default function MessageList(p: Props) {
             <Steps steps={m.steps ?? []} />
             <div className="body md-preview" dangerouslySetInnerHTML={{ __html: mdRender(m.content) }} />
             <div className="meta">
-              🗀 {fmtTime(m.ts)}<span className="copy" onClick={() => p.onCopy(m.content)}>⧉</span>
+              🗀 {fmtTime(m.ts)}{m.stopped ? <span>（已停止）</span> : null}<span className="copy" onClick={() => p.onCopy(m.content)}>⧉</span>
             </div>
           </div>
         ))}
-      {p.busy && (
+      {p.busy && isWaiting(p.live) && (
         <div className="msg agent">
           <div className="who"><span className="avatar">Ai</span>AiTester</div>
           <span className="typing"><i /><i /><i /></span>
+        </div>
+      )}
+      {p.busy && p.live && !isWaiting(p.live) && (
+        <div className="msg agent">
+          <div className="who"><span className="avatar">Ai</span>AiTester</div>
+          <Steps steps={p.live.steps} pending={p.live.pending} />
+          <div className="body md-preview"
+            dangerouslySetInnerHTML={{ __html: mdRender(liveText(p.live)) }} />
+          {/* 光标独立成行：mdRender 出的是块级元素，塞进同一段落会被浏览器的
+              非法嵌套纠正规则挪位 */}
+          <span className="live-caret" />
         </div>
       )}
     </div>
