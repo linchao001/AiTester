@@ -147,6 +147,7 @@ def test_thread_id_isolates_two_runs(tmp_path: Path) -> None:
         assert len(_thread_state(graph, tid).values["messages"]) == 2      # human + ai
     drop_thread("runA")
     assert _thread_state(graph, "runA").next == ()                   # 摘干净：不留残断
+    assert not _thread_state(graph, "runA").values                   # 删除判据：只有真删了才空
     assert len(_thread_state(graph, "runB").values["messages"]) == 2 # 另一条线程不受牵连
 
 
