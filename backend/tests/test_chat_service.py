@@ -242,17 +242,17 @@ def _recording_runtime():
 
 
 class _RecordingService(ChatService):
-    """抓 _complete 收到的 memory 实例：装配裁定（文件/进程内）只能在此处验。"""
+    """抓 prepare 产出的 memory 实例：装配裁定（文件/进程内）只能在此处验。"""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.seen_memory: list[object] = []
 
-    def _complete(self, key, message, provider, system_prompt, build=None,
-                  tools=None, memory=None):
-        self.seen_memory.append(memory if memory is not None else self.memory)
-        return super()._complete(key, message, provider, system_prompt,
-                                 build=build, tools=tools, memory=memory)
+    def prepare(self, session_id: str, message: str, agent_id: str,
+                project_id: str = ""):
+        prepared = super().prepare(session_id, message, agent_id, project_id)
+        self.seen_memory.append(prepared.memory)
+        return prepared
 
 
 def test_send_with_empty_session_id_generates_sess_id(tmp_path, project) -> None:
