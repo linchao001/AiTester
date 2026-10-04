@@ -28,12 +28,13 @@ export default function AuthCard(p: Props) {
     <div className={`kb-draft${p.decided === "approve" ? " done" : ""}`}>
       <div className="d-head">
         <span className="d-op">{p.ask.command ? "执行命令" : "写文件"}</span>
-        <span>{p.ask.action}</span>
+        {/* 命令类的 action 与类标是同一串「执行命令」（auth_rules 口径），并显会把头部念成复读 */}
+        {p.ask.command ? null : <span>{p.ask.action}</span>}
         <div className="spacer" />
         <span className="d-state">{stateLabel}</span>
       </div>
-      {/* 目标路径给写类调用，工作目录给命令类；空串就整行不渲染，不留光杆标签 */}
-      {p.ask.target ? <div className="d-path">{p.ask.target}</div> : null}
+      {/* 目标路径给写类调用，工作目录给命令类：命令类的 target 就是那个 cwd，两处都渲染等于把同一路径摆两遍 */}
+      {p.ask.command || !p.ask.target ? null : <div className="d-path">{p.ask.target}</div>}
       {p.ask.command
         ? <pre className="d-diff">{p.ask.command}{p.ask.cwd ? `\n工作目录：${p.ask.cwd}` : ""}</pre>
         : <div className="d-sum">批准后立即执行，拒绝则跳过这一步并让模型继续作答。</div>}
