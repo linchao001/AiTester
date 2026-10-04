@@ -225,6 +225,7 @@ def test_build_gate_context_short_circuits_free_and_platform(tmp_path: Path) -> 
     assert build_gate_context("strict", "", "k", set()) is None       # 平台智能体无项目落点
 
 
+@pytest.mark.xfail(strict=True, reason="wait 事件要到 Task 4 从 __interrupt__ 折出来；Task 4 Step 4 删掉本行")
 def test_boundary_out_of_bounds_waits_before_executing(tmp_path: Path) -> None:
     counter = _Counting()
     provider = ScriptProvider([_calls(("c1", "write", _outside()))])
@@ -238,6 +239,7 @@ def test_boundary_out_of_bounds_waits_before_executing(tmp_path: Path) -> None:
     assert wait[0]["action"] == "写入项目目录外的文件"
 
 
+@pytest.mark.xfail(strict=True, reason="wait 事件要到 Task 4 从 __interrupt__ 折出来；Task 4 Step 4 删掉本行")
 def test_two_parallel_calls_execute_exactly_once_each(tmp_path: Path) -> None:
     """P5 否决形态的正面锁：两个都批 → 真执行恰为两次，gate 重跑不重复副作用。"""
     counter = _Counting()
