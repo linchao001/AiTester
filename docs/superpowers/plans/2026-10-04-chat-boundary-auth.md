@@ -2958,7 +2958,29 @@ export function held(state: StreamingState): boolean {
 }
 ```
 
-`finalize` 一行不动：挂起不会走到终态折叠，`done` 分支只在续跑收尾时跑。
+`finalize` 的终态折叠只换一句 steps 组装，其余判据不动（挂起不会走到终态折叠，`done` 分支只在续跑收尾时跑）：
+续跑段的 `round` 从 0 重启（agent_graph 每段独立计数），而 `done.steps` 是「前段携带 + 本段新到」的到达序，
+原来那句全局 `sort` 会把本段的 📝 行插到前段过程行之前（T6 评审 →交 T8 的硬要求）。改成本段内交错：
+
+```ts
+  const notes: ChatStep[] = state.rounds
+    .filter((r) => r.toolCalled && r.text)
+    .map((r) => ({ tool: "📝", ok: true, round: r.round, detail: r.text }));
+  // done.steps 的前缀是前段携带（续跑不重发那些 step 帧），本段的帧才在 state.steps 里；
+  // 两段长度相加恒等于 done.steps 全长——漏收一帧只会让它落进前缀，不会把过程行变没
+  const carried = done.steps.slice(0, Math.max(0, done.steps.length - state.steps.length));
+  return {
+    content: done.reply,
+    steps: [...carried, ...[...state.steps, ...notes].sort((a, b) => a.round - b.round)],
+    drafts: state.drafts,
+    sessionId: done.session_id || state.sessionId,
+    title: done.title || state.title,
+    stopped: done.stopped,
+  };
+```
+
+单段场景（第 4 片全部用例与 free 档每一轮）里 `carried` 为空、`state.steps` 与 `done.steps` 同长同序，
+折出的序列与改前逐字相同——这条等价性是回归锁的本体，走查项 5/6/7 不许看出差别。
 
 > **前端折叠怎么测**：本项目前端无 vitest 设施（第 4 片同口径），`applyEvent` 的幂等由 `tsc` 穷尽检查 + 走查项 11 钉；决策真相在服务端 `answers` 表，那条已在 T5 的 `test_answer_requires_known_call_id` 单测锁死。此处登记为偏离，别在走查时把它当「已测」。
 
