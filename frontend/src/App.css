@@ -265,7 +265,7 @@
   .ws-btn.on{border-color:var(--primary);background:var(--primary-soft);color:var(--primary-deep);font-weight:600}
   .ws-btn.main{background:var(--primary);border-color:var(--primary);color:#fff;font-weight:600}
   .ws-btn.main:hover{background:var(--primary-deep);color:#fff}
-  /* 停止钮置灰态（Task 10 /kb 助手）：色值取 :576 现成的两枚，不新增 token；
+  /* 停止钮置灰态（Task 10 /kb 助手）：色值取同族 .mini-btn:disabled 现成的两枚，不新增 token；
      排在 .ws-btn:hover 之后，同特异度后者胜，禁用时悬停不再回跳主色 */
   .ws-btn:disabled{color:#a9a196;border-color:var(--line);background:#f7f4ee;cursor:not-allowed}
   .ws-body{flex:1;display:flex;min-height:0;--tw:212px}

@@ -361,8 +361,8 @@ export default function KbPage() {
       replaceLastAi(f.content, f.drafts, false, f.stopped);
       return;
     }
-    // 与迁移前同款：失败进气泡（红色），不抢 toast
-    replaceLastAi(errMsg || st.fail || "连接中断，助手未完成", [], true);
+    // 失败进气泡（红色），不抢 toast；草案卡保留（draft 必在 prepare_kb_write 成功后才发，确认走独立 REST）
+    replaceLastAi(errMsg || st.fail || "连接中断，助手未完成", st.drafts, true);
   }, [replaceLastAi, setLastAi]);
 
   const stopAsk = useCallback(() => {
