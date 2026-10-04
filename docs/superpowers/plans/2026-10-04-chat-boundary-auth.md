@@ -3258,6 +3258,8 @@ Props 加四项：
 
 > **痕迹卡为什么按钮全给禁**：`run.waiting` 只含未答项、`run.decided` 只含已答项（后端 `waiting()` / `decided` 两个口分得干净），已答的卡再点一次必回 409，`busy` 传死 `true` 就是「0 个死按钮」判据下最诚实的只读表达。
 
+自滚动 effect 的依赖补 `p.pending`（现 `[p.messages, p.busy, p.live]`）：刷新后 `reloadPending` 迟到时，那张「等你批准」的卡排在折叠区之下，不滚就是把它藏起来（走查要在刷新后一眼看到它）。
+
 import 补 `import type { AuthDecision, PendingRunInfo } from "../../api/client";` 与 `import AuthCard from "./AuthCard";`。
 
 - [ ] **Step 4: ChatPage 的状态与取数**
@@ -3324,6 +3326,8 @@ import 补：`chatApprove, getPending, type AuthDecision, type PermMode, type Pe
       // 乐观 user 行留着——它和那张卡说的是同一件事，撤掉它就是「发出去却没回」的空框
       liveRef.current = null;
       setLive(null);
+      // 续跑段再挂起时，先前批准过的调用可能已经写盘：工作区树当场跟一次，不等最终 done
+      setWsSeq((n) => n + 1);
       return;
     }
     let errMsg = opts.errMsg;
@@ -3386,15 +3390,17 @@ import 补：`chatApprove, getPending, type AuthDecision, type PermMode, type Pe
     if (busyRef.current || loadingRef.current || mutRef.current) {
       toast("上一条操作还在执行，请稍候"); return;
     }
+    // 占位必须在登记之前同步落下：resumeRunId 要等 approve 成功才置位，靠它挡不住一个 RTT 内的第二次点击
+    busyRef.current = true;
     try {
       await chatApprove(runId, callId, decision, remember);
     } catch (err) {
+      busyRef.current = false;
       // 404「这条回答已经结束」/ 409「这条已经答过了」都是真相：重取表让卡片按后端的样子消失
       toast(err instanceof ApiError ? err.message : "授权登记失败，请重试");
       void reloadPending();
       return;
     }
-    busyRef.current = true;
     setBusy(true);
     setResumeRunId(runId);
     stopRequestedRef.current = false;
