@@ -232,6 +232,8 @@ chip 三档文案（`free` 与 `strict` 的 `desc` 逐字取原型 `:1452-1453`�
 | 8 | `wait` 之后 live 气泡让位给 pending 气泡（R12）：本文「事件与前端折叠」那句「授权期间 live 气泡保留并显示『⏳ 等待授权』」由 pending 气泡的 meta 行承担（`MessageList.tsx:104-124`），live 侧只留乐观 user 行（`ChatPage.tsx:251-255`） | 挂起收尾时 live 已无内容可保留，同一条回答画两个气泡是第二套真相 |
 | 9 | 权限 chip 用 `span[role=button]` + `tabIndex` + `aria-disabled`，不是 `button`（`Composer.tsx:80-90`） | `.pop` 弹层是 div，塞进 `button` 是非法内容模型，浏览器会把弹层挪出锚点；键盘可达性由 role/tabIndex 补齐 |
 | 10 | 前端折叠的 `call_id` 幂等无 vitest 单测，由 `tsc` 穷尽检查 + 走查 11 钉（T8 就地登记，本条补齐文末） | 本项目前端无 vitest 设施（第 4 片同口径）；决策真相在服务端 `answers` 表，那条已由 `test_answer_requires_known_call_id` 锁死，走查时别把它当「已测」 |
+| 11 | 数据流 `:97` 的 `wait` 帧载荷按实现改钉为 `{type, run_id, call_id, tool, action, target, command, cwd}`（原写的 `args_display` 从未落地） | 六个内容键是授权卡与待批表的全部展示面（`gate.py:55-57`、`services/chat.py:50` 的 `_WAIT_KEYS`、`schemas.py:68-76`），`run_id` 由 `router.py:153-156` 附上；只改字段名，不改判据 |
+| 12 | 数据流 `:110` 的 `GET /api/chat/pending?session_id=…` 实现为 `?agent_id=&project_id=`（两个参数必填，空值 422；响应体 `{"runs": […]}`） | R14：挂起那一轮一个字都没落盘（裁定 8），刷新后前端只知道当前智能体与项目，那条会话在项目侧根本查不到（`router.py:276-277` 与 docstring `:280-281`） |
 
 ## 自检结论
 

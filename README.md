@@ -49,6 +49,7 @@ uv run python -m aitester.main
   `send/stream` 同形（可能再次以 `wait` 收尾）；守门仍在 HTTP 空间，目录不可达回 400 且文案与发送时逐字相同
 - `GET /api/chat/pending?agent_id=&project_id=`：待批表（进程内内存态，后端重启即空）；
   返回每条挂起回答的 `run_id / session_id / perm_mode / prefix / steps / waiting / decided / created_at`
+  `agent_id` 与 `project_id` 两个参数都必填（空值 422）；响应体为 `{"runs": […]}`
 - `GET /api/models` + 三个 `PUT`：模型配置运行期读写（Key 掩码返回，明文永不出口），
   对应前端顶栏「⚙ 设置」弹窗
 - `POST /api/models/providers/{pid}/test`：测试连接 —— 只验证模型能否应答，
@@ -89,7 +90,9 @@ uv run python -m aitester.main
 - 聊天页 `/chat`：会话落盘（`backend/data/sessions`）、列表/搜索/分组/删除、多轮记忆（最近 40 条进 prompt）、
   真实工具调用过程展示；会话按「智能体 × 项目」归属，切项目即切会话，
   「当前智能体」下拉只列当前项目启用的智能体；智能体的文件工具与命令工具都以项目目录为工作起点，产出物落进项目；
-  **本期不做边界执法**：模型仍可用绝对路径写到项目之外（越界拦截与授权属后续专项）
+  **边界执法由用户自控**：composer 的 🛡 芯片三档（档位存 `aitester.chat.permMode`，默认 `free`）——
+  `free` 零执法（绝对路径照旧可出项目）；`boundary` 拦界外写与全部命令、界内写与知识库写入放行；
+  `strict` 对界内外写、命令与 `save_to_knowledge` 逐次批准；平台智能体（如 `/kb`）无项目落点，不受辖
 - 测试：`uv run pytest`
 - 配置：复制 `.env.example` 为 `.env`（仅 HOST/PORT + 两个可选种子 Key）；
   运行期模型配置存 `backend/data/model_config.json`（gitignore，含密钥），
