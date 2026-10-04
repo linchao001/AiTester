@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,9 @@ class SendRequest(BaseModel):
     agent_id: str = "case_design"
     # 必填判据在 service 层：schema 无从知道 is_platform_agent（平台智能体天然不属于项目）
     project_id: str = ""
+    # 三档权限（第 5 片）：缺省 free = 零行为变化；合法性由 auth_rules.validate_perm_mode 判，
+    # 这里不做 Literal——/kb 与旧客户端不发这字段，而中文 detail 要过路由的 _GUARD_MAP
+    perm_mode: str = "free"
 
 
 class StreamStopRequest(BaseModel):
@@ -46,6 +49,52 @@ class StepInfo(BaseModel):
     ok: bool
     round: int
     detail: str
+
+
+class ApproveRequest(BaseModel):
+    """只登记决策；续跑是另一条请求，两步分开才好收敛重复提交与双弹层。"""
+
+    run_id: str
+    call_id: str
+    decision: Literal["approve", "reject"]
+    remember: bool = False
+
+
+class ResumeRequest(BaseModel):
+    # 与 StreamStopRequest 同键：续跑、停止、批准三者都以 run_id 定位同一条待批
+    run_id: str
+
+
+class PendingCallInfo(BaseModel):
+    """一张授权卡：与后端 wait 事件六键逐字对齐（R11）。"""
+
+    call_id: str
+    tool: str
+    action: str
+    target: str
+    command: str
+    cwd: str
+
+
+class PendingDecidedCall(PendingCallInfo):
+    """已答项：六键照给，多一个 decision——刷新后痕迹卡要能还原「批准/拒绝的是哪一次」。"""
+
+    decision: str
+
+
+class PendingRunInfo(BaseModel):
+    run_id: str
+    session_id: str         # 待批停止后这条会话才第一次落盘：前端按它判断要不要重拉正文
+    perm_mode: str          # 锁档：卡片按挂起时那一档展示，不受用户事后切档影响
+    prefix: str             # 已投递正文前缀：刷新后气泡照显示（裁定 8）
+    steps: list[StepInfo]
+    waiting: list[PendingCallInfo]
+    decided: list[PendingDecidedCall]
+    created_at: float
+
+
+class PendingResponse(BaseModel):
+    runs: list[PendingRunInfo]
 
 
 class ModelInfo(BaseModel):

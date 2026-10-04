@@ -94,8 +94,8 @@ def test_chat_send_returns_drafts(tmp_path):
     draft = {"op": "create", "path": "a.md", "abs_display": "P", "summary": "s",
              "content": "c", "base": None, "mtime": 0}
     app.state.chat_service = SimpleNamespace(
-        prepare=lambda sid, msg, aid, project_id="": SimpleNamespace(session_id="s9"),
-        stream_turn=lambda prepared, control=None: iter([
+        prepare=lambda sid, msg, aid, project_id="", perm_mode="free": SimpleNamespace(session_id="s9"),
+        stream_turn=lambda prepared, control=None, run_id="": iter([
             {"type": "draft", "draft": draft},
             {"type": "done", "reply": "r", "steps": [], "session_id": "s9",
              "title": "", "stopped": False},
@@ -117,8 +117,8 @@ def test_chat_send_drafts_defaults_empty(tmp_path):
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
     # 一次性口的「缺 drafts 键 → 默认空列表」迁到流上：没有 draft 事件就是同一口径
     app.state.chat_service = SimpleNamespace(
-        prepare=lambda sid, msg, aid, project_id="": SimpleNamespace(session_id="s9"),
-        stream_turn=lambda prepared, control=None: iter([
+        prepare=lambda sid, msg, aid, project_id="", perm_mode="free": SimpleNamespace(session_id="s9"),
+        stream_turn=lambda prepared, control=None, run_id="": iter([
             {"type": "done", "reply": "r", "steps": [], "session_id": "s9",
              "title": "", "stopped": False},
         ]),
@@ -145,8 +145,8 @@ def test_chat_send_skips_malformed_drafts(tmp_path):
          {"type": "done", "reply": "回复还在", "steps": [], "session_id": "s9",
           "title": "", "stopped": False}])
     app.state.chat_service = SimpleNamespace(
-        prepare=lambda sid, msg, aid, project_id="": SimpleNamespace(session_id="s9"),
-        stream_turn=lambda prepared, control=None: events_iter,
+        prepare=lambda sid, msg, aid, project_id="", perm_mode="free": SimpleNamespace(session_id="s9"),
+        stream_turn=lambda prepared, control=None, run_id="": events_iter,
     )
     with TestClient(app) as c:
         with c.stream("POST", "/api/chat/send/stream", json={"message": "写点什么"}) as r:

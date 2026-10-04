@@ -15,6 +15,7 @@ from aitester.services import CapabilityConfigService, ChatService
 from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.kb.manager import RemeKbManager
 from aitester.services.model_config import ModelConfigService
+from aitester.services.pending import PendingRegistry
 from aitester.services.project_config import ProjectService
 from aitester.services.run_registry import RunRegistry
 from aitester.services.session_store import SessionStore
@@ -72,10 +73,13 @@ def create_app(
     application.state.sessions = sessions
     # 在途回合注册表：路由持它（stream_turn 只收 RunControl 形参，服务不认识 run_id）
     application.state.run_registry = RunRegistry()
+    # 待批注册表：与 run_registry 同层同风格，只挂 app.state（裁定 2：内存挂起，重启即丢）
+    application.state.pending_registry = PendingRegistry()
     application.state.chat_service = ChatService(
         agent_runtime=application.state.agent_runtime,
         sessions=sessions,
         projects=project_config,
+        pending=application.state.pending_registry,
     )
     application.include_router(router)
     application.include_router(pick_dir_router)

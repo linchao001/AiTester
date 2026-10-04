@@ -4,7 +4,7 @@ import logging
 import threading
 from typing import Any, AsyncIterator, Iterator
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
@@ -13,6 +13,7 @@ from aitester.adapters.llm import ProviderConfigError, ProviderError
 from aitester.interaction.schemas import (
     AgentDefaultUpdate,
     AgentToolsUpdate,
+    ApproveRequest,
     CapabilityResponse,
     DefaultUpdate,
     EchoRequest,
@@ -26,14 +27,20 @@ from aitester.interaction.schemas import (
     KbSearchRequest,
     KeyUpdate,
     ModelsResponse,
+    PendingCallInfo,
+    PendingDecidedCall,
+    PendingResponse,
+    PendingRunInfo,
     ProviderTestRequest,
     ProviderTestResponse,
+    ResumeRequest,
     SendRequest,
     StepInfo,
     StreamStopRequest,
     StreamStopResponse,
     ToolEnabledUpdate,
 )
+from aitester.orchestration.auth_rules import PermModeError
 from aitester.services import ChatService
 from aitester.services.capability_config import (
     CapabilityConfigError,
@@ -42,8 +49,9 @@ from aitester.services.capability_config import (
 from aitester.services.chat import PreparedRun
 from aitester.services.kb.manager import KbUnavailableError
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
+from aitester.services.pending import CallDecidedError, PendingGoneError, ResumeNotReadyError
 from aitester.services.project_config import ProjectConfigError
-from aitester.services.run_registry import new_run_id
+from aitester.services.run_registry import RunRegistry, new_run_id
 from aitester.services.session_store import SessionStoreError
 
 router = APIRouter(prefix="/api")
@@ -51,14 +59,27 @@ router = APIRouter(prefix="/api")
 logger = logging.getLogger(__name__)
 
 # 流开始前 = HTTP，流开始后 = error 事件（spec 错误口径表）
+# 顺序即判据：子类在前（ProviderConfigError 是 ProviderError 的子类，反过来会把 400 洗成 502）
 _GUARD_MAP = (
     (ConfigNotFoundError, 404),
     (ProjectConfigError, 400),
     (SessionStoreError, 404),
     (ProviderConfigError, 400),
+    (PermModeError, 400),
+    (ProviderError, 502),
 )
-# prepare 的全部失败面：_GUARD_MAP 四类 + 其余 ProviderError（→502）
-_GUARD_TYPES = tuple(klass for klass, _ in _GUARD_MAP) + (ProviderError,)
+_GUARD_TYPES = tuple(klass for klass, _ in _GUARD_MAP)
+# 续跑独有的两条（pending 表在流前判，口径同「守门同步跑」）
+_RESUME_GUARD_MAP = ((PendingGoneError, 404), (ResumeNotReadyError, 400)) + _GUARD_MAP
+_RESUME_GUARD_TYPES = tuple(klass for klass, _ in _RESUME_GUARD_MAP)
+
+
+def _http_guard(exc: Exception, mapping: tuple[tuple[type[Exception], int], ...]) -> HTTPException:
+    """守门异常 → HTTPException：send 与 resume 共用同一个映射口（第 2 片「守门只有一段」的传输层版）。"""
+    for klass, code in mapping:
+        if isinstance(exc, klass):
+            return HTTPException(status_code=code, detail=exc.detail)
+    raise exc        # 不在表内 = 内部异常：原样抛出去，让它成为 500 而不是伪装成 4xx
 
 
 @router.get("/health")
@@ -99,9 +120,9 @@ def _step_payload(step: dict[str, Any]) -> dict[str, Any]:
                     detail=step["detail"]).model_dump()
 
 
-@router.post("/chat/send/stream")
-async def chat_send_stream(req: SendRequest, request: Request) -> StreamingResponse:
-    """真实链路的唯一传输：守门同步跑，过后逐事件推流，终态恒为一条 done 或一条 error。
+def _stream_response(runs: RunRegistry, run_id: str, session_id: str,
+                     turn: Iterator[dict[str, Any]]) -> StreamingResponse:
+    """把一条已装配的事件流接成 SSE：守门已在调用方跑完，这里只负责推与收摊。
 
     这里的泵线程不是风格选择，是走查第 13 项的修复本体。原形态「同步生成器直接交给
     StreamingResponse」在客户端真断开（SPA 跳页/关页触发的 fetch abort）时会把这一回合
@@ -112,31 +133,14 @@ async def chat_send_stream(req: SendRequest, request: Request) -> StreamingRespo
     现在 async relay 一被取消就在 finally 里置 stop，泵线程据此跳出并显式 close()，
     GeneratorExit 才真正落进 stream_turn 的断开分支（截断落盘）与 frames 的 finally。
     """
-    service: ChatService = request.app.state.chat_service
-    runs = request.app.state.run_registry
-    try:
-        prepared: PreparedRun = await run_in_threadpool(
-            service.prepare, req.session_id, req.message, req.agent_id, req.project_id)
-    except _GUARD_TYPES as exc:
-        # brief 原码只包 ProviderError：ProjectConfigError/SessionStoreError/
-        # ConfigNotFoundError 与它无继承关系（实测），漏包会把守门 4xx 炸成 500；
-        # 码值对应与迁移前逐字相同（ProviderConfigError 子类 → 400，其余 ProviderError → 502）
-        for klass, code in _GUARD_MAP:
-            if isinstance(exc, klass):
-                raise HTTPException(status_code=code, detail=exc.detail) from exc
-        raise HTTPException(status_code=502, detail=exc.detail) from exc
-
-    run_id = new_run_id()
-    control = runs.start(run_id)
     # 内层事件生成器具名持有，且只由泵线程触碰：close() 是唯一能把 GeneratorExit
     # 准时送进 stream_turn 断开分支的通道（等 GC 回收等于不落盘）
-    turn = service.stream_turn(prepared, control=control)
 
     def frames() -> Iterator[str]:
         # Task 5 的欠条：finish 必须在每条退出路径上跑（正常收尾、error 帧、客户端断开），
         # 否则在途条目永久泄漏，/chat/stop 会对已结束的 run 恒回成功
         try:
-            yield _frame("start", {"run_id": run_id, "session_id": prepared.session_id})
+            yield _frame("start", {"run_id": run_id, "session_id": session_id})
             try:
                 for event in turn:
                     kind = event["type"]
@@ -146,6 +150,10 @@ async def chat_send_stream(req: SendRequest, request: Request) -> StreamingRespo
                             yield frame
                     elif kind == "step":
                         yield _frame(kind, _step_payload(event))
+                    elif kind == "wait":
+                        # 折叠已严格取键（Task 4）：这里只把续跑与停止要用的 run_id 附上
+                        yield _frame(kind, {**{k: v for k, v in event.items() if k != "type"},
+                                            "run_id": run_id})
                     elif kind == "done":
                         yield _frame(kind, {
                             "reply": event["reply"],
@@ -207,12 +215,85 @@ async def chat_send_stream(req: SendRequest, request: Request) -> StreamingRespo
     return StreamingResponse(relay(), media_type="text/event-stream")
 
 
+@router.post("/chat/send/stream")
+async def chat_send_stream(req: SendRequest, request: Request) -> StreamingResponse:
+    """真实链路的唯一传输：守门同步跑，过后逐事件推流，终态恒为一条 done 或一条 error。"""
+    service: ChatService = request.app.state.chat_service
+    runs = request.app.state.run_registry
+    try:
+        prepared: PreparedRun = await run_in_threadpool(
+            service.prepare, req.session_id, req.message, req.agent_id, req.project_id,
+            req.perm_mode)
+    except _GUARD_TYPES as exc:
+        raise _http_guard(exc, _GUARD_MAP) from exc
+    run_id = new_run_id()
+    turn = service.stream_turn(prepared, control=runs.start(run_id), run_id=run_id)
+    return _stream_response(runs, run_id, prepared.session_id, turn)
+
+
+@router.post("/chat/approve", status_code=204)
+def chat_approve(req: ApproveRequest, request: Request) -> None:
+    """登记一条决策：204 无体。404=条目已不在（未知/已停/已重启），409=这条已答过。"""
+    service: ChatService = request.app.state.chat_service
+    try:
+        service.approve(req.run_id, req.call_id, req.decision, req.remember)
+    except (PendingGoneError, CallDecidedError) as exc:
+        code = 404 if isinstance(exc, PendingGoneError) else 409
+        raise HTTPException(status_code=code, detail=exc.detail) from exc
+
+
+@router.post("/chat/resume/stream")
+async def chat_resume_stream(req: ResumeRequest, request: Request) -> StreamingResponse:
+    """批准后续跑：守门（含目录守卫）仍在 HTTP 空间，过后走同一条泵通道。
+
+    run_id 不新建：待批条目、图线程、停止键三者始终是同一个 id（P4），
+    所以 stop 在「在途」与「待批」两种状态下都能命中同一条回答。
+    """
+    service: ChatService = request.app.state.chat_service
+    runs = request.app.state.run_registry
+    control = runs.start(req.run_id)
+    try:
+        session_id, turn = await run_in_threadpool(service.resume_stream, req.run_id, control)
+    except _RESUME_GUARD_TYPES as exc:
+        runs.finish(req.run_id)                  # 守门没过就没有在途：不留半条 run
+        raise _http_guard(exc, _RESUME_GUARD_MAP) from exc
+    return _stream_response(runs, req.run_id, session_id, turn)
+
+
+def _pending_info(entry) -> PendingRunInfo:
+    # 严格构造、不逐条容错：条目由本片服务端自己写，畸形即装配 bug（与 _step_payload 同口径）
+    return PendingRunInfo(
+        run_id=entry.run_id, session_id=entry.session_id,
+        perm_mode=entry.perm_mode, prefix=entry.prefix_text,
+        created_at=entry.created_at,
+        steps=[StepInfo(tool=s["tool"], ok=s["ok"], round=s["round"], detail=s["detail"])
+               for s in entry.steps],
+        waiting=[PendingCallInfo(**c) for c in entry.waiting()],
+        decided=[PendingDecidedCall(**d) for d in entry.decided])
+
+
+@router.get("/chat/pending", response_model=PendingResponse)
+def chat_pending(request: Request, agent_id: str = Query(min_length=1),
+                 project_id: str = Query(min_length=1)) -> PendingResponse:
+    """待批表（内存态，后端重启即空）：刷新与重开页面靠它恢复卡片、前缀文本与已答痕迹。
+
+    按「智能体 × 项目」取而不是按会话（R14）：挂起那一轮一个字都没落盘（裁定 8），
+    刷新后前端只知道当前智能体与项目，那条会话在项目侧根本查不到。
+    """
+    service: ChatService = request.app.state.chat_service
+    return PendingResponse(runs=[_pending_info(e)
+                                 for e in service.pending_view_for(agent_id, project_id)])
+
+
 @router.post("/chat/stop", response_model=StreamStopResponse)
 def chat_stop(req: StreamStopRequest, request: Request) -> StreamStopResponse:
-    """服务端真停：置取消位；节点在下一个检查点停笔，截断内容照落盘。"""
-    if not request.app.state.run_registry.cancel(req.run_id):
-        raise HTTPException(status_code=404, detail="这条回答已经结束")
-    return StreamStopResponse(ok=True)
+    """服务端真停：先打在途流，再打待批条目（裁定 10 第二条——待批期间停止钮照旧可用）。"""
+    if request.app.state.run_registry.cancel(req.run_id):
+        return StreamStopResponse(ok=True)
+    service: ChatService = request.app.state.chat_service
+    if service.cancel_pending(req.run_id):
+        return StreamStopResponse(ok=True)
+    raise HTTPException(status_code=404, detail="这条回答已经结束")
 
 
 def _view(request: Request) -> ModelsResponse:

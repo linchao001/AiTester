@@ -78,3 +78,5 @@ def sessions_messages(request: Request, session_id: str) -> SessionMessagesRespo
 def sessions_delete(request: Request, session_id: str) -> None:
     if not _store(request).delete(session_id):
         raise _missing()
+    # 级联（裁定 10 第三条）：会话没了，挂在它上面的待批与检查点线程一起收摊
+    request.app.state.chat_service.drop_session(session_id)
