@@ -11,7 +11,6 @@ from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from langchain_core.messages import AIMessage
 from fastapi.testclient import TestClient
 
@@ -226,7 +225,8 @@ def test_stop_hits_an_in_flight_run(tmp_path: Path, monkeypatch) -> None:
     assert r.status_code == 200
     assert r.json() == {"ok": True}
     thread.join(30)
-    assert "error" not in collected, collected["error"]
+    assert "error" not in collected, collected.get("error")
+    assert "frames" in collected, "SSE 流未走完，后台线程没有交出帧"
     frames = collected["frames"]
     assert frames[0][0] == "start" and frames[0][1]["run_id"] == known_run_id
     assert frames[-1][0] == "done"
