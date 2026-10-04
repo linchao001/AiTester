@@ -46,6 +46,23 @@ def _service(tmp_path: Path, svc_proj, provider=None) -> ChatService:
                        sessions=SessionStore(tmp_path / "sessions"), projects=svc_proj)
 
 
+class _Scripted(ChunkedStreamMixin):
+    name = "scripted"
+    model_ref = "scripted/model"
+
+    def __init__(self, script: list[AIMessage]) -> None:
+        self._script = list(script)
+
+    def complete(self, messages: list) -> str:
+        return ""
+
+    def bind_tools(self, tools: list) -> "_Scripted":
+        return self
+
+    def invoke_messages(self, messages: list) -> AIMessage:
+        return self._script.pop(0)
+
+
 def test_prepare_and_send_guard_share_one_detail(tmp_path, project) -> None:
     """第 2 片消费对称性的直接应用：流式路径不得重写一遍守门文案。"""
     svc_proj, pid, _ = project
@@ -106,6 +123,42 @@ def test_disconnect_persists_truncated_row(tmp_path, project) -> None:
     assert rows[-1].content == "[moc"                 # 停笔点在第二块的检查位：落的就是第一块
 
 
+def test_disconnect_multi_round_persists_last_round_prefix(tmp_path, project) -> None:
+    """多轮断开钉语义：落盘取「末轮已投递前缀」，与 done 路径的 reply 同口径——
+    chat.py stream_turn 的 `visible[max(visible)]` 与 agent_graph.py 的 turn 覆盖分支
+    （后写的非工具轮 content 覆盖前面的）一致：中间轮文本折成 📝 步骤、不落正文，
+    不许被"顺手修成"拼接全部轮次。"""
+    svc_proj, pid, root = project
+    store = SessionStore(tmp_path / "sessions")
+    provider = _Scripted([
+        AIMessage(content="核查中", tool_calls=[{"name": "write", "args": {
+            "file_path": "t.txt", "content": "v"}, "id": "c1", "type": "tool_call"}]),
+        AIMessage(content="已完成清单"),
+    ])
+    runtime = SimpleNamespace(build=lambda agent_id, session_id, provider_override=None, cwd=".":
+                             AgentInstance(agent_id=agent_id,
+                                           system_prompt=find_agent("case_design").prompt,
+                                           provider=provider, tools=local_tools(root),
+                                           build_graph=build_agent_graph))
+    svc = ChatService(sessions=store, projects=svc_proj, agent_runtime=runtime)
+    prepared = svc.prepare("", "写文件", "case_design", pid)
+    stream = svc.stream_turn(prepared)
+    # 消费到第二条 delta（round 1 的 delta、round 1 的 step、round 2 首个 delta 都已投递）
+    # 才断开，确保 visible 同时含 1、2 两轮，测试才有判别性。
+    deltas = 0
+    for event in stream:
+        if event["type"] == "delta":
+            deltas += 1
+            if deltas == 2:
+                break
+    stream.close()
+    rows = store.messages(prepared.session_id)
+    assert rows[-1].role == "assistant"
+    assert rows[-1].stopped is True
+    assert rows[-1].content == "已完成清"              # 只落末轮已投递前缀
+    assert "核查中" not in rows[-1].content            # 中间轮不落正文：与 done 的 reply 同口径
+
+
 def test_close_after_done_persists_turn_once(tmp_path, project) -> None:
     """Task 7 的 SSE 路由就是「收到 done 就 break」的消费者：close() 不得二次落盘。"""
     svc_proj, pid, _ = project
@@ -164,22 +217,6 @@ def test_send_fold_keeps_trace_and_model(tmp_path, project) -> None:
 def test_send_fold_keeps_tool_trace_entries(tmp_path, project) -> None:
     """工具轮的 trace 追加顺序照旧：adapters → tool:<name> → memory → storage。"""
     svc_proj, pid, root = project
-
-    class _Scripted(ChunkedStreamMixin):
-        name = "scripted"
-        model_ref = "scripted/model"
-
-        def __init__(self, script: list[AIMessage]) -> None:
-            self._script = list(script)
-
-        def complete(self, messages: list) -> str:
-            return ""
-
-        def bind_tools(self, tools: list) -> "_Scripted":
-            return self
-
-        def invoke_messages(self, messages: list) -> AIMessage:
-            return self._script.pop(0)
 
     provider = _Scripted([
         AIMessage(content="", tool_calls=[{"name": "write", "args": {
