@@ -3122,7 +3122,7 @@ git commit -m "feat(chat): AuthCard——待批 / 已批 / 已拒三态，命令
 
 - [ ] **Step 1: 档位元数据与持久化**
 
-`pages/chat/utils.ts` 末尾补（`fmtTime`/`contextUsage` 之后，同文件同类小工具）：
+`pages/chat/utils.ts` 末尾补（`fmtTime`/`contextUsage` 之后，同文件同类小工具）。块里那行 `import type { PermMode }` 不进末尾——上提到文件既有 import 块，本仓 import 一律在顶部：
 
 ```ts
 import type { PermMode } from "../../api/client";
@@ -3355,7 +3355,7 @@ import 补：`chatApprove, getPending, type AuthDecision, type PermMode, type Pe
   }, [activeId, reloadPending, reloadSessions, toast]);
 ```
 
-`send()` 的尾巴收成一次委托（`onEvent` 与 try/catch 保持原样，body 多一项 `perm_mode: permMode`）：
+`send()` 的尾巴收成一次委托（`onEvent` 与 try/catch 保持原样）；body 只在**非 free 档**多带 `perm_mode`——缺省即 free（`interaction/schemas.py:25`），恒发当前档位虽然同值，却会把「第 4 片零行为变化」这条红线从网络上抹掉，走查再无处可看「不发 == free」：
 
 ```ts
     let aborted = false;
@@ -3363,7 +3363,8 @@ import 补：`chatApprove, getPending, type AuthDecision, type PermMode, type Pe
     try {
       await chatSendStream(
         { session_id: activeId ?? "", message: text, agent_id: agentId,
-          project_id: projectId, perm_mode: permMode },
+          project_id: projectId,
+          ...(permMode === "free" ? {} : { perm_mode: permMode }) },
         onEvent, controller.signal);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") aborted = true;
@@ -3484,7 +3485,7 @@ import 补：`chatApprove, getPending, type AuthDecision, type PermMode, type Pe
 Run: `cd frontend && npm run build`
 Expected: `0 error`。
 
-Run: `cd backend && python -m pytest -q`
+Run: `cd backend && .venv/Scripts/python -m pytest -q`（仓根裸 `python` 会加载坏掉的 zframe pytest 插件，收集就炸）
 Expected: `0 failed`（本片后端不动前端，重跑只为确认没把契约改歪）。
 
 - [ ] **Step 9: Commit**
