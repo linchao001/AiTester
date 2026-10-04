@@ -60,8 +60,10 @@ def test_control_reaches_the_node_and_drops_pending_tool_calls(tmp_path: Path) -
     control = RunControl()
     control.cancel()
     graph = build_agent_graph(_ToolCallingProvider(_write_call("x.txt")), local_tools(tmp_path))
+    # Task 2 装 checkpointer 后直调 invoke 也必须给 thread_id（缺键 KeyError，实测）；断言本体未动
     out = graph.invoke({"messages": [HumanMessage(content="写文件")]},
-                       config={"configurable": {RUN_CONTROL_KEY: control}})
+                       config={"configurable": {
+                           RUN_CONTROL_KEY: control, "thread_id": "run-control-cancel"}})
     last = out["messages"][-1]
     assert last.content == ""
     assert last.tool_calls == []          # 丢弃后 should_continue 直接 END
@@ -71,6 +73,8 @@ def test_control_reaches_the_node_and_drops_pending_tool_calls(tmp_path: Path) -
 def test_no_control_in_config_runs_the_round_normally(tmp_path: Path) -> None:
     # 不注入取消对象（echo 路径与单测直调）必须照旧跑完：判据是 None 而非缺键即报错
     graph = build_agent_graph(_ToolCallingProvider(_write_call("y.txt")), local_tools(tmp_path))
-    out = graph.invoke({"messages": [HumanMessage(content="写文件")]})
+    # 同上：checkpointer 后直调 invoke 需给 thread_id；config 里仍不带 control
+    out = graph.invoke({"messages": [HumanMessage(content="写文件")]},
+                       config={"configurable": {"thread_id": "run-control-no-control"}})
     assert out["messages"][-1].tool_calls == [] or (tmp_path / "y.txt").exists()
     assert (tmp_path / "y.txt").read_text(encoding="utf-8") == "v"
