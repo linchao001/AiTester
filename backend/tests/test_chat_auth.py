@@ -256,8 +256,9 @@ def test_two_parallel_calls_execute_exactly_once_each(tmp_path: Path) -> None:
     assert [e["call_id"] for e in second if e["type"] == "wait"] == ["c2"]
     assert counter.writes == []
     third = list(stream_graph(resume=decision_from({"decision": APPROVE}), **args))
-    assert counter.writes == [str(resolve_path(str(tmp_path), "a.md")),
-                              str(resolve_path(str(tmp_path), "b.md"))]        # 各恰好一次
+    # ToolNode 用线程池跑同轮多调用，完成顺序任意；本测试的契约是「各恰好一次」
+    assert sorted(counter.writes) == sorted([str(resolve_path(str(tmp_path), "a.md")),
+                                             str(resolve_path(str(tmp_path), "b.md"))])
     assert third[-1]["reply"] == "两个都写了"
 
 

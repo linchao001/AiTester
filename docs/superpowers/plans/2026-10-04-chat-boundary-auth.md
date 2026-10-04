@@ -706,8 +706,8 @@ def test_two_parallel_calls_execute_exactly_once_each(tmp_path: Path) -> None:
     assert [e["call_id"] for e in second if e["type"] == "wait"] == ["c2"]
     assert counter.writes == []
     third = list(stream_graph(resume=decision_from({"decision": APPROVE}), **args))
-    assert counter.writes == [str(resolve_path(str(tmp_path), "a.md")),
-                              str(resolve_path(str(tmp_path), "b.md"))]        # 各恰好一次
+    assert sorted(counter.writes) == sorted([str(resolve_path(str(tmp_path), "a.md")),
+                              str(resolve_path(str(tmp_path), "b.md"))])      # 各恰好一次（ToolNode 并行执行，完成顺序不在契约内）
     assert third[-1]["reply"] == "两个都写了"
 
 
@@ -1144,7 +1144,7 @@ Expected: FAIL — `IndexError: list index out of range`（没有 `wait` 事件�
     }
 ```
 
-`custom` 支一行不动（`wait` 不走 custom 通道）。`stream_graph` docstring 的「末条恒为 finish」那句后面补一句：`挂起时 finish.pending=True，且它前面一定有至少一条 wait 事件。`
+`custom` 支一行不动（`wait` 不走 custom 通道）。`stream_graph` docstring 段末补一句：`挂起时 finish.pending=True，且它前面一定有至少一条 wait 事件。`
 
 - [ ] **Step 4: 跑测试 + 全量**
 
