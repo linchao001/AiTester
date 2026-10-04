@@ -34,7 +34,8 @@ uv run python -m aitester.main
   （interaction → services → context → orchestration → adapters → memory → storage），恒走 mock
 - `POST /api/chat/send/stream`：真实 LLM 链路的唯一传输，按 `agent_id` 现装一个一次性智能体实例
   （提示词 / 有效模型 / 携带工具 / 图拓扑），该智能体的默认模型可用则用、否则回落全局默认，未知 `agent_id` 返回 404。
-  守门在流开始前同步跑完（配置缺失 / 项目不可达 → 普通 400·404，detail 与迁移前逐字相同），
+  守门在流开始前同步跑完（配置缺失 / 项目不可达 → 普通 400·404，prepare 阶段其余上游失败 → 502，
+  detail 与迁移前逐字相同），
   过后响应 `text/event-stream`，逐 token 推 `start / delta / call / step / draft / done / error` 七类事件，
   终态恒为一条（`done`，或被停止时 `done{stopped:true}`；流中模型失败 → `error`）
 - `POST /api/chat/stop`：`{run_id}` 置取消位终止在途回答；`run_id` 已结束返回 404「这条回答已经结束」，

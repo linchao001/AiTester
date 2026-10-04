@@ -2562,7 +2562,7 @@ Run: `cd frontend && npm run build` → 0 error。
 | `done{reply:"完成",steps:[read],session_id:"s9",title:"t",stopped:false}` | 不变 | 不变 | 不变 | 不变 |
 
 `finalize` 的产出必须是 `content:"完成"`、`steps` 含 2 行——`done.steps` 的 `read` 行之后折出第 1 轮的 `{tool:"📝", ok:true, round:1, detail:"先读需求"}`（第 1 轮收到 `call` → `toolCalled=true`，其中间轮文本在 `done` 时折进过程块，spec:119/:167；第 2 轮是最终答复，`toolCalled=false`，不折）、`sessionId:"s9"`、`title:"t"`、`stopped:false`；此时状态上 `terminal=true`、`done` 就是那条 done 事件（页面靠 `state.done` 判终态，不靠自设局部变量）。（Task 12 校正：原文「只含 1 条 `read`」系 prose 笔误，T8 桌检 check.cjs 实测即 2 条，代码正确勿改动。）
-再把 `delta{round:2}` 换成 `delta{round:3}` 并让第 2 轮带 `call`：`finalize` 的 `steps` 必须在真实步骤之后多一条 `{tool:"📝", ok:true, round:2, detail:"完成"}`。
+再把 `delta{round:2}` 换成 `delta{round:3}` 并让第 2 轮带 `call`：`finalize` 的 `steps` **不会**多一条 `{tool:"📝", ok:true, round:2, detail:"完成"}`——代码实态：`call` 只把**已存在**轮次的 `toolCalled` 翻真（`streamState.ts:52` 是 `rounds.map`，不为新轮建条目），rounds 条目只在 `delta` 到达时创建（`:42-46`），第 2 轮有 `call` 无 `delta` 就没有可折的 rounds 条目；`finalize` 折入判据 `r.toolCalled && r.text`（`:88-90`），有文本的第 3 轮 `toolCalled=false` 也不折。该变体实际产出：`steps` = `done.steps`（含第 2 轮 `call` 配对的真实 `step` 行；若 `call` 没有配对 `step`，残留 pending 随 finalize 丢弃，见 `:91-92` 注释）+ 仍只有 round:1 那一条 📝「先读需求」；`content` 照旧取 `done.reply`。（Task 12 校正轮 1：原句承诺的 `{round:2, detail:"完成"}` 折叠不可能发生——「完成」在变体里已是第 3 轮文本，第 2 轮根本没有文本；与上一句同款 prose 笔误，代码正确勿改动。）
 
 - [ ] **Step 4: 提交**
 
