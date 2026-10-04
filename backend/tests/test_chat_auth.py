@@ -56,7 +56,8 @@ def test_boundary_shell_always_asks_even_with_cwd_inside(project: str) -> None:
         assert needs_approval(tool, {"command": "pytest"}, "boundary", project, set()) is True
         assert needs_approval(tool, {"command": "pytest", "cwd": project},
                               "boundary", project, set()) is True
-        assert needs_approval(tool, {"command": "pytest"}, "boundary", project, {"pytest"}) is False
+        assert needs_approval(tool, {"command": "pytest"},
+                              "boundary", project, {f"{tool}|pytest"}) is False
 
 
 def test_boundary_kb_write_counts_as_in_bounds(project: str) -> None:

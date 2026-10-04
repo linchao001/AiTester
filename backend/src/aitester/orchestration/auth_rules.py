@@ -99,9 +99,8 @@ def plan_target(tool_id: str, args: dict[str, Any], project_dir: str) -> AuthTar
     if tool_id in SHELL_IDS:
         command = str(payload.get("command") or "")
         cwd = str(payload.get("cwd") or "")
-        # 记住口径按命令全文（不含工具 id）：同一命令在 pwsh/bash 下影响等同，批准一次即可
         return AuthTarget(category="shell", action="执行命令", target=cwd,
-                          command=command, cwd=cwd, remember_key=command)
+                          command=command, cwd=cwd, remember_key=f"{tool_id}|{command}")
     if tool_id in KB_WRITE_IDS:
         # 写入路径由服务端构造，无「界外」语义：boundary 放行、strict 挂（裁定 6 表 + 偏离 5）
         return AuthTarget(category="knowledge", action="写入知识库", target="", command="",
