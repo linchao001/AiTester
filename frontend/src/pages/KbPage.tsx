@@ -355,6 +355,7 @@ export default function KbPage() {
     kbAbortRef.current = null;
     busyRef.current = false;
     setBusy(false);
+    setStopRequested(false);   // 终态统一清旗（与 ChatPage 同口径）：ask 开头的重置保留不动
     const done = st.done;
     if (done) {
       const f = finalize(st, done);
