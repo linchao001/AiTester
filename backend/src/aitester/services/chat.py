@@ -123,7 +123,7 @@ class ChatService:
         return {"reply": result["reply"], "trace": result["trace"]}
 
     def _guard_project(self, project_id: str) -> dict[str, Any]:
-        """守门只有一段：send 与 resume 复用同一函数、同一条 detail（第 2 片教训）。
+        """守门只有一段：prepare 与 resume_stream 复用同一函数、同一条 detail（第 2 片教训）。
 
         复用项目页读侧同一只探测（裁定 3）：展开 ~、绝不 mkdir、吞 (OSError, ValueError)，
         畸形 dir（NUL 走 ValueError）在此同样答「不可达」→ 中文 400，绝不外泄成 500。
@@ -270,8 +270,9 @@ class ChatService:
         挂起分支 return 在 persist 之前（裁定 8：不落盘），且不发 done——流就在 wait 之后断掉
         （裁定 7）。R8：finish.pending 同时 control.cancelled 时停止优先，落 stopped 截断行。
         """
-        steps: list[dict[str, Any]] = []
-        # visible[round] = 已 yield 出去的该轮 delta 文本；断开或挂起时取最后一轮的前缀
+        # 续跑折叠不是新回合：前一段的过程行与已投递正文要接着算，用户看到的是一条连续回答
+        steps: list[dict[str, Any]] = list(entry.steps) if entry is not None else []
+        base_prefix = entry.prefix_text if entry is not None else ""
         visible: dict[int, str] = {}
         waiting: list[dict[str, Any]] = []
         outcome: dict[str, Any] | None = None
@@ -293,8 +294,12 @@ class ChatService:
                 self._hold(prepared, thread_id, entry, visible, steps, waiting)
                 return
             # stream_graph 保证终帧 finish：走到这里 outcome 必非空，无需兜底
-            reply = str(outcome["reply"])
-            stopped = bool(outcome["stopped"])
+            # R8：待批途中按停止——工具轮的 finish.reply 恒为空串（正文只在无工具轮才写），
+            # 落它等于把用户已看到的半句抹成一条「已完成的空回答」：改用已投递前缀并标 stopped。
+            hung = bool(outcome["pending"])
+            reply = (base_prefix + (visible[max(visible)] if visible else "")
+                     if hung else str(outcome["reply"]))
+            stopped = True if hung else bool(outcome["stopped"])
             self._persist(prepared, reply, steps, stopped)
             outcome = None               # 已落盘：done 帧后再被 close() 不得二次落盘
             self._release(thread_id, entry)
@@ -316,16 +321,19 @@ class ChatService:
                 for event in events:      # 无人消费也要跑到停笔点，只为拿到 finish
                     if event["type"] == "step":
                         steps.append({k: event[k] for k in _STEP_KEYS})
-                    elif event["type"] == "wait":
-                        waiting.append({k: event[k] for k in _WAIT_KEYS})
                     elif event["type"] == "finish":
                         outcome = event
             except Exception:             # 收尾路径的失败绝不能盖掉原始断开
                 logger.warning("断开收尾时图未跑完，本次不落截断盘", exc_info=True)
             if outcome is not None:
-                prefix = visible[max(visible)] if visible else ""
-                self._persist(prepared, prefix, steps, stopped=True)
+                self._persist(prepared, base_prefix + (visible[max(visible)] if visible else ""),
+                              steps, stopped=True)
             # 断开 == 停止（第 4 片同语义）：留下的条目一律作废，线程也不再等批准
+            self._release(thread_id, entry)
+            raise
+        except Exception:
+            # 图跑挂（provider 故障、事件缺键）：条目和检查点线程都不留。
+            # 挂起过的 run 若留着条目，里面那把决策已进 consumed，用户再点续跑就是永久 400。
             self._release(thread_id, entry)
             raise
 
@@ -333,7 +341,9 @@ class ChatService:
               entry: PendingEntry | None, visible: dict[int, str],
               steps: list[dict[str, Any]], waiting: list[dict[str, Any]]) -> None:
         """挂起入表：首挂开条目，续跑又撞卡就原地更新（队列按 call_id 去重）。"""
-        prefix = visible[max(visible)] if visible else ""
+        # 续跑又撞卡：前缀 = 上一段已投递 + 本段新投递（上一段那份就在条目里）
+        prefix = ((entry.prefix_text if entry is not None else "")
+                  + (visible[max(visible)] if visible else ""))
         if entry is not None:
             self.pending.update_hold(entry, prefix=prefix, steps=steps, waiting=waiting)
             return

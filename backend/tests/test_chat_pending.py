@@ -10,8 +10,8 @@ from langchain_core.messages import AIMessage
 from test_chat_stream import _runtime, project  # noqa: F401  复用服务层夹具，本片不重写一遍装配
 from streaming_fakes import ChunkedStreamMixin
 
-from aitester.config import Settings
 from aitester.orchestration.checkpoint import get_checkpointer
+from aitester.orchestration.run_control import RunControl
 from aitester.services import ChatService
 from aitester.services.pending import (
     CALL_DECIDED_DETAIL,
@@ -43,7 +43,10 @@ class _Scripted(ChunkedStreamMixin):
         return self
 
     def invoke_messages(self, messages: list) -> AIMessage:
-        return self._script.pop(0) if self._script else AIMessage(content="收到")
+        item = self._script.pop(0) if self._script else AIMessage(content="收到")
+        if isinstance(item, Exception):     # 脚本里放异常实例：失败收摊路径要它
+            raise item
+        return item
 
 
 def _call_round(*paths: str, text: str = "") -> AIMessage:
@@ -243,8 +246,66 @@ def test_drop_session_clears_entries_and_remembered() -> None:
     assert reg.remembered_for("case_design:sess_1") == set()
 
 
-# —— 服务层接线（Task 6）：run_id 一律 cs 前缀。_SAVER 是进程级单例，
-# test_chat_auth.py 收尾时 r2/r3/r7 线程上挂着中断态，同名开局即串台。
+# —— 服务层接线：prepare → stream_turn → 挂起入表 → resume_stream 的整链路。run_id 一律 cs 前缀——
+# _SAVER 是进程级单例，test_chat_auth.py 收尾时 r2/r3/r7 线程上挂着中断态，同名开局即串台。
+
+
+def test_resume_carries_forward_the_hung_segment_steps_and_prefix(tmp_path, project) -> None:
+    """续跑接着算：前一段已执行的过程行与已投递正文不能因为换了一段流就丢。"""
+    svc_proj, pid, root = project
+    store = SessionStore(tmp_path / "sessions")
+    first = AIMessage(content="先写个界内的", tool_calls=[
+        {"id": "k1", "name": "write", "args": {"file_path": "notes.md", "content": "n"},
+         "type": "tool_call"}])
+    svc = _svc(tmp_path, svc_proj,
+               _Scripted([first, _call_round("../a.md"), AIMessage(content="都写了")]))
+    prepared = svc.prepare("", "两步", "case_design", pid, "boundary")
+    list(svc.stream_turn(prepared, run_id="cs10"))
+    assert [s["tool"] for s in svc.pending.peek("cs10").steps] == ["write"]     # 界内那条已执行
+    svc.approve("cs10", "c1", "approve", False)
+    _, stream = svc.resume_stream("cs10")
+    done = list(stream)[-1]
+    assert [s["tool"] for s in done["steps"]] == ["write", "write"]             # 界内 + 批准后执行的界外
+    assert [s["tool"] for s in store.messages(prepared.session_id)[-1].steps] == ["write", "write"]
+    assert (root / "notes.md").exists() and (tmp_path / "a.md").exists()   # 界内落项目目录，界外落在其外
+
+
+def test_stop_during_a_live_pending_fold_lands_the_prefix_as_stopped(tmp_path, project) -> None:
+    """R8：流还活着时按停止（/chat/stop 打到正在挂起的折叠）→ 落已投递前缀的 stopped 行。
+
+    走 finish.reply 会落一条空正文、stopped=False 的「已完成回答」：用户看到的半句没了，
+    气泡还会当收尾渲染。done 帧必须照发——前端靠它收流并让授权卡退场。
+    """
+    svc_proj, pid, _ = project
+    store = SessionStore(tmp_path / "sessions")
+    svc = _svc(tmp_path, svc_proj,
+               _Scripted([_call_round("../escape.md", text="我先想想"), AIMessage(content="好的")]))
+    prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
+    control = RunControl()
+    events = []
+    for event in svc.stream_turn(prepared, control, run_id="cs9"):
+        events.append(event)
+        if event["type"] == "wait":
+            control.cancel()          # 真实停止就是把这条折叠的 control 置位
+    assert events[-1]["type"] == "done" and events[-1]["stopped"] is True
+    assert events[-1]["reply"] == "我先想想"
+    rows = store.messages(prepared.session_id)
+    assert rows[-1].content == "我先想想" and rows[-1].stopped is True
+    assert svc.pending.peek("cs9") is None
+
+
+def test_failed_resume_releases_entry_and_thread(tmp_path, project) -> None:
+    """图跑挂不留尸体：条目和线程一起摘，否则那条 pending 带着已消费的决策永远 400。"""
+    svc_proj, pid, _ = project
+    svc = _svc(tmp_path, svc_proj, _Scripted([_call_round("../a.md"), RuntimeError("续跑炸了")]))
+    prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
+    list(svc.stream_turn(prepared, run_id="cs11"))
+    svc.approve("cs11", "c1", "approve", False)
+    _, stream = svc.resume_stream("cs11")
+    with pytest.raises(RuntimeError):
+        list(stream)
+    assert svc.pending.peek("cs11") is None
+    assert get_checkpointer().get_tuple({"configurable": {"thread_id": "cs11"}}) is None
 
 
 def test_free_mode_never_holds(tmp_path, project) -> None:
@@ -316,8 +377,8 @@ def test_reject_then_resume_answers_without_writing(tmp_path, project) -> None:
     assert not (tmp_path / "escape.md").exists()
     assert done["steps"] == []                                   # R9：拒绝不进过程行（事件侧口径）
     # 磁盘侧同一条锁：空过程行落盘归一为 null（session_store.append 的 `steps or None`，
-    # test_session_store.py:65 钉死），所以这里断「没有过程行」而不是「是空 list」——brief 写的
-    # `== []` 在这一层永远不成立，除非改第 4 片的落盘契约。
+    # test_session_store.py:65 钉死），所以这里断「没有过程行」而不是「是空 list」——
+    # assistant 行的 steps 永远不携空数组上读侧，落盘契约决定了这一层只能这么断。
     assert not store.messages(prepared.session_id)[-1].steps
 
 
@@ -325,7 +386,8 @@ def test_second_interrupt_appends_to_the_same_entry(tmp_path, project) -> None:
     """两条待批串行挂：第二条的 wait 追加进同一条目，已答的不丢、去重按 call_id。"""
     svc_proj, pid, _ = project
     svc = _svc(tmp_path, svc_proj,
-               _Scripted([_call_round("../a.md", "../b.md"), AIMessage(content="两个都写了")]))
+               _Scripted([_call_round("../a.md", "../b.md", text="第一段思考"),
+                          AIMessage(content="两个都写了")]))
     prepared = svc.prepare("", "并行两个", "case_design", pid, "strict")
     list(svc.stream_turn(prepared, run_id="cs4"))
     svc.approve("cs4", "c1", "approve", False)
@@ -334,6 +396,7 @@ def test_second_interrupt_appends_to_the_same_entry(tmp_path, project) -> None:
     entry = svc.pending.peek("cs4")
     assert [c["call_id"] for c in entry.queue] == ["c1", "c2"]
     assert entry.decided == [{**entry.queue[0], "decision": "approve"}]   # R14：六键跟着一起回显
+    assert entry.prefix_text == "第一段思考"                        # 续跑段没新正文：前缀还是上一段那份
     assert not (tmp_path / "a.md").exists()                        # 批准的也要等 c2 决策后才执行（spec 风险节）
 
 
@@ -369,6 +432,7 @@ def test_stop_while_pending_persists_prefix_and_kills_resume(tmp_path, project) 
     assert svc.cancel_pending("cs5") is False                       # 已摘除：二次停止不再落盘
     rows = store.messages(prepared.session_id)
     assert rows[-1].content == "我先想想" and rows[-1].stopped is True
+    assert get_checkpointer().get_tuple({"configurable": {"thread_id": "cs5"}}) is None
     assert svc.pending.peek("cs5") is None
     with pytest.raises(PendingGoneError) as exc:               # 顶部已 import（Task 5 那组用过）
         svc.resume_stream("cs5")
