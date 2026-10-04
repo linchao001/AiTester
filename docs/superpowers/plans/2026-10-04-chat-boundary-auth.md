@@ -3002,7 +3002,7 @@ git commit -m "feat(chat): 前端认 wait 事件——传输层三函数、perm_
 
 **Files:**
 - Create: `frontend/src/pages/chat/AuthCard.tsx`
-- Modify: `frontend/src/App.css`（`.kb-draft` 段 `:546-560` 之后补一行 `.auth-rem`）
+- Modify: `frontend/src/App.css`（`.kb-draft` 段 `:546-560` 之后补 `.auth-rem` 一族三条：容器 / input / input:disabled）
 
 **Interfaces:**
 - Consumes: T8 的 `PendingCallInfo` / `AuthDecision`；`.kb-draft` 一族既有类（`d-head`/`d-op`/`d-path`/`d-sum`/`d-diff`/`d-acts`/`d-state`）、`.ws-btn.main`、`.mini-btn`
@@ -3045,12 +3045,13 @@ export default function AuthCard(p: Props) {
     <div className={`kb-draft${p.decided === "approve" ? " done" : ""}`}>
       <div className="d-head">
         <span className="d-op">{p.ask.command ? "执行命令" : "写文件"}</span>
-        <span>{p.ask.action}</span>
+        {/* 命令类的 action 与类标是同一串「执行命令」（auth_rules 口径），并显会把头部念成复读 */}
+        {p.ask.command ? null : <span>{p.ask.action}</span>}
         <div className="spacer" />
         <span className="d-state">{stateLabel}</span>
       </div>
-      {/* 目标路径给写类调用，工作目录给命令类；空串就整行不渲染，不留光杆标签 */}
-      {p.ask.target ? <div className="d-path">{p.ask.target}</div> : null}
+      {/* 目标路径给写类调用，工作目录给命令类：命令类的 target 就是那个 cwd，两处都渲染等于把同一路径摆两遍 */}
+      {p.ask.command || !p.ask.target ? null : <div className="d-path">{p.ask.target}</div>}
       {p.ask.command
         ? <pre className="d-diff">{p.ask.command}{p.ask.cwd ? `\n工作目录：${p.ask.cwd}` : ""}</pre>
         : <div className="d-sum">批准后立即执行，拒绝则跳过这一步并让模型继续作答。</div>}
@@ -3086,6 +3087,7 @@ export default function AuthCard(p: Props) {
   /* 授权卡的「记住」勾选：卡片行内的小控件，取值全用既有 token，不新增色值 */
   .auth-rem{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--text-2);cursor:pointer}
   .auth-rem input{accent-color:var(--primary);margin:0}
+  .auth-rem input:disabled{cursor:not-allowed}
 ```
 
 - [ ] **Step 3: 门禁**
