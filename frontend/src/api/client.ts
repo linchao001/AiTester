@@ -311,6 +311,94 @@ export function chatSend(
     body: JSON.stringify({ session_id: sessionId, message, agent_id: agentId, project_id: projectId }) });
 }
 
+/** 一条 SSE 帧的落地形态：`event:` 名进 type，`data:` 的单行 JSON 摊平进来（与 router `_frame` 一一对应）。 */
+type Frame<T extends string, P> = { type: T } & P;
+export type StreamEvent =
+  | Frame<"start", { run_id: string; session_id: string }>
+  | Frame<"delta", { round: number; text: string }>
+  | Frame<"call", { tool: string; round: number; detail: string }>
+  | Frame<"step", { tool: string; ok: boolean; round: number; detail: string }>
+  | Frame<"draft", { draft: KbDraft }>
+  | Frame<"done", { reply: string; steps: ChatStep[]; session_id: string; title: string; stopped: boolean }>
+  | Frame<"error", { detail: string }>;
+
+export interface StreamBody {
+  session_id: string;
+  message: string;
+  agent_id: string;
+  project_id: string;
+}
+
+const STREAM_EVENTS = new Set(["start", "delta", "call", "step", "draft", "done", "error"]);
+
+/** POST + 流解析：EventSource 不能带 JSON body，WebSocket 又是多余的语义，故 fetch + getReader 手解。
+ *  守门未过时后端回普通 JSON（400/404/502），照 apiFetch 口径抛 ApiError；守门过后才有事件。 */
+export async function chatSendStream(
+  body: StreamBody,
+  onEvent: (ev: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const resp = await fetch("/api/chat/send/stream", {
+    method: "POST", headers: JSON_HEADERS, body: JSON.stringify(body), signal });
+  if (!resp.ok) {
+    let detail = `请求失败: HTTP ${resp.status}`;
+    let data: unknown = null;
+    try {
+      const parsed = (await resp.json()) as { detail?: unknown };
+      data = parsed;
+      if (typeof parsed.detail === "string") detail = parsed.detail;
+    } catch {
+      // 响应体不是 JSON 时保留默认错误文案
+    }
+    throw new ApiError(detail, resp.status, data);
+  }
+  if (!resp.body) throw new ApiError("浏览器未提供响应流，无法接收流式回复", resp.status, null);
+
+  const feed = (frame: string) => {
+    let name = "";
+    let data = "";
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) name = line.slice(6).trim();
+      else if (line.startsWith("data:")) data = line.slice(5).trim();
+    }
+    if (!STREAM_EVENTS.has(name)) return;   // 未知事件静默忽略（spec 事件表：前端只认这 7 类）
+    let payload: object;
+    try {
+      payload = JSON.parse(data) as object;
+    } catch {
+      return;                               // 坏帧丢一条，不砸整条流（与后端草案逐条容错同口径）
+    }
+    onEvent({ ...payload, type: name } as StreamEvent);
+  };
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    // 行尾归一：SSE 允许 \r\n（浏览器/中间层改写时），后端只发 \n；不归一则 "\r\n\r\n" 里
+    // 找不到 "\n\n"，整条流会退化成「永远凑不齐一帧」。只替 \r\n 整体，不替孤立 \r——
+    // 半截 "\r"（\r\n 恰好跨包）必须留在 buf 里等下一包拼上再替，提前转成 \n 会凭空多一个
+    // 空行，把 event: 行和 data: 行劈成两帧，整条事件静默丢失。
+    buf = (buf + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
+    let sep = buf.indexOf("\n\n");
+    while (sep >= 0) {
+      feed(buf.slice(0, sep));
+      buf = buf.slice(sep + 2);
+      sep = buf.indexOf("\n\n");
+    }
+  }
+  buf += decoder.decode();          // 尾包 flush：最后一帧可能不带终止空行
+  if (buf.trim()) feed(buf);
+}
+
+/** 服务端真停：置取消位。404「这条回答已经结束」是正常竞态，调用方按竞态处理。 */
+export function chatStop(runId: string): Promise<{ ok: boolean }> {
+  return apiFetch<{ ok: boolean }>("/api/chat/stop", {
+    method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ run_id: runId }) });
+}
+
 export interface ChatSession {
   id: string;
   agent_id: string;
@@ -326,6 +414,8 @@ export interface ChatMessage {
   content: string;
   ts: number;
   steps: ChatStep[] | null;
+  /** 被停止的 assistant 行：只进 UI 挂「（已停止）」，不进 content。 */
+  stopped?: boolean;
 }
 
 const sessionsApi = (sub = "") => `/api/chat/sessions${sub}`;
