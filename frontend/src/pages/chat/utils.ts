@@ -9,14 +9,18 @@ export function estTokens(s: string): number {
   return Math.round(cjk + (text.length - cjk) / 4);
 }
 
-/** 原型 :1399-1409 —— 系统提示词 + 历史 + 当前输入的占用估算。 */
+/** 与后端 `services/chat.py` 的 `HISTORY_MAX` 同一常数：两侧口径不一致，meter 就会把
+ *  后端根本不会带上的历史算进占用（第 1 片登记、第 2 片转来的欠账，第 4 片裁定 6 收口）。 */
+export const HISTORY_MAX = 40;
+
+/** 原型 :1399-1409 —— 系统提示词 + 历史 + 当前输入的占用估算；历史只数最近 HISTORY_MAX 条。 */
 export function contextUsage(args: {
   systemPrompt: string;
   history: { content: string }[];
   input: string;
   cap: number;
 }): { used: number; cap: number; pct: number } {
-  const used = args.history.reduce(
+  const used = args.history.slice(-HISTORY_MAX).reduce(
     (acc, m) => acc + estTokens(m.content), estTokens(args.systemPrompt)) + estTokens(args.input || "");
   const cap = args.cap > 0 ? args.cap : 0;
   return { used, cap, pct: cap ? Math.min(100, Math.round((used / cap) * 100)) : 0 };

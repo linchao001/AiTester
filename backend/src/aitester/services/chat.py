@@ -30,6 +30,7 @@ from aitester.storage import InMemoryRepository, Repository
 SYSTEM_PROMPT = "你是 AiTester 测试智能体（骨架占位）。"
 
 # 只截 prompt，磁盘保留全量：不截则真实模型下长会话每轮 token 线性上涨（spec 裁定 6）
+# 与 frontend/src/pages/chat/utils.ts 的 HISTORY_MAX 同一常数（第 4 片裁定 6）
 HISTORY_MAX = 40
 
 logger = logging.getLogger(__name__)
