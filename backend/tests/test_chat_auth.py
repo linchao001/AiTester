@@ -10,7 +10,9 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
 from aitester.adapters.llm import MockProvider
+from aitester.adapters.tools import build_default_registry
 from aitester.adapters.tools.file_tools.fs_tool import resolve_path
+from aitester.adapters.tools.file_tools.observation import FileObservationStore
 from aitester.orchestration import build_agent_graph, stream_graph
 from aitester.orchestration.auth_rules import (
     PERM_MODE_DETAIL,
@@ -22,6 +24,13 @@ from aitester.orchestration.auth_rules import (
     validate_perm_mode,
 )
 from aitester.orchestration.checkpoint import drop_thread, get_checkpointer
+from aitester.orchestration.gate import (
+    APPROVE,
+    REJECT,
+    build_gate_context,
+    decision_from,
+    plan_items,
+)
 from streaming_fakes import ChunkedStreamMixin
 
 
@@ -34,6 +43,48 @@ def project(tmp_path: Path) -> str:
 
 def _file(path: str) -> dict:
     return {"file_path": path, "content": "x"}
+
+
+class _Counting(FileObservationStore):
+    """写执行计数器：只挂真工具的 mark 钩子（write.py:65 每次成功写入必过这里）。
+
+    不造第二个工具实现——MagicMock 过不了 ToolNode 的 schema 校验，而自写假工具会绕开
+    「判定与执行认同一个解析口」这条真正要验的东西。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.writes: list[str] = []
+
+    def mark(self, session_id: str, path: str, version: str) -> None:
+        self.writes.append(path)
+        super().mark(session_id, path, version)
+
+
+def _project_tools(tmp_path: Path, counter: _Counting) -> list:
+    """cwd 落在项目目录里：界外文件就是 tmp_path 根，工具真写得动、计数器抓得到。"""
+    registry = build_default_registry(
+        cwd=str(tmp_path / "proj"), session_id="s1", observed=counter)
+    return registry.get_many(["write"])
+
+
+def _calls(*items) -> AIMessage:
+    return AIMessage(content="", tool_calls=[
+        {"id": cid, "name": name, "args": args, "type": "tool_call"}
+        for cid, name, args in items])
+
+
+def _outside(name: str = "out.md") -> dict:
+    return {"file_path": f"../{name}", "content": "x"}
+
+
+def _gate_ctx(tmp_path: Path, perm_mode: str, remembered: set[str] | None = None) -> "GateContext":
+    from aitester.orchestration.gate import GateContext
+    # 传进来的集合必须原样挂上（哪怕还是空的）：记住表靠同一对象身份被 gate 回填
+    return GateContext(perm_mode=perm_mode,
+                       project_dir=str(resolve_path(str(tmp_path / "proj"), ".")),
+                       session_key="case_design:sess_1",
+                       remembered=set() if remembered is None else remembered)
 
 
 def test_free_mode_never_asks(project: str) -> None:
@@ -156,3 +207,142 @@ def test_threadless_callers_still_work() -> None:
     events = list(stream_graph(build_agent_graph, MockProvider(), [],
                                [HumanMessage(content="生成用例")]))
     assert events[-1]["type"] == "finish"
+
+
+def test_free_context_never_touches_the_gate(tmp_path: Path) -> None:
+    """默认档零行为：gate 在场但直通，工具照旧立刻执行。"""
+    counter = _Counting()
+    provider = ScriptProvider([_calls(("c1", "write", _outside())), AIMessage(content="完成")])
+    events = list(stream_graph(build_agent_graph, provider, _project_tools(tmp_path, counter),
+                               [HumanMessage(content="写界外")],
+                               gate=build_gate_context("free", "anything", "k", set())))
+    assert [e["type"] for e in events].count("wait") == 0
+    assert counter.writes == [str(resolve_path(str(tmp_path), "out.md"))]
+
+
+def test_build_gate_context_short_circuits_free_and_platform(tmp_path: Path) -> None:
+    assert build_gate_context("free", str(tmp_path), "k", set()) is None
+    assert build_gate_context("strict", "", "k", set()) is None       # 平台智能体无项目落点
+
+
+def test_boundary_out_of_bounds_waits_before_executing(tmp_path: Path) -> None:
+    counter = _Counting()
+    provider = ScriptProvider([_calls(("c1", "write", _outside()))])
+    events = list(stream_graph(build_agent_graph, provider, _project_tools(tmp_path, counter),
+                               [HumanMessage(content="写界外")],
+                               thread_id="w1", gate=_gate_ctx(tmp_path, "boundary")))
+    assert counter.writes == []                                  # 走查项 4 的单测锁：挂起即零副作用
+    wait = [e for e in events if e["type"] == "wait"]
+    assert len(wait) == 1 and wait[0]["call_id"] == "c1"
+    assert wait[0]["tool"] == "write"
+    assert wait[0]["action"] == "写入项目目录外的文件"
+
+
+def test_two_parallel_calls_execute_exactly_once_each(tmp_path: Path) -> None:
+    """P5 否决形态的正面锁：两个都批 → 真执行恰为两次，gate 重跑不重复副作用。"""
+    counter = _Counting()
+    provider = ScriptProvider([
+        _calls(("c1", "write", _outside("a.md")), ("c2", "write", _outside("b.md"))),
+        AIMessage(content="两个都写了"),
+    ])
+    ctx = _gate_ctx(tmp_path, "strict")
+    args = dict(build=build_agent_graph, provider=provider,
+                tools=_project_tools(tmp_path, counter),
+                messages=[HumanMessage(content="并行写两个")], thread_id="r2", gate=ctx)
+    first = list(stream_graph(**args))
+    assert [e["call_id"] for e in first if e["type"] == "wait"] == ["c1"]
+    assert counter.writes == []                                  # 批第一条之后仍未开跑（spec 风险节）
+    second = list(stream_graph(resume=decision_from({"decision": APPROVE}), **args))
+    assert [e["call_id"] for e in second if e["type"] == "wait"] == ["c2"]
+    assert counter.writes == []
+    third = list(stream_graph(resume=decision_from({"decision": APPROVE}), **args))
+    assert counter.writes == [str(resolve_path(str(tmp_path), "a.md")),
+                              str(resolve_path(str(tmp_path), "b.md"))]        # 各恰好一次
+    assert third[-1]["reply"] == "两个都写了"
+
+
+def test_reject_keeps_the_round_alive_and_asks_the_model(tmp_path: Path) -> None:
+    """裁定 3：拒绝单条、本轮继续。被拒的不执行，模型收到中文拒绝结果后接着作答。"""
+    counter = _Counting()
+    provider = ScriptProvider([_calls(("c1", "write", _outside())), AIMessage(content="好的，我不写了")])
+    args = dict(build=build_agent_graph, provider=provider,
+                tools=_project_tools(tmp_path, counter),
+                messages=[HumanMessage(content="写文件")], thread_id="r3",
+                gate=_gate_ctx(tmp_path, "strict"))
+    list(stream_graph(**args))
+    out = list(stream_graph(resume=decision_from({"decision": REJECT}), **args))
+    assert counter.writes == []
+    assert out[-1]["reply"] == "好的，我不写了"
+    assert out[-1]["tool_traces"] == []                          # R9：拒绝不进过程行
+
+
+def test_rejected_call_is_rewritten_out_of_the_pending_list(tmp_path: Path) -> None:
+    """P6 的两条硬形状：同 id 覆盖那条 AIMessage（tool_calls 只剩批准的）；合成拒绝三字段对齐。"""
+    from langchain_core.messages import ToolMessage
+    counter = _Counting()
+    # 一条批准 + 一条拒绝：批准的 c2 真跑，拒绝的 c1 被剔出清单并收到 error
+    provider = ScriptProvider([
+        _calls(("c1", "write", _outside("bad.md")), ("c2", "write", _outside("good.md"))),
+        AIMessage(content="一个写了一个没写"),
+    ])
+    ctx = _gate_ctx(tmp_path, "strict")
+    tools = _project_tools(tmp_path, counter)
+    # 另装一个图只为了读状态：checkpointer 是进程级单例（Task 2），同 thread_id 读得到同一份
+    graph = build_agent_graph(provider, tools)
+    args = dict(build=build_agent_graph, provider=provider, tools=tools,
+                messages=[HumanMessage(content="并行两个")], thread_id="r7", gate=ctx)
+    list(stream_graph(**args))                                   # 挂起在 c1
+    list(stream_graph(resume=decision_from({"decision": REJECT}), **args))    # 拒 c1 → 挂起在 c2
+    list(stream_graph(resume=decision_from({"decision": APPROVE}), **args))   # 批 c2 → 执行
+    msgs = _thread_state(graph, "r7").values["messages"]
+    original = msgs[1]                                           # 脚本第一轮那条 AIMessage
+    assert isinstance(original, AIMessage)
+    rewritten = [m for m in msgs if isinstance(m, AIMessage) and m.id == original.id]
+    assert len(rewritten) == 1                                   # 同 id 覆盖，不是新追加一条
+    assert [c["id"] for c in rewritten[0].tool_calls] == ["c2"]  # 只留批准的
+    # 批准的 c2 执行后也有 ToolMessage（成功结果）：合成拒绝按 status=="error" 筛，
+    # 与 spec 测试 3「拒绝的形状」的判据一致。
+    rejected = [m for m in msgs if isinstance(m, ToolMessage) and m.status == "error"]
+    assert [m.tool_call_id for m in rejected] == ["c1"]
+    assert rejected[0].status == "error" and rejected[0].name == "write"
+    assert rejected[0].content.startswith("用户拒绝了此操作：")
+    assert counter.writes == [str(resolve_path(str(tmp_path), "good.md"))]
+
+
+def test_all_rejected_routes_back_to_agent(tmp_path: Path) -> None:
+    """全拒不经过 tools 节点：断言路由函数本身，不吃 ToolNode 拿到空清单时「恰好不报错」的巧合。"""
+    from aitester.orchestration.agent_graph import route_after_gate
+    assert route_after_gate({"messages": [AIMessage(content="", tool_calls=[])]}) == "agent"
+    call = {"id": "c1", "name": "write", "args": {}, "type": "tool_call"}
+    assert route_after_gate({"messages": [AIMessage(content="", tool_calls=[call])]}) == "tools"
+
+
+def test_remembered_set_reaps_the_next_identical_call(tmp_path: Path) -> None:
+    """裁定 4：勾选记住后同一路径不再问，且记住的是规范化后的绝对路径"""
+    counter = _Counting()
+    remembered: set[str] = set()
+    provider = ScriptProvider([
+        _calls(("c1", "write", _outside("a.md"))),
+        _calls(("c2", "write", _outside("a.md"))),
+        AIMessage(content="好了"),
+    ])
+    ctx = _gate_ctx(tmp_path, "strict", remembered)
+    tools = _project_tools(tmp_path, counter)
+    list(stream_graph(build_agent_graph, provider, tools,
+                      [HumanMessage(content="先写")], thread_id="r4a", gate=ctx))
+    list(stream_graph(build_agent_graph, provider, tools, [HumanMessage(content="先写")],
+                      thread_id="r4a", gate=ctx,
+                      resume=decision_from({"decision": APPROVE, "remember": True})))
+    assert remembered == {f"write|{resolve_path(str(tmp_path / 'proj'), '../a.md')}"}
+    tail = list(stream_graph(build_agent_graph, provider, tools,
+                             [HumanMessage(content="再写同一文件")], thread_id="r4b", gate=ctx))
+    assert [e["type"] for e in tail].count("wait") == 0          # 新线程也不问了
+    assert counter.writes.count(str(resolve_path(str(tmp_path), "a.md"))) == 2
+
+
+def test_decision_from_rejects_garbage(tmp_path: Path) -> None:
+    from aitester.orchestration.gate import GateAuthError
+    assert decision_from({"decision": "approve", "remember": None}) == {"decision": "approve", "remember": False}
+    for bad in (None, "approve", {"decision": "yes"}, {}):
+        with pytest.raises(GateAuthError):
+            decision_from(bad)

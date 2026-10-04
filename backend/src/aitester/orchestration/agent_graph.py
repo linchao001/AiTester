@@ -1,4 +1,4 @@
-"""工具感知 Agent 图：agent → tools → agent → … → END；无工具时退化为单节点直答图。"""
+"""工具感知 Agent 图：agent → gate → tools → agent → … → END；无工具时退化为单节点直答图。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from typing_extensions import TypedDict
 from aitester.adapters.llm import LlmProvider
 from aitester.adapters.tools.base import AiTooler
 from aitester.orchestration.checkpoint import get_checkpointer, new_thread_id
+from aitester.orchestration.gate import GATE_KEY, GateContext, make_gate_node
 from aitester.orchestration.run_control import RUN_CONTROL_KEY, RunControl
 
 
@@ -36,6 +37,27 @@ def _run_control(config: RunnableConfig | None):
     if not config:
         return None
     return (config.get("configurable") or {}).get(RUN_CONTROL_KEY)
+
+
+def _gate_context(config: RunnableConfig | None) -> GateContext | None:
+    """从注入的 RunnableConfig 取执法上下文；没注入 = 不执法（echo、单测直调、free 档）。"""
+    if not config:
+        return None
+    return (config.get("configurable") or {}).get(GATE_KEY)
+
+
+def route_after_gate(state: AgentState) -> str:
+    """gate 之后：还有批准的就执行，一条不剩的就回模型。
+
+    显式边走全拒（P6 场景 3 实测 ToolNode 空跑不抛，但那是未承诺行为，不能当语义用）。
+    同 id 覆盖是**就地替换**，合成的拒绝 ToolMessage 落在被改写 AIMessage 之后（实测），
+    所以判据取最后一条 AIMessage——与 ToolNode 自己的取消息口径一致（实测它反向找
+    AIMessage），批准的那条才能真的开跑。
+    """
+    last = next((m for m in reversed(state["messages"]) if isinstance(m, AIMessage)), None)
+    if last is not None and last.tool_calls:
+        return "tools"
+    return "agent"
 
 
 def _round_no(state: AgentState) -> int:
@@ -115,14 +137,16 @@ def build_agent_graph(provider: LlmProvider, tools: list[AiTooler]) -> CompiledS
     def should_continue(state: AgentState) -> str:
         last = state["messages"][-1]
         if isinstance(last, AIMessage) and last.tool_calls:
-            return "tools"
+            return "gate"
         return END
 
     graph = StateGraph(AgentState)
     graph.add_node("agent", agent_node)
+    graph.add_node("gate", make_gate_node(_gate_context))
     graph.add_node("tools", tool_node)
     graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+    graph.add_conditional_edges("agent", should_continue, {"gate": "gate", END: END})
+    graph.add_conditional_edges("gate", route_after_gate, {"tools": "tools", "agent": "agent"})
     graph.add_edge("tools", "agent")
     return graph.compile(checkpointer=get_checkpointer())
 
@@ -143,6 +167,7 @@ def stream_graph(
     control: RunControl | None = None,
     thread_id: str = "",
     resume: Any = None,
+    gate: GateContext | None = None,
 ) -> Iterator[dict[str, Any]]:
     """按指定拓扑执行一轮，把执行过程实时折成事件流。
 
@@ -154,6 +179,8 @@ def stream_graph(
     configurable: dict[str, Any] = {"thread_id": thread_id or new_thread_id()}
     if control is not None:
         configurable[RUN_CONTROL_KEY] = control
+    if gate is not None:
+        configurable[GATE_KEY] = gate
     stream = graph.stream(
         Command(resume=resume) if resume is not None else {"messages": messages},
         config={"configurable": configurable},
