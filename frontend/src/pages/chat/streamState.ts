@@ -112,5 +112,5 @@ export function liveText(state: StreamingState | null): string {
 /** 三点占位的判据：连接活着、模型还没开口、也还没有任何过程行。 */
 export function isWaiting(state: StreamingState | null): boolean {
   if (!state) return true;
-  return state.rounds.length === 0 && state.pending.length === 0 && state.steps.length === 0;
+  return !state.terminal && state.rounds.length === 0 && state.pending.length === 0 && state.steps.length === 0;
 }

@@ -377,11 +377,7 @@ export async function chatSendStream(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    // 行尾归一：SSE 允许 \r\n（浏览器/中间层改写时），后端只发 \n；不归一则 "\r\n\r\n" 里
-    // 找不到 "\n\n"，整条流会退化成「永远凑不齐一帧」。只替 \r\n 整体，不替孤立 \r——
-    // 半截 "\r"（\r\n 恰好跨包）必须留在 buf 里等下一包拼上再替，提前转成 \n 会凭空多一个
-    // 空行，把 event: 行和 data: 行劈成两帧，整条事件静默丢失。
-    buf = (buf + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
+    buf += decoder.decode(value, { stream: true });
     let sep = buf.indexOf("\n\n");
     while (sep >= 0) {
       feed(buf.slice(0, sep));
