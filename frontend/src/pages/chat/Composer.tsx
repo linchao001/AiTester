@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { fmtK } from "../../utils";
-import { contextUsage } from "./utils";
+import type { PermMode } from "../../api/client";
+import { contextUsage, PERM_MODES, permMeta } from "./utils";
 
 interface Props {
   input: string;
@@ -10,19 +11,29 @@ interface Props {
   systemPrompt: string;
   messages: { content: string }[];
   projectName: string;     // 只读橙 chip 的文案源（项目维度，第 2 片接入）；空串代表项目还没落地，chip 不渲染
+  permMode: PermMode;      // 当前档位：chip 的图标、文案与选中态唯一来源
+  permLocked: boolean;     // 有待批就置灰（走查 15）：档位与挂起中那轮的判定必须一致
+  onPermMode: (m: PermMode) => void;
   sendBlock: string;       // 非空即「现在还不能发」的原因，由 ChatPage 算（它是 agentId/projectId 的唯一持有者）：折进 canSend 并直接进 title
   inputRef: { current: HTMLTextAreaElement | null };  // 供 chip 点击后聚焦 + 输入框自增高（ChatPage 持有）
   stopRequested: boolean;    // ■ 已按下、终态未到：停止钮置灰防二次点击
   onStop: () => void;
   onInput: (v: string) => void;
   onSubmit: () => void;
-  onToast: (msg: string) => void;
 }
 
 /** 原型 :611-624 逐字对齐：bar 内只有 上下文 meter + 橙项目 chip + 蓝 perm chip + spacer + 发送。
  *  原型橙 chip（:617）是「📁 项目」只读展示，路径不进 UI（第 2 片偏离 5）；
  *  模型 chip 在 chat-header（:598），不在 composer 内，勿在此重复。 */
 export default function Composer(p: Props) {
+  const [permOpen, setPermOpen] = useState(false);
+  useEffect(() => {
+    if (!permOpen) return;
+    const close = () => setPermOpen(false);
+    document.addEventListener("click", close);
+    return () => document.removeEventListener("click", close);
+  }, [permOpen]);
+
   const usage = contextUsage({ systemPrompt: p.systemPrompt, history: p.messages, input: p.input, cap: p.cap });
   const cls = `ctx-meter${usage.pct >= 90 ? " hot" : usage.pct >= 70 ? " warn" : ""}`;
   const tip = usage.cap
@@ -66,14 +77,35 @@ export default function Composer(p: Props) {
               📁 {p.projectName}
             </span>
           ) : null}
-          {/* 原型 :618 是可展开弹层（自由/严格，严格置灰）。本期只有「自由权限」一档生效，
-              做成可点的按钮并给出原型同一条 toast 文案，避免 .c-chip 的 cursor:pointer 变成死控件 */}
-          <button
+          {/* 原型 :618 的三档弹层：chip 必须是 span——.pop 是 div，塞进 button 是非法内容模型，
+              浏览器会把弹层挪出锚点；键盘可达性用 role/tabIndex 补齐（登记为偏离）。
+              busy 期间不禁 chip：挂起与在途是两种状态，只在有待批时置灰。 */}
+          <span
             className="c-chip blue perm"
-            disabled={p.busy}
-            title="权限模式 · 严格权限暂未开放"
-            onClick={() => p.onToast("「严格权限」暂未开放，敬请期待")}
-          >🛡 自由权限 ▾</button>
+            role="button"
+            tabIndex={p.permLocked ? -1 : 0}
+            aria-disabled={p.permLocked}
+            title={p.permLocked ? "还有回答在等你批准，先处理完再切档位" : "权限模式 · 点击选择"}
+            onClick={() => { if (!p.permLocked) setPermOpen((v) => !v); }}
+            onKeyDown={(e) => {
+              if (p.permLocked) return;
+              if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPermOpen((v) => !v); }
+              if (e.key === "Escape") setPermOpen(false);
+            }}
+          >
+            {permMeta(p.permMode).icon} {permMeta(p.permMode).label} ▾
+            <div className={`pop up${permOpen ? " show" : ""}`} onClick={(e) => e.stopPropagation()}>
+              <div className="p-title">权限模式</div>
+              {PERM_MODES.map((m) => (
+                <div className={`opt${m.id === p.permMode ? " sel" : ""}`} key={m.id}
+                  title={m.desc}
+                  onClick={() => { setPermOpen(false); p.onPermMode(m.id); }}>
+                  <span>{m.icon} {m.label}</span>
+                  {m.id === p.permMode ? <span className="ck">✓</span> : null}
+                </div>
+              ))}
+            </div>
+          </span>
           <div className="spacer" />
           {p.busy ? (
             /* busy 时钮位换成停止：带文字不裸图标（UI 约定），点下就置灰防二次点击，

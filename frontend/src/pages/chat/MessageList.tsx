@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
-import type { ChatMessage, ChatStep } from "../../api/client";
+import type { AuthDecision, ChatMessage, ChatStep, PendingRunInfo } from "../../api/client";
 import { isWaiting, liveText, type PendingCall, type StreamingState } from "./streamState";
 import { fmtTime } from "./utils";
+import AuthCard from "./AuthCard";
 import { mdRender } from "../kb/utils";
 
 // 原型 :1316-1319 同形：label 显示在 chip 上、prompt 填进输入框
@@ -18,6 +19,10 @@ interface Props {
   projectName: string;
   busy: boolean;
   live: StreamingState | null;   // 流式中的唯一 live 状态（ChatPage 持有）：null 即没有进行中的一轮
+  pending: PendingRunInfo[];      // 待批的回合（R12：一条一个 agent 气泡，排在历史之后、live 之前）
+  resumeBusy: boolean;            // 有一条续跑在途：所有卡的按钮一起锁，防双提交
+  onDecide: (runId: string, callId: string, decision: AuthDecision, remember: boolean) => void;
+  onStopPending: (run: PendingRunInfo) => void;
   onCopy: (text: string) => void;
   onChip: (text: string) => void;   // 原型 :1322-1324：chip 只填输入框，绝不自动发送
 }
@@ -55,7 +60,7 @@ export default function MessageList(p: Props) {
     if (el) el.scrollTop = el.scrollHeight;
   }, [p.messages, p.busy, p.live]);
 
-  if (!p.messages.length && !p.busy) {
+  if (!p.messages.length && !p.busy && !p.pending.length) {
     return (
       <div className="messages" ref={box}>
         <div className="welcome">
@@ -95,6 +100,32 @@ export default function MessageList(p: Props) {
             </div>
           </div>
         ))}
+      {/* 待批的回合（R12）：正文与过程行取 pending 表那份内存（裁定 8 的前缀），
+          「⏳ 等待授权」挂在 meta 行——spec 说的「live 气泡保留」在这里由 pending 气泡接手，
+          因为挂起收尾时 live 已让位，同一条画两次是第二套真相 */}
+      {p.pending.map((run) => (
+        <div className="msg agent" key={run.run_id}>
+          <div className="who"><span className="avatar">Ai</span>AiTester</div>
+          <Steps steps={run.steps} />
+          {run.prefix
+            ? <div className="body md-preview" dangerouslySetInnerHTML={{ __html: mdRender(run.prefix) }} />
+            : null}
+          {/* 先痕迹后待答：decided 按队列序就是「已经批过的在上面」，与逐条批的时间线一致 */}
+          {run.decided.map((d) => (
+            <AuthCard key={d.call_id} ask={d} decided={d.decision} queued={false} busy
+              onDecide={() => undefined} />
+          ))}
+          {run.waiting.map((c, i) => (
+            <AuthCard key={c.call_id} ask={c} decided={null} queued={i > 0} busy={p.resumeBusy}
+              onDecide={(d, remember) => p.onDecide(run.run_id, c.call_id, d, remember)} />
+          ))}
+          <div className="meta">
+            ⏳ 等待授权
+            <span className="copy" title="停止这条回答：已生成的部分留在会话里"
+              onClick={() => p.onStopPending(run)}>■ 停止</span>
+          </div>
+        </div>
+      ))}
       {p.busy && isWaiting(p.live) && (
         <div className="msg agent">
           <div className="who"><span className="avatar">Ai</span>AiTester</div>

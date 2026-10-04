@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  ApiError, chatSendStream, chatStop, deleteChatSession, getCapabilities, getModels,
-  getProjects, getSessionMessages, getSessions,
-  type AgentInfo, type ChatMessage, type ChatSession, type HealthResponse,
-  type Project, type StreamEvent,
+  ApiError, chatApprove, chatResumeStream, chatSendStream, chatStop, deleteChatSession,
+  getCapabilities, getModels, getPending, getProjects, getSessionMessages, getSessions,
+  type AgentInfo, type AuthDecision, type ChatMessage, type ChatSession, type HealthResponse,
+  type PermMode, type PendingRunInfo, type Project, type StreamEvent,
 } from "../api/client";
-import { applyEvent, finalize, newStreamState, type StreamingState } from "./chat/streamState";
+import { applyEvent, finalize, held, newStreamState, type StreamingState } from "./chat/streamState";
+import { loadPermMode, savePermMode } from "./chat/utils";
 import PageState from "../components/PageState";
 import Composer from "./chat/Composer";
 import MessageList from "./chat/MessageList";
@@ -61,6 +62,10 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   const [cap, setCap] = useState(0);
   const [systemPrompt, setSystemPrompt] = useState("");
   const [error, setError] = useState("");
+  const [permMode, setPermMode] = useState<PermMode>(loadPermMode);
+  const [pendingRuns, setPendingRuns] = useState<PendingRunInfo[]>([]);
+  const pendingSeq = useRef(0);              // 待批表的「最新一次请求」序号：迟到的整表不得盖回来
+  const [resumeRunId, setResumeRunId] = useState("");   // 续跑在途的那条 run：它的卡先摘掉，改由 live 气泡画
   const [toastMsg, setToastMsg] = useState("");
   const toastTimer = useRef<number>();
 
@@ -173,6 +178,24 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     }
   }, [agentId, projectId, toast]);
 
+  const reloadPending = useCallback(async () => {
+    if (!agentId || !projectId) {           // 没得查就先清：留着上一个项目的卡是假 affordance
+      ++pendingSeq.current;
+      setPendingRuns([]);
+      return;
+    }
+    const seq = ++pendingSeq.current;
+    try {
+      const j = await getPending(agentId, projectId);
+      if (seq === pendingSeq.current) setPendingRuns(j.runs);
+    } catch {
+      // 取不到就当没有：卡片宁可少画一张，也不画一条早已结束的（后端本就重启即丢）
+      if (seq === pendingSeq.current) setPendingRuns([]);
+    }
+  }, [agentId, projectId]);
+
+  useEffect(() => { void reloadPending(); }, [reloadPending]);
+
   useEffect(() => { void reloadMeta(); }, [reloadMeta]);
   useEffect(() => { void reloadSessions(); }, [reloadSessions]);
 
@@ -206,6 +229,61 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     return true;
   }, [health, toast]);
 
+  /** 一条流式请求（首回合与续跑）共用的收尾：挂起 / 完成 / 失败三选一，busy 一定落地。
+   *  抽出来是因为续跑的收尾与首回合逐字同形——抄两份必漂，第 2 片「守门只有一段」的同一条判据。 */
+  const drain = useCallback(async (opts: {
+    optimistic: ChatMessage | null;   // send 的乐观 user 行；续跑没有这一行
+    text: string;                     // 失败时回填输入框的原文；续跑传 ""
+    aborted: boolean;
+    errMsg: string;
+  }) => {
+    // 换页/卸载导致的 abort：连接已断，后端走 GeneratorExit 落截断盘，本页不再改任何 state
+    if (opts.aborted) return;
+    abortRef.current = null;
+    busyRef.current = false;
+    setBusy(false);
+    setStopRequested(false);
+    setResumeRunId("");
+    runIdRef.current = "";
+    void reloadPending();               // 三条出路都要重取表：尾巴上可能还挂着下一条 wait（R13）
+    const st = liveRef.current;
+    const done = st ? st.done : null;
+    if (st && held(st)) {
+      // 挂起（裁定 7/8）：流在 wait 之后断掉、一条不落。live 让位给 pending 气泡，
+      // 乐观 user 行留着——它和那张卡说的是同一件事，撤掉它就是「发出去却没回」的空框
+      liveRef.current = null;
+      setLive(null);
+      return;
+    }
+    let errMsg = opts.errMsg;
+    if (!done && !errMsg) errMsg = st?.fail || "连接中断，本条回答未完成";
+    if (done && st) {
+      const f = finalize(st, done);
+      liveRef.current = null;
+      setLive(null);
+      setMessages((prev) => [...prev, {
+        role: "assistant", content: f.content, ts: Date.now(), steps: f.steps, stopped: f.stopped,
+      }]);
+      if (f.sessionId !== activeId) setActiveId(f.sessionId);
+      setWsSeq((n) => n + 1);            // 模型可能刚写了产出物：工作区树静默重拉（被停止也照拉）
+      const rows = await reloadSessions();
+      // 新建会话后标题由服务端定，用返回的 title 就地补齐，避免等整表刷新才可见
+      const mine = rows.find((r) => r.id === f.sessionId);
+      if (mine && f.title && mine.title !== f.title) {
+        setSessions((prev) => prev.map((r) => (r.id === mine.id ? { ...r, title: f.title } : r)));
+      }
+      return;
+    }
+    // 失败必须可见：撤掉乐观 user 气泡并回填原文，不让用户对着「发出去了却没回」的空框
+    liveRef.current = null;
+    setLive(null);
+    if (opts.optimistic) {
+      setMessages((prev) => prev.filter((m) => m !== opts.optimistic));
+      setInput(opts.text);
+    }
+    toast(errMsg);
+  }, [activeId, reloadPending, reloadSessions, toast]);
+
   const send = useCallback(async () => {
     const text = input.trim();
     if (!text || !guard() || !agentId || !projectId) return;
@@ -232,47 +310,17 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     let aborted = false;
     try {
       await chatSendStream(
-        { session_id: activeId ?? "", message: text, agent_id: agentId, project_id: projectId },
+        { session_id: activeId ?? "", message: text, agent_id: agentId,
+          project_id: projectId,
+          ...(permMode === "free" ? {} : { perm_mode: permMode }) },
         onEvent, controller.signal);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") aborted = true;
       // 非 ApiError 的断流（如网络 TypeError）不给英文原文，中文兜底
       else errMsg = err instanceof ApiError ? err.message : "连接中断，本条回答未完成";
     }
-    // 换页/卸载导致的 abort：连接已断，后端走 GeneratorExit 落截断盘，本页不再改任何 state
-    if (aborted) return;
-    abortRef.current = null;
-    busyRef.current = false;
-    setBusy(false);
-    setStopRequested(false);
-    runIdRef.current = "";
-    const st = liveRef.current;
-    const done = st ? st.done : null;
-    if (!done && !errMsg) errMsg = st?.fail || "连接中断，本条回答未完成";
-    if (done && st) {
-      const f = finalize(st, done);
-      liveRef.current = null;
-      setLive(null);
-      setMessages((prev) => [...prev, {
-        role: "assistant", content: f.content, ts: Date.now(), steps: f.steps, stopped: f.stopped,
-      }]);
-      if (f.sessionId !== activeId) setActiveId(f.sessionId);
-      setWsSeq((n) => n + 1);            // 模型可能刚写了产出物：工作区树静默重拉（被停止也照拉）
-      const rows = await reloadSessions();
-      // 新建会话后标题由服务端定，用返回的 title 就地补齐，避免等整表刷新才可见
-      const mine = rows.find((r) => r.id === f.sessionId);
-      if (mine && f.title && mine.title !== f.title) {
-        setSessions((prev) => prev.map((r) => (r.id === mine.id ? { ...r, title: f.title } : r)));
-      }
-      return;
-    }
-    // 失败必须可见：撤掉乐观 user 气泡并回填原文，不让用户对着「发出去了却没回」的空框
-    liveRef.current = null;
-    setLive(null);
-    setMessages((prev) => prev.filter((m) => m !== optimistic));
-    setInput(text);
-    toast(errMsg);
-  }, [activeId, agentId, guard, input, projectId, reloadSessions, toast]);
+    await drain({ optimistic, text, aborted, errMsg });
+  }, [agentId, drain, guard, input, permMode, projectId]);
 
   const stop = useCallback(() => {
     if (stopRequestedRef.current) return;
@@ -287,6 +335,74 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       toast(err instanceof ApiError ? err.message : "停止请求失败，本条回答可能仍在继续");
     });
   }, [toast]);
+
+  /** 批准或拒绝一条待批：登记决策后立刻另起一条流续跑（拒绝也要跑，模型得收到拒绝继续作答）。
+   *  两步分开做才收敛重复提交：approve 失败根本不发起续跑。 */
+  const decide = useCallback(async (runId: string, callId: string,
+    decision: AuthDecision, remember: boolean) => {
+    if (resumeRunId) { toast("这条回答正在续跑，请稍候"); return; }
+    if (!health) { toast("后端未就绪，请稍候或重试"); return; }
+    if (busyRef.current || loadingRef.current || mutRef.current) {
+      toast("上一条操作还在执行，请稍候"); return;
+    }
+    try {
+      await chatApprove(runId, callId, decision, remember);
+    } catch (err) {
+      // 404「这条回答已经结束」/ 409「这条已经答过了」都是真相：重取表让卡片按后端的样子消失
+      toast(err instanceof ApiError ? err.message : "授权登记失败，请重试");
+      void reloadPending();
+      return;
+    }
+    busyRef.current = true;
+    setBusy(true);
+    setResumeRunId(runId);
+    stopRequestedRef.current = false;
+    setStopRequested(false);
+    runIdRef.current = runId;               // 续跑沿用同一条 run：停止钮打的还是它（P4）
+    liveRef.current = newStreamState();
+    setLive(liveRef.current);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const onEvent = (ev: StreamEvent) => {
+      const cur = liveRef.current ?? newStreamState();
+      liveRef.current = applyEvent(cur, ev);
+      setLive(liveRef.current);
+    };
+    let aborted = false;
+    let errMsg = "";
+    try {
+      await chatResumeStream(runId, onEvent, controller.signal);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") aborted = true;
+      else errMsg = err instanceof ApiError ? err.message : "连接中断，本条回答未完成";
+    }
+    await drain({ optimistic: null, text: "", aborted, errMsg });
+  }, [busyRef, drain, health, reloadPending, resumeRunId, toast]);
+
+  /** 待批期间的停止（裁定 10 第二条）：后端 cancel_pending 是挂起期唯一一次落盘，
+   *  那条会话可能第一次出现，正看着它的用户必须重开才看得见截断行。 */
+  const stopPending = useCallback(async (run: PendingRunInfo) => {
+    try {
+      await chatStop(run.run_id);
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : "停止请求失败，这条回答可能还挂着");
+      void reloadPending();
+      return;
+    }
+    toast("已停止这条回答：已生成的部分留在会话里");
+    await reloadPending();
+    const rows = await reloadSessions();
+    if (rows.some((s) => s.id === run.session_id)
+      && (activeId === run.session_id || activeId === null)) void openSession(run.session_id);
+  }, [activeId, openSession, reloadPending, reloadSessions, toast]);
+
+  const onPermMode = useCallback((m: PermMode) => {
+    if (m === permMode) return;
+    setPermMode(m);
+    savePermMode(m);
+    // 文案取原型 :1473 逐字（free 说清「自动执行」，另两档不给长句）
+    toast(m === "free" ? "已切换为「自由权限」：操作无需你授权，自动执行" : "已切换权限模式");
+  }, [permMode, toast]);
 
   // 卸载清定时器（KbPage/ProjectsPage 同款收尾约定）并断流
   useEffect(() => () => {
@@ -311,13 +427,14 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       setSessions((prev) => prev.filter((s) => s.id !== id));
       toast(`已删除会话「${row?.title ?? id}」`);
       const rows = await reloadSessions();
+      void reloadPending();            // 删会话的级联在后端做了：待批表不跟着重取就留下一张点不动的假卡
       if (activeId === id) void openSession(rows.length ? rows[0].id : null);
     } catch (err) {
       toast(err instanceof ApiError ? err.message : String(err));
     } finally {
       mutRef.current = false;
     }
-  }, [activeId, guard, reloadSessions, sessions, openSession, toast]);
+  }, [activeId, guard, reloadPending, reloadSessions, sessions, openSession, toast]);
 
   const copy = useCallback(async (text: string) => {
     try {
@@ -475,7 +592,11 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
           projectName={currentProject?.name ?? ""}
           busy={busy}
           live={live}
+          pending={resumeRunId ? pendingRuns.filter((r) => r.run_id !== resumeRunId) : pendingRuns}
+          resumeBusy={!!resumeRunId}
           onCopy={(t) => void copy(t)}
+          onDecide={(runId, callId, decision, remember) => void decide(runId, callId, decision, remember)}
+          onStopPending={(run) => void stopPending(run)}
           onChip={(t) => {
             // chip 只填值 + 聚焦，绝不自动发送；自增高交给 Composer 按 input 变化统一量
             setInput(t);
@@ -490,13 +611,15 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
           systemPrompt={systemPrompt}
           messages={messages}
           projectName={currentProject?.name ?? ""}
+          permMode={permMode}
+          permLocked={pendingRuns.length > 0}
+          onPermMode={onPermMode}
           sendBlock={sendBlock}
           inputRef={inputRef}
           stopRequested={stopRequested}
           onStop={stop}
           onInput={setInput}
           onSubmit={() => void send()}
-          onToast={toast}
         />
       </main>
       {currentProject && (

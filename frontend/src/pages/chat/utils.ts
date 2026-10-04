@@ -1,4 +1,4 @@
-import type { ChatSession } from "../../api/client";
+import type { ChatSession, PermMode } from "../../api/client";
 
 const DAY_MS = 86_400_000;
 
@@ -56,4 +56,27 @@ export function fmtTime(ts: number, now = Date.now()): string {
   const p = (n: number) => String(n).padStart(2, "0");
   const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
   return daysSince(ts, now) <= 0 ? hm : `${d.getMonth() + 1}月${d.getDate()}日 ${hm}`;
+}
+
+/** chip 三档元数据：id / label / desc 逐字对齐 spec「事件与前端折叠」表。
+ *  原型 :1452-1453 只有两档且 strict 置灰，第 5 片 strict 真的能用了，boundary 是新增档。 */
+export const PERM_MODES: { id: PermMode; icon: string; label: string; desc: string }[] = [
+  { id: "free", icon: "🛡", label: "自由权限", desc: "所有操作（写文件、执行命令等）自动执行，无需你授权" },
+  { id: "boundary", icon: "⚑", label: "只批界外", desc: "项目目录外的写入、以及所有命令执行需你授权" },
+  { id: "strict", icon: "🔒", label: "严格权限", desc: "每次写盘 / 执行命令前需你授权" },
+];
+
+export const permMeta = (id: PermMode) => PERM_MODES.find((m) => m.id === id) ?? PERM_MODES[0];
+
+/** 档位是视图偏好，与 projectId 同址落 localStorage（走查项 2：刷新后档位保留）。 */
+const PERM_STORAGE_KEY = "aitester.chat.permMode";
+
+export function loadPermMode(): PermMode {
+  const v = window.localStorage.getItem(PERM_STORAGE_KEY);
+  // 脏值、旧值、隐私模式下的 null 一律回 free：默认档零行为是红线，不能靠存储兜住语义
+  return v === "boundary" || v === "strict" ? v : "free";
+}
+
+export function savePermMode(m: PermMode): void {
+  window.localStorage.setItem(PERM_STORAGE_KEY, m);
 }
