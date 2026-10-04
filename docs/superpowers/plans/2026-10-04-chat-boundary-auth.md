@@ -1281,7 +1281,7 @@ def test_update_hold_appends_new_waiting_without_losing_decided() -> None:
     reg.update_hold(entry, prefix="[mock 继续", steps=[], waiting=[_item("c2"), _item("c1")])
     assert [c["call_id"] for c in reg.peek("r1").queue] == ["c1", "c2"]   # 按 call_id 去重
     assert reg.peek("r1").prefix_text == "[mock 继续"
-    assert reg.peek("r1").decided == [{"call_id": "c1", "decision": "approve"}]
+    assert reg.peek("r1").decided == [{**_item("c1"), "decision": "approve"}]
 
 
 def test_update_hold_is_a_noop_after_removal() -> None:
@@ -1489,7 +1489,7 @@ class PendingRegistry:
 - [ ] **Step 4: 跑测试**
 
 Run: `cd backend && python -m pytest tests/test_chat_pending.py -q`
-Expected: `10 passed`
+Expected: `9 passed`（Step 1 共 9 条测试；绝对条数以实测为准）
 
 - [ ] **Step 5: Commit**
 
@@ -1668,7 +1668,7 @@ def test_second_interrupt_appends_to_the_same_entry(tmp_path, project) -> None:
     assert [e["type"] for e in stream][-1] == "wait"               # 又挂一次：仍是断流收尾
     entry = svc.pending.peek("r4")
     assert [c["call_id"] for c in entry.queue] == ["c1", "c2"]
-    assert entry.decided == [{"call_id": "c1", "decision": "approve"}]
+    assert entry.decided == [{**entry.queue[0], "decision": "approve"}]   # R14：六键跟着一起回显
     assert not (tmp_path / "a.md").exists()                        # 批准的也要等 c2 决策后才执行（spec 风险节）
 
 
