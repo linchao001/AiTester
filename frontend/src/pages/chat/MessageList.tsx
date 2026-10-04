@@ -58,7 +58,8 @@ export default function MessageList(p: Props) {
   useEffect(() => {
     const el = box.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [p.messages, p.busy, p.live]);
+    // pending 也要进依赖：刷新后 reloadPending 迟到时，「等你批准」那张卡在折叠区之下，不滚就是藏着
+  }, [p.messages, p.busy, p.live, p.pending]);
 
   if (!p.messages.length && !p.busy && !p.pending.length) {
     return (

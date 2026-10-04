@@ -253,6 +253,8 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       // 乐观 user 行留着——它和那张卡说的是同一件事，撤掉它就是「发出去却没回」的空框
       liveRef.current = null;
       setLive(null);
+      // 续跑段再挂起时，先前批准过的调用可能已经写盘：工作区树当场跟一次，不等最终 done
+      setWsSeq((n) => n + 1);
       return;
     }
     let errMsg = opts.errMsg;
@@ -345,15 +347,17 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     if (busyRef.current || loadingRef.current || mutRef.current) {
       toast("上一条操作还在执行，请稍候"); return;
     }
+    // 占位必须在登记之前同步落下：resumeRunId 要等 approve 成功才置位，靠它挡不住一个 RTT 内的第二次点击
+    busyRef.current = true;
     try {
       await chatApprove(runId, callId, decision, remember);
     } catch (err) {
+      busyRef.current = false;
       // 404「这条回答已经结束」/ 409「这条已经答过了」都是真相：重取表让卡片按后端的样子消失
       toast(err instanceof ApiError ? err.message : "授权登记失败，请重试");
       void reloadPending();
       return;
     }
-    busyRef.current = true;
     setBusy(true);
     setResumeRunId(runId);
     stopRequestedRef.current = false;
