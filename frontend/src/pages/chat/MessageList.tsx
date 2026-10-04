@@ -101,7 +101,10 @@ export default function MessageList(p: Props) {
           <span className="typing"><i /><i /><i /></span>
         </div>
       )}
-      {p.busy && p.live && !isWaiting(p.live) && !p.live.terminal && (
+      {/* 终态门控只看「有没有正文」：done 后 setLive(terminal) 与 append 助手行是两个 React task，
+          中间那一帧 terminal=true 但 liveText 还有字——只按 terminal 抑制会让刚流完的回复闪一下没掉。
+          要挡的只有 error 先到且一字未出：terminal 且 liveText 空才收气泡。 */}
+      {p.busy && p.live && !isWaiting(p.live) && !(p.live.terminal && !liveText(p.live)) && (
         <div className="msg agent">
           <div className="who"><span className="avatar">Ai</span>AiTester</div>
           <Steps steps={p.live.steps} pending={p.live.pending} />
