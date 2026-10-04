@@ -1175,7 +1175,7 @@ git commit -m "feat(chat): 折叠 __interrupt__ 为 wait 事件，finish 增加 
   - `PENDING_GONE_DETAIL` / `CALL_DECIDED_DETAIL` / `RESUME_NOT_READY_DETAIL`
   - `PendingGoneError(ValueError)` `.detail` → 404、`CallDecidedError(ValueError)` → 409、`ResumeNotReadyError(ValueError)` → 400
   - `PendingEntry`（`run_id thread_id prepared perm_mode project_id project_dir session_key session_id agent_id prefix_text steps created_at queue answers consumed` + `decided` property（六键 + decision，按队列序）+ `waiting()`）
-  - `PendingRegistry`：`open` / `peek` / `take` / `update_hold` / `answer` / `take_resume` / `view` / `view_for` / `remembered_for` / `thread_ids_for_session` / `drop_session`
+  - `PendingRegistry`：`open` / `peek` / `take` / `update_hold` / `answer` / `peek_resume` / `take_resume` / `view` / `view_for` / `remembered_for` / `drop_session`
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1437,18 +1437,32 @@ class PendingRegistry:
                 raise CallDecidedError(CALL_DECIDED_DETAIL)
             entry.answers[call_id] = {"decision": decision, "remember": remember}
 
-    def take_resume(self, run_id: str) -> dict[str, Any]:
-        """按队列顺序取下一条「已答未喂」的决策，喂给 Command(resume=…)。"""
+    def _next_resumable(self, run_id: str) -> tuple[PendingEntry, str]:
+        entry = self._runs.get(run_id)
+        if entry is None:
+            raise PendingGoneError(PENDING_GONE_DETAIL)
+        for call in entry.queue:
+            cid = call["call_id"]
+            if cid in entry.answers and cid not in entry.consumed:
+                return entry, cid
+        raise ResumeNotReadyError()
+
+    def peek_resume(self, run_id: str) -> dict[str, Any]:
+        """只回答「现在能不能续」，不烧决策：路由据此在返回迭代器之前就能回 400。
+
+        消费必须等续跑真开跑（Task 6 在生成器体里调 take_resume）——提前落 consumed 会让
+        「取到决策却没喂出去」的那次请求把下一条决策喂进上一条的中断位（位置匹配，实测）。
+        """
         with self._lock:
-            entry = self._runs.get(run_id)
-            if entry is None:
-                raise PendingGoneError(PENDING_GONE_DETAIL)
-            for call in entry.queue:
-                cid = call["call_id"]
-                if cid in entry.answers and cid not in entry.consumed:
-                    entry.consumed.append(cid)
-                    return {"call_id": cid, **entry.answers[cid]}
-            raise ResumeNotReadyError()
+            entry, cid = self._next_resumable(run_id)
+            return {"call_id": cid, **entry.answers[cid]}
+
+    def take_resume(self, run_id: str) -> dict[str, Any]:
+        """按队列顺序取下一条「已答未喂」的决策并标记已喂，喂给 Command(resume=…)。"""
+        with self._lock:
+            entry, cid = self._next_resumable(run_id)
+            entry.consumed.append(cid)
+            return {"call_id": cid, **entry.answers[cid]}
 
     def view(self, session_id: str) -> list[PendingEntry]:
         with self._lock:
@@ -1470,10 +1484,6 @@ class PendingRegistry:
         """返回活对象：gate 拿到决策后往里加，判定函数读同一个集合。"""
         with self._lock:
             return self._remembered.setdefault(session_key, set())
-
-    def thread_ids_for_session(self, session_id: str) -> list[str]:
-        with self._lock:
-            return [e.thread_id for e in self._runs.values() if e.session_id == session_id]
 
     def drop_session(self, session_id: str) -> list[str]:
         """删会话级联（裁定 10 第三条）：返回要清的检查点 thread_id，由调用方交给 drop_thread。"""
@@ -1670,6 +1680,25 @@ def test_second_interrupt_appends_to_the_same_entry(tmp_path, project) -> None:
     assert [c["call_id"] for c in entry.queue] == ["c1", "c2"]
     assert entry.decided == [{**entry.queue[0], "decision": "approve"}]   # R14：六键跟着一起回显
     assert not (tmp_path / "a.md").exists()                        # 批准的也要等 c2 决策后才执行（spec 风险节）
+
+
+def test_abandoned_resume_feeds_the_same_decision(tmp_path, project) -> None:
+    """评审锁：续跑请求拿到决策却没开跑（客户端在首帧前断开）时，决策绝不能被烧掉。
+
+    烧掉之后队列里下一条「已答未喂」会被喂进上一条的中断位——位置匹配（实测），
+    最坏情形是用户拒过的操作被当成批准执行。
+    """
+    svc_proj, pid, _ = project
+    svc = _svc(tmp_path, svc_proj, _Scripted([_call_round("../a.md"), AIMessage(content="写好了")]))
+    prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
+    list(svc.stream_turn(prepared, run_id="r7"))
+    svc.approve("r7", "c1", "approve", False)
+    _, abandoned = svc.resume_stream("r7")                 # 一次 next 都没跑
+    assert svc.pending.peek("r7").consumed == []           # 没开跑就不该落 consumed
+    _, stream = svc.resume_stream("r7")                    # 同一条决策仍喂得出同一个中断位
+    done = list(stream)[-1]
+    assert done["type"] == "done" and done["reply"] == "写好了"
+    assert (tmp_path / "a.md").exists()                    # 批准的那次写入真发生了
 
 
 def test_stop_while_pending_persists_prefix_and_kills_resume(tmp_path, project) -> None:
@@ -1983,16 +2012,22 @@ _WAIT_KEYS = ("call_id", "tool", "action", "target", "command", "cwd")
         if entry is None:
             raise PendingGoneError(PENDING_GONE_DETAIL)
         self._guard_project(entry.project_id)        # 同函数、同 detail：挂起期间目录可能被删
-        decision = self.pending.take_resume(run_id)  # 无决策可喂 → ResumeNotReadyError（R6）
+        self.pending.peek_resume(run_id)   # 只守卫：无决策可喂 → ResumeNotReadyError（R6），不烧决策
         prepared = entry.prepared
         control = control or RunControl()
-        events = stream_graph(
-            prepared.build, prepared.provider, prepared.tools, prepared.messages,
-            control=control, thread_id=entry.thread_id, gate=prepared.gate,
-            resume={"decision": decision["decision"], "remember": decision["remember"]},
-        )
+
+        def events() -> Iterator[dict[str, Any]]:
+            # 决策要在续跑真开跑时才落 consumed：请求死在首帧之前的话，提前烧掉会让下一条
+            # 决策喂进上一条的中断位——langgraph 的续跑值按位置匹配（实测），错一位就串味。
+            taken = self.pending.take_resume(run_id)
+            yield from stream_graph(
+                prepared.build, prepared.provider, prepared.tools, prepared.messages,
+                control=control, thread_id=entry.thread_id, gate=prepared.gate,
+                resume={"decision": taken["decision"], "remember": taken["remember"]},
+            )
+
         return prepared.session_id, self._fold_turn(
-            events, prepared, control, entry.thread_id, entry)
+            events(), prepared, control, entry.thread_id, entry)
 
     def approve(self, run_id: str, call_id: str, decision: str, remember: bool) -> None:
         """只登记决策：续跑由 resume_stream 触发（批准与续跑分开，双弹层与重复提交才好收敛）。"""
