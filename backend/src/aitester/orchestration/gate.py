@@ -14,7 +14,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from aitester.orchestration.auth_rules import AuthTarget, needs_approval, plan_target
-from aitester.orchestration.subagent import SUBAGENT_KEY, shape_task_batch, shape_task_batch
+from aitester.orchestration.subagent import SUBAGENT_KEY, shape_task_batch
 
 # 进 config.configurable 的键：与 RUN_CONTROL_KEY 同一条注入通道（GraphBuilder 签名不许多带参数）
 GATE_KEY = "aitester_gate"
