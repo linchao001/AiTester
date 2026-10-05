@@ -4694,6 +4694,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
 from aitester.case_design.constants import CASE_DESIGN_KEY
@@ -4711,7 +4712,8 @@ def case_env_of(config: Any) -> CaseDesignEnv | None:
 def make_driver_node(task_tool: Any):
     """构造 case_design 图的驱动节点（task_tool=父 run 的 TaskTool，评审子经它驱动）。"""
 
-    def driver_node(state: dict, config: Any) -> dict:
+    # config 必须裸标注 RunnableConfig：langgraph 按类型注解决定是否注入，`Any` 会被静默跳过
+    def driver_node(state: dict, config: RunnableConfig) -> dict:
         try:
             writer = get_stream_writer()
         except RuntimeError:                       # 单测直调：无图运行上下文
@@ -4978,6 +4980,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
@@ -5017,7 +5020,7 @@ def build_case_design_graph(provider: LlmProvider, tools: list[AiTooler]) -> Com
     tool_node = ToolNode(tools, handle_tool_errors=_tool_error_message)
     bound = provider.bind_tools(tools) if tools else provider
 
-    def agent_node(state: CaseDesignState, config: Any) -> dict:
+    def agent_node(state: CaseDesignState, config: RunnableConfig) -> dict:
         return {"messages": [_stream_round(
             bound, state["messages"], _round_no(state), _run_control(config)
         )]}
@@ -5029,7 +5032,7 @@ def build_case_design_graph(provider: LlmProvider, tools: list[AiTooler]) -> Com
             return "gate"
         return "driver"
 
-    def tools_node(state: CaseDesignState, config: Any) -> Any:
+    def tools_node(state: CaseDesignState, config: RunnableConfig) -> Any:
         """只把没答过的调用交给 ToolNode（与 react 逐行同款；折叠口径见 agent_graph）。"""
         messages = state["messages"]
         idx, calls = _unanswered(messages)
