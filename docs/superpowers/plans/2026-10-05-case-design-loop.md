@@ -3794,7 +3794,10 @@ def _apply_resolutions(ctx: Ctx, resolutions: list) -> None:
                 if op["ref"] == r.ref:
                     if r.resolved:
                         op["resolved"] = True
-                    op["note"] = r.note or op["note"]
+                    if op["note"] and r.note:
+                        op["note"] = f"{op['note']}；复审：{r.note}"
+                    else:
+                        op["note"] = r.note or op["note"]
 
 
 def _close_missing(ctx: Ctx, layer: str, source: str, issued_keys: set[str]) -> None:
@@ -3973,6 +3976,8 @@ def h_attribute(ctx: Ctx) -> Any:
     _layer_audited(ctx, layer)                  # 审计环收口：层过审 → 下一层 / gate
     return None
 ```
+
+`裁定 25`：复审回执说明不再覆盖处置说明，双文保留（上文 `_apply_resolutions` 已按此码）。
 
 第三段（层全局审 ①/②/③ + 大纲门 + 人审续步 + 回写）：
 
