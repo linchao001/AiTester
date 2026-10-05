@@ -441,7 +441,7 @@ def test_review_and_matrix_models():
 
     m = MatrixOut.model_validate({"cells": [{"entity": "订单", "story": "st-0002",
                                              "verdict": "not_needed", "reason": "该故事不做订单实体"}]})
-    assert m.cells[0].verdict == "not_needed"
+    assert m.cells[0]["verdict"] == "not_needed"
 
 
 def test_ledger_roundtrip_and_id_allocation(tmp_path: Path):
