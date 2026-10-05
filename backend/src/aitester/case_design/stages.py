@@ -672,7 +672,12 @@ def h_opt(ctx: Ctx) -> Any:
         op = all_ops[str(row["ref"])]
         status, note = str(row["status"]), str(row.get("note") or "")
         op["disposition"] = status
-        op["note"] = note or op["note"]
+        # 裁定 28（与裁定 25 对称）：处置侧也不得整体顶掉既有轨迹——唯一人审门要看得懂整条处置过程，
+        # 新处置说明以「处置：」缀在旧轨迹（含复审回执）之后。
+        if op["note"] and note:
+            op["note"] = f"{op['note']}；处置：{note}"
+        else:
+            op["note"] = note or op["note"]
         if status in ("fixed", "covered"):
             op["resolved"] = True               # 主智能体声称已消化；复审再犯即会重新登记
         else:

@@ -135,7 +135,8 @@ def _append(state, turn) -> None:
     state["case"] = turn["case"]
 
 
-def simulate(env: CaseDesignEnv, *, plan=None, gen_nodes=None, gate_fix=None) -> None:
+def simulate(env: CaseDesignEnv, *, plan=None, gen_nodes=None, gate_fix=None,
+             opt_fix=None) -> None:
     """按账本 cursor 仿真主智能体写制品（drain 循环里承担 agent 节点角色）。"""
 
     led = Ledger.load(env.design)
@@ -180,9 +181,9 @@ def simulate(env: CaseDesignEnv, *, plan=None, gen_nodes=None, gate_fix=None) ->
                   "human": f"human-{layer}"}[src]
         refs = json.loads((env.reviews_dir / f"{prefix}-in-r{r}.json").read_text(
             encoding="utf-8"))["refs"]
-        _write(env.reviews_dir / f"{prefix}-fix-r{r}.json", {
-            "dispositions": [{"ref": item["ref"], "status": "fixed", "note": "已改"}
-                             for item in refs]})
+        rows = (opt_fix(layer, block, r, refs) if opt_fix is not None else
+                [{"ref": item["ref"], "status": "fixed", "note": "已改"} for item in refs])
+        _write(env.reviews_dir / f"{prefix}-fix-r{r}.json", {"dispositions": rows})
         return
     if stage == "attribute":
         name = f"attr-{layer}-{block or 'layer'}-r{cur['round']}.json"
@@ -202,7 +203,7 @@ def _end_text(frames) -> str:
 
 
 def drain(env, kb, task, *, state=None, plan=None, gen_nodes=None, gate_fix=None,
-          config=None, max_steps=120):
+          opt_fix=None, config=None, max_steps=120):
     """驱动↔agent 仿真交替推进，直到 route=end；终局帧存 state["frames"]。"""
 
     state = state or {"messages": [HumanMessage("按业务信息生成测试设计")], "case": {}}
@@ -213,7 +214,7 @@ def drain(env, kb, task, *, state=None, plan=None, gen_nodes=None, gate_fix=None
         if turn["case"]["route"] == "end":
             state["frames"] = frames
             return state
-        simulate(env, plan=plan, gen_nodes=gen_nodes, gate_fix=gate_fix)
+        simulate(env, plan=plan, gen_nodes=gen_nodes, gate_fix=gate_fix, opt_fix=opt_fix)
     raise AssertionError("drain 未在步数上限内收敛")
 
 
@@ -853,6 +854,54 @@ def test_re_review_note_keeps_disposition_note_in_order(tmp_path):
     assert op["ref"] == "op-01" and op["resolved"] is True
     assert op["note"] == "已改；复审：已补 ch-0002"              # simulate 的处置说明仍在最前
     assert "已改；复审：已补 ch-0002" in (env.design / "outline.md").read_text(encoding="utf-8")
+
+
+# ---- 裁定 28（处置侧回执轨迹对称保真）----
+
+_FIRST_NOTE = "已增补 ch-0002 退款链路"
+_SECOND_NOTE = "口径已落到 ch-0002 的 business_scope"
+
+
+def _opt_rows(layer, block, round_no, refs):
+    """两轮处置表给**不同**的说明，且第二轮把上一轮的 ref 一并重申（主智能体常见写法）。
+
+    op-01 首轮 fixed 后已销账，复审再犯同一 key 即另登 op-02；第二轮处置表覆盖 op-02，
+    并顺带把 op-01 的处置说明又写了一遍——旧实现会把 op-01 已累积的轨迹整串顶掉。
+    """
+    assert layer == "chain" and block == "ALL"
+    if round_no == 0:
+        assert [r["ref"] for r in refs] == ["op-01"]
+        return [{"ref": "op-01", "status": "fixed", "note": _FIRST_NOTE}]
+    assert round_no == 1 and [r["ref"] for r in refs] == ["op-02"]
+    return [{"ref": "op-02", "status": "fixed", "note": _SECOND_NOTE},
+            {"ref": "op-01", "status": "covered", "note": _SECOND_NOTE}]
+
+
+def test_disposition_note_keeps_re_review_trail_in_order(tmp_path):
+    """裁定 28（与裁定 25 对称）：新一轮处置说明缀在既有轨迹之后，不整串顶掉「处置＋复审」轨迹。
+
+    旧实现 `op["note"] = note or op["note"]` 将
+    「已增补 ch-0002 退款链路；复审：口径已对齐」整串换成第二轮的处置说明——唯一人审门
+    就此看不见这条意见第一轮改了什么。
+    """
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    task = ScriptTask({
+        "blk-chain-ALL-r0": _j({"opinions": [{"target": {"type": "node", "value": "ch-0001"},
+            "kind": "颗粒度", "ask": "补充退款子链路", "evidence": "design/drafts/chain/ALL.json"}],
+            "resolutions": []}),
+        "blk-chain-ALL-r1": _j({"opinions": [{"target": {"type": "node", "value": "ch-0001"},
+            "kind": "颗粒度", "ask": "补充退款子链路", "evidence": "design/drafts/chain/ALL.json"}],
+            "resolutions": [{"ref": "op-01", "resolved": False, "note": "口径已对齐"}]}),
+    })
+    drain(env, kb, task, plan={"task_kind": "design", "entry_layer": "chain",
+                               "terminal_layer": "chain", "target_subtree": "",
+                               "source_files": [], "note": "只链层"}, opt_fix=_opt_rows)
+    ops = {o["ref"]: o for o in Ledger.load(env.design).layer("chain")["opinions"]}
+    assert ops["op-01"]["note"] == f"{_FIRST_NOTE}；复审：口径已对齐；处置：{_SECOND_NOTE}"
+    assert ops["op-02"]["note"] == _SECOND_NOTE                  # 首轮无轨迹：直接用新说明
+    assert f"{_FIRST_NOTE}；复审：口径已对齐" in (env.design / "outline.md").read_text(
+        encoding="utf-8")                                         # 轨迹整条落在人读的那张表里
 
 
 # ---- 裁定 27（回写续跑的再入授权：否定句绝不写库）----
