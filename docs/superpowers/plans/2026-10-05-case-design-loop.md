@@ -4444,15 +4444,15 @@ def _target_layer(ops: list) -> str:
 
 
 def h_gate_interpret(ctx: Ctx) -> Any:
-    """人审门续步：审人话 → 结构化意见 → 目标层及其下各层失效 → 交人工优化环；无意见即批准。"""
+    """人审门续步：审人话 → 结构化意见 → 目标层及其下各层失效 → 交人工优化环。
+
+    回写是不可逆写，所以**批准必须明示**：解读子返回空 opinions 只代表「没提取到意见」，
+    不等于人说了通过；两者都不是时本轮不做任何决定（不回写、不回溯），把待决状态交回主智能体转述。
+    """
     led, gate = ctx.led, ctx.led.data["gate"]
     k = int(gate.get("int_round") or 0) + 1
     gate["int_round"] = k
-    human_text = ""
-    for m in reversed(ctx.state_messages):
-        if isinstance(m, HumanMessage):
-            human_text = str(m.content or "")
-            break
+    human_text = _human_text(ctx.state_messages)
     brief = "\n".join([
         "【人审解读·大纲门】人审是最权威的评审。把人审原话转成结构化意见（纯批准或没有要改的内容 → opinions 留空）：",
         "人审原文：",
