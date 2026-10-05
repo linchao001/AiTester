@@ -31,18 +31,22 @@ def build_universe(nodes_by_layer: dict[str, list[dict]], kb_rows: dict[str, lis
                    scope: dict[str, set[str]]) -> dict:
     """引用宇宙 = 本任务草稿 ∪ KB 存量；in_scope 标记本次任务范围内的节点。
 
-    范围语义（R-13/R-14）：
+    范围语义（R-13/R-14/R-17）：
     - scope 缺省或为空 dict = 全量任务，**所有节点都在范围内**（fail closed）。
       「范围」绝不用「没打标」表达：否则全量树任务与「检查根本没跑」在大纲上同为 hard 全 0，
       人审门唯一的信号就此静默丢失。
-    - 计划的 scope 只有 chains/stories 两键（见 T8 `_scope_for_checks`），点层节点的范围**从
-      所属故事继承**；否则 R-13 的守卫会把点层检查全部静音，后人新加的点层检查也会静默不响。
+    - **草稿行永远在范围内**（R-17）。scope 只用来判定 KB 存量哪些算「本任务没动过」。
+      草稿就是本次任务刚产出的文件：② 的修复指令允许主智能体改的正是这些文件，把它的结构缺陷
+      静音掉（旧写法：草稿点引用悬空 story id → 继承表达式判它不在范围 → broken_parent 整条不响）
+      等于把门自己该拦的东西放过去。
+    - KB 存量的点层范围**从所属故事继承**（计划的 scope 只有 chains/stories 两键，见 T8
+      `_scope_for_checks`）；否则 R-13 的守卫会把存量的点层检查全部静音。
     - 显式给出但集合为空（如 `{"chains": set(), "stories": set()}`）是调用方的有意收窄
-      （本 run 不进下游层），仍按「范围内无节点」处理，不做 fail closed。
+      （本 run 不进 KB 存量那一层），对存量不做 fail closed。
     """
     uni: dict[str, dict[str, dict]] = {"chains": {}, "stories": {}, "points": {}}
     story_scope = scope.get("stories", set()) if scope else set()
-    for source, state in ((kb_rows, "kb"), (nodes_by_layer, None)):
+    for source, is_kb in ((kb_rows, True), (nodes_by_layer, False)):
         for layer in LAYERS:
             for row in source.get(layer, []) or []:
                 if row.get("op") == "delete":
@@ -51,14 +55,15 @@ def build_universe(nodes_by_layer: dict[str, list[dict]], kb_rows: dict[str, lis
                 if not nid:
                     continue
                 item = dict(row)
-                item.setdefault("state", "kb" if state == "kb" else "approved")
-                if scope:
-                    if layer == POINT:
-                        item["in_scope"] = str(item.get("story") or "") in story_scope
-                    else:
-                        item["in_scope"] = nid in scope.get(_BUCKET[layer], set())
-                else:
+                item.setdefault("state", "kb" if is_kb else "approved")
+                if not scope:
                     item["in_scope"] = True
+                elif not is_kb:
+                    item["in_scope"] = True
+                elif layer == POINT:
+                    item["in_scope"] = str(item.get("story") or "") in story_scope
+                else:
+                    item["in_scope"] = nid in scope.get(_BUCKET[layer], set())
                 uni[_BUCKET[layer]][nid] = item
     return uni
 

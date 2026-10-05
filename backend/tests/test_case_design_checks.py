@@ -240,9 +240,9 @@ def test_in_scope_node_referencing_out_of_scope_parent_still_reports():
 
 
 def test_point_in_scope_is_inherited_from_its_story():
-    # 计划的 scope 只有 chains/stories 两键（T8 `_scope_for_checks`），点层从所属故事继承范围；
-    # 否则 R-13 的守卫会把点层检查全部静音（后人新加的点层检查也会静默不响）。
-    nodes = {
+    # 计划的 scope 只有 chains/stories 两键（T8 `_scope_for_checks`），**KB 存量**点层的范围
+    # 从所属故事继承；否则 R-13 的守卫会把存量的点层检查全部静音（后人新加的点层检查也不响）。
+    kb_rows = {
         "chain": [{"id": "ch-0001", "type": "chain", "level": 1, "parent": "",
                    "priority": "P0", "state": "approved"}],
         "story": [
@@ -257,11 +257,41 @@ def test_point_in_scope_is_inherited_from_its_story():
         ],
     }
     scope = {"chains": {"ch-0001"}, "stories": {"st-0001"}}
-    uni = build_universe(nodes, {"chain": [], "story": [], "point": []}, scope)
+    uni = build_universe({"chain": [], "story": [], "point": []}, kb_rows, scope)
     assert uni["points"]["pt-0001"]["in_scope"] is True           # 故事在范围内 → 点继承
     assert uni["points"]["pt-0002"]["in_scope"] is False
     hits = run_checks(uni, claims=[], matrix_cells=[], unresolved={})["hard"]
     assert {(f["code"], f["where"]) for f in hits} == {("unapproved_ref", "pt-0001")}
+
+
+def test_draft_rows_are_always_in_scope():
+    # R-17：scope 只约束 KB 存量。草稿行是本次任务刚产出的文件——② 的修复指令能改的正是它们，
+    # 按 scope 静音等于把门自己该拦的东西放过去。
+    scope = {"chains": set(), "stories": set()}
+    uni = build_universe(_sparse_nodes(), {"chain": [], "story": [], "point": []}, scope)
+    assert all(n["in_scope"] is True for b in ("chains", "stories", "points")
+               for n in uni[b].values())
+    assert sorted((f["code"], f["where"]) for f in
+                  run_checks(uni, claims=[], matrix_cells=[], unresolved={})["hard"]) == [
+        ("empty_chain", "ch-0002"), ("empty_story", "st-0001")]
+
+
+def test_draft_point_with_dangling_story_still_reports_broken_parent():
+    # R-17 的复现路径（旧写法实测静音）：窄任务里草稿点引用一个既不在宇宙、也不在
+    # scope["stories"] 里的故事 id —— 继承表达式判它「不在范围」，于是 broken_parent 整条不响，
+    # 大纲带着断链的点去过人审门。草稿点必须照报。
+    nodes = {
+        "chain": [],
+        "story": [],
+        "point": [{"id": "pt-0001", "type": "point", "story": "st-9999", "priority": "P1",
+                   "directions": ["正向"], "entities": ["实体甲"], "state": "approved"}],
+    }
+    uni = build_universe(nodes, {"chain": [], "story": [], "point": []},
+                         {"chains": set(), "stories": set()})
+    assert uni["points"]["pt-0001"]["in_scope"] is True
+    hits = run_checks(uni, claims=[], matrix_cells=[], unresolved={})["hard"]
+    assert {(f["code"], f["layer"], f["where"]) for f in hits} == {
+        ("broken_parent", "point", "pt-0001")}
 
 
 # ------------------------------------------------------------------ R-14 空范围
@@ -293,8 +323,8 @@ def test_missing_or_empty_scope_fails_closed():
 
 def test_explicitly_empty_scope_sets_stay_narrowed():
     # 与「没给范围」区分：显式空集合是调用方有意收窄（T8 在 F=-1 时给 `{"chains":set(),"stories":set()}`
-    # 表示本 run 不进下游层），不做 fail closed。
-    uni = build_universe(_sparse_nodes(), {"chain": [], "story": [], "point": []},
+    # 表示本 run 不进 KB 存量那一层），对**存量**不做 fail closed。
+    uni = build_universe({"chain": [], "story": [], "point": []}, _sparse_nodes(),
                          {"chains": set(), "stories": set()})
     assert all(n["in_scope"] is False for b in ("chains", "stories", "points") for n in uni[b].values())
     assert run_checks(uni, claims=[], matrix_cells=[], unresolved={})["hard"] == []
@@ -410,14 +440,19 @@ def test_non_integer_level_reports_cross_level_instead_of_crashing():
              "priority": "P0", "state": "approved"},                # 父 level 非整数
             {"id": "ch-0005", "type": "chain", "level": "根", "parent": "",
              "priority": "P0", "state": "approved"},                # 根：无父可校，不报
+            {"id": "ch-0006", "type": "chain", "level": "六层", "parent": "ch-0005",
+             "priority": "P0", "state": "approved"},                # 父子都坏：只报一条，点名子
         ],
         "story": [], "point": [],
     }
-    scope = {"chains": {f"ch-000{i}" for i in range(1, 6)}, "stories": set()}
+    scope = {"chains": {f"ch-000{i}" for i in range(1, 7)}, "stories": set()}
     out = run_checks(build_universe(nodes, {"chain": [], "story": [], "point": []}, scope),
                      claims=[], matrix_cells=[], unresolved={})
     assert {(f["layer"], f["where"]) for f in out["hard"] if f["code"] == "cross_level"} == {
-        ("chain", "ch-0002"), ("chain", "ch-0003"), ("chain", "ch-0004")}
+        ("chain", "ch-0002"), ("chain", "ch-0003"), ("chain", "ch-0004"), ("chain", "ch-0006")}
+    both = [f for f in out["hard"]
+            if f["code"] == "cross_level" and f["where"] == "ch-0006"]
+    assert len(both) == 1 and "六层" in both[0]["detail"]
     bad = next(f for f in out["hard"]
                if f["code"] == "cross_level" and f["where"] == "ch-0002")
     assert "不是整数" in bad["detail"] and "二层" in bad["detail"]
