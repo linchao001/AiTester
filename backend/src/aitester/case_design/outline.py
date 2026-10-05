@@ -127,4 +127,32 @@ def compose_outline(ledger_data: dict, nodes_by_layer: dict, report: dict, extra
             lines.append(f"- （{n.get('entity', '')}, {n.get('story', '')}）不需要：{n.get('reason', '')}")
     else:
         lines.append("- 无")
+    lines += ["", "## 树外遗漏对照（①盲枚举 × 落点）"]
+    enumeration = extras.get("enumeration") or []
+    if enumeration:
+        for item in enumeration:
+            landing = str(item.get("landing") or "").strip()
+            tail = f"落点 {landing}" if landing else f"树外遗漏（{item.get('note') or '无落点'}）"
+            lines.append(f"- [{item.get('kind', '')}] {item.get('name', '')}：{tail}")
+    else:
+        lines.append("- 无")
+    lines += ["", "## 意见落点对照表（每条意见的去向）"]
+    dispositions = extras.get("dispositions") or []
+    if dispositions:
+        for d in dispositions:
+            note = d.get("note") or d.get("disposition") or ""
+            lines.append(f"- [{d.get('layer', '')}] {d.get('ref', '')}"
+                         f"（{d.get('source', '')}·{d.get('kind', '')}·{d.get('target', '')}）："
+                         f"{d.get('ask', '')} → {d.get('status', '')}"
+                         + (f"——{note}" if note else ""))
+    else:
+        lines.append("- 无")
+    lines += ["", "## 本次无变化块"]
+    no_change = extras.get("no_change") or []
+    if no_change:
+        for item in no_change:
+            lines.append(f"- [{LAYER_CN.get(item.get('layer', ''), item.get('layer', ''))}]"
+                         f" 块 {item.get('block', '')}（智能体判定无变化，未产生草稿）")
+    else:
+        lines.append("- 无")
     return "\n".join(lines) + "\n"

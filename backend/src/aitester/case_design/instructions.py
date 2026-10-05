@@ -83,3 +83,16 @@ def attribute_instruction(layer: str, block: str, *, opinions_path: str, out_pat
         '{"cause": "业务信息不足|契约冲突|评审分歧|成本超限", "note": "一句说明"}',
         "写完即停。",
     ])
+
+
+def gate_fix_instruction(*, issues_path: str, round_no: int) -> str:
+    return "\n".join([
+        f"【编排·大纲门修复·第 {round_no} 轮】④ 确定性检查发现结构问题（清单在 {issues_path}）。",
+        "请逐条修复对应的层草稿（design/drafts/ 下），只改被点名的文件：",
+        "- broken_parent：引用（parent/chains/story）必须指向引用宇宙内存在的节点 id。",
+        "- cross_level：父子 level 必须连续（子 = 父 + 1）。",
+        "- priority_violation：子节点优先级不得**高于**其父（重要性 P0 > P1 > P2；父比子更重要是正常降级，子比父更重要才是违例——要么父该提级，要么子该降级）。",
+        "- unapproved_ref：被引用的节点必须已过审；失效层节点不得被引用。",
+        "- empty_chain / empty_story：范围内链路必须有故事认领、范围内故事必须有测试点（在对应层草稿补节点）。",
+        "不要做与问题无关的改动；修完即停，编排层会重新检查。",
+    ])

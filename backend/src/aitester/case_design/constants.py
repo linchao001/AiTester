@@ -36,3 +36,5 @@ CASE_REVIEW_BLIND_AGENT_ID = "case_review_blind"
 LEDGER_NAME = "ledger.json"
 PLAN_NAME = "plan.json"
 OUTLINE_NAME = "outline.md"
+
+CASE_DESIGN_KEY = "case_design_env"   # case_env 注入通道（与 GATE_KEY 同款；T9 图装配读写此键）
