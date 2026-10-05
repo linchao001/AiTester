@@ -22,7 +22,7 @@ interface Props {
   health: HealthResponse | null;
   healthError: string | null;
   onOpenSettings: () => void;
-  onRetryHealth: () => void;   // healthError 归 App 持有（App.tsx:21-28），本页不自愈，重试必须打回 App
+  onRetryHealth: () => void;   // healthError 归 App 持有（App.tsx:23-30），本页不自愈，重试必须打回 App
 }
 
 export default function ChatPage({ health, healthError, onOpenSettings, onRetryHealth }: Props) {
@@ -221,7 +221,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   }, [toast]);
 
   const guard = useCallback((): boolean => {
-    // 无 health 即 /api/health 还没成功过（App 启动时拉），此时发送必失败，先给可见提示
+    // 无 health 即 /api/health 还没成功过（App 会重试到成功），此时发送必失败，先给可见提示
     if (!health) { toast("后端未就绪，请稍候或重试"); return false; }
     if (busyRef.current) { toast("上一条消息还在执行，请稍候"); return false; }
     if (loadingRef.current) { toast("会话还在加载，请稍候"); return false; }

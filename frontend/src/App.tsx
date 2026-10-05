@@ -13,6 +13,8 @@ const tabs = [
   { to: "/projects", label: "🗂 项目管理" },
 ];
 
+const HEALTH_RETRY_MS = 3000;
+
 export default function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
@@ -27,9 +29,15 @@ export default function App() {
       .catch((e: Error) => setHealthError(e.message));
   }, []);
 
+  // 首次成功之前自己爬：挂载时后端还没起（或中途重启）会让 health 永远停在 null，
+  // 于是每个 guard() 都把「后端活着」报成「后端未就绪」，只能靠用户手动刷新页面。
+  // 成功一次即停（依赖里的 health 变化会清掉定时器）→ 就绪后零后台流量。
   useEffect(() => {
+    if (health) return;
     refreshHealth();
-  }, [refreshHealth]);
+    const id = setInterval(refreshHealth, HEALTH_RETRY_MS);
+    return () => clearInterval(id);
+  }, [health, refreshHealth]);
 
   return (
     <div className="app">
@@ -51,7 +59,6 @@ export default function App() {
           ))}
         </nav>
         <div className="spacer"></div>
-        <button className="icon-btn" title="文档">ⓘ</button>
         <button className="icon-btn" title="设置" onClick={() => setSettingsOpen(true)}>⚙</button>
       </header>
       <Routes>
