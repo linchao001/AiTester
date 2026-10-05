@@ -12,7 +12,7 @@ from aitester.adapters.llm import openai_compat
 from aitester.adapters.tools import build_default_registry
 from aitester.adapters.tools.file_tools import FileObservationStore
 from aitester.config import Settings
-from aitester.orchestration import build_agent_graph
+from aitester.case_design.graph import build_case_design_graph
 from aitester.services.agent_runtime import AgentInstance, AgentRuntime
 from aitester.services.capability_config import CapabilityConfigService
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
@@ -67,7 +67,7 @@ def test_prompt_and_builder_come_from_spec(tmp_path: Path) -> None:
     assert isinstance(instance, AgentInstance)
     assert instance.agent_id == "case_design"
     assert instance.system_prompt == spec.prompt
-    assert instance.build_graph is build_agent_graph
+    assert instance.build_graph is build_case_design_graph   # spec.graph_builder="case_design_loop"
 
 
 def test_agent_default_model_wins_over_global(tmp_path: Path) -> None:

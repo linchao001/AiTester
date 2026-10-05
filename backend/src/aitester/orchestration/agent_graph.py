@@ -16,6 +16,8 @@ from typing_extensions import TypedDict
 
 from aitester.adapters.llm import LlmProvider
 from aitester.adapters.tools.base import AiTooler
+from aitester.case_design.constants import CASE_DESIGN_KEY
+from aitester.case_design.env import CaseDesignEnv
 from aitester.orchestration.checkpoint import get_checkpointer, new_thread_id
 from aitester.orchestration.gate import GATE_KEY, GateContext, make_gate_node
 from aitester.orchestration.run_control import RUN_CONTROL_KEY, RunControl
@@ -191,6 +193,7 @@ def stream_graph(
     thread_id: str = "",
     resume: Any = None,
     gate: GateContext | None = None,
+    case_env: CaseDesignEnv | None = None,
 ) -> Iterator[dict[str, Any]]:
     """按指定拓扑执行一轮，把执行过程实时折成事件流。
 
@@ -198,6 +201,7 @@ def stream_graph(
     给值：SSE 路由给 run_id（P4：pending→resume 复用同一个），run_graph 这类历史入口给空串自造。
     resume 非 None 表示「从 gate 的中断处续跑」，此时不再投新输入——投了就变成新回合语义。
     挂起时 finish.pending=True，且它前面一定有至少一条 wait 事件。
+    case_env 与 gate 同款通道：case_design_loop 从它取落点与 KB；react 图不读。
     """
     graph = build(provider, tools)
     configurable: dict[str, Any] = {"thread_id": thread_id or new_thread_id()}
@@ -205,6 +209,8 @@ def stream_graph(
         configurable[RUN_CONTROL_KEY] = control
     if gate is not None:
         configurable[GATE_KEY] = gate
+    if case_env is not None:
+        configurable[CASE_DESIGN_KEY] = case_env      # 专属 loop 的注入通道（None=直通）
     stream = graph.stream(
         Command(resume=resume) if resume is not None else {"messages": messages},
         config={"configurable": configurable},

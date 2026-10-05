@@ -4,9 +4,13 @@
 LangGraph 拓扑。构建器名属于开发者面，未注册即代码缺陷，不做运行期兜底。
 """
 
+from aitester.case_design.graph import build_case_design_graph
 from aitester.orchestration.agent_graph import GraphBuilder, build_agent_graph
 
-GRAPH_BUILDERS: dict[str, GraphBuilder] = {"react": build_agent_graph}
+GRAPH_BUILDERS: dict[str, GraphBuilder] = {
+    "react": build_agent_graph,
+    "case_design_loop": build_case_design_graph,
+}
 
 
 def get_graph_builder(name: str) -> GraphBuilder:

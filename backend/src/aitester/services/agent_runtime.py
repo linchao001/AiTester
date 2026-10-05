@@ -15,6 +15,7 @@ from aitester.adapters.tools import build_default_registry
 from aitester.adapters.tools.base import AiTooler
 from aitester.adapters.tools.file_tools import FileObservationStore
 from aitester.adapters.tools.subagent_tools import TaskTool, build_task_tool
+from aitester.case_design.env import CaseDesignEnv
 from aitester.orchestration.auth_rules import face_can_suspend
 from aitester.orchestration.graph_registry import GraphBuilder, get_graph_builder
 from aitester.orchestration.subagent import ChildRuntime, drive_child
@@ -31,6 +32,7 @@ class AgentInstance:
     provider: LlmProvider
     tools: list[AiTooler]
     build_graph: GraphBuilder
+    case_env: CaseDesignEnv | None = None     # 专属 loop 的落点与 KB；None=直通（A10）
 
 
 class AgentRuntime:
@@ -87,12 +89,20 @@ class AgentRuntime:
             )
             tools = registry.get_many(state["tool_ids"])
 
+        # 专属 loop 的激活判据（A10）：图名是唯一判据；替身无开关（_NoopKbManager）视作
+        # 未启用——缺省 False 而非注册表闸门那侧的 True，直通是存量服务测试零改动的前提
+        case_env = None
+        if (spec.graph_builder == "case_design_loop" and self._kb is not None
+                and bool(getattr(self._kb, "is_enabled", False))):
+            case_env = CaseDesignEnv(project_dir=cwd, kb=self._kb)
+
         return AgentInstance(
             agent_id=spec.id,
             system_prompt=spec.prompt,
             provider=provider,
             tools=tools,
             build_graph=get_graph_builder(spec.graph_builder),
+            case_env=case_env,
         )
 
     def _task_tool(self, session_id: str, cwd: str,

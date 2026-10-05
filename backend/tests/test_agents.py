@@ -40,7 +40,7 @@ def test_catalog_has_exactly_one_readable_id_agent() -> None:
     assert spec.desc == (
         "读需求与接口文档，产出可直接执行的测试用例并同步用例平台，覆盖等价类、边界值与异常路径。"
     )
-    assert spec.graph_builder == "react"
+    assert spec.graph_builder == "case_design_loop"
     assert isinstance(spec.default_tool_ids, tuple)
 
 

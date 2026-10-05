@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 
 from aitester.case_design.constants import CASE_DESIGN_KEY
@@ -26,7 +27,11 @@ def case_env_of(config: Any) -> CaseDesignEnv | None:
 def make_driver_node(task_tool: Any):
     """构造 case_design 图的驱动节点（task_tool=父 run 的 TaskTool，评审子经它驱动）。"""
 
-    def driver_node(state: dict, config: Any) -> dict:
+    # config 必须标注为 RunnableConfig：langgraph 按类型注解决定是否注入
+    # （本模块有 `from __future__ import annotations`，注解以字符串比对白名单，
+    # 只认 "RunnableConfig"——Any 或 "RunnableConfig | None" 都会被静默跳过，
+    # T9 接线时实测缺参 TypeError）
+    def driver_node(state: dict, config: RunnableConfig) -> dict:
         try:
             writer = get_stream_writer()
         except RuntimeError:                       # 单测直调：无图运行上下文

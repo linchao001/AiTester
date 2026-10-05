@@ -35,6 +35,7 @@ AGENT_CATALOG: tuple[AgentSpec, ...] = (
             "web_search",
             "task",
         ),
+        graph_builder="case_design_loop",
     ),
 )
 

@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from aitester.adapters.llm import LlmProvider, MockProvider, ProviderConfigError
 from aitester.adapters.tools.base import AiTooler
 from aitester.agents import is_platform_agent
+from aitester.case_design.env import CaseDesignEnv
 from aitester.context import ContextBuilder, PassthroughContextBuilder
 from aitester.memory import InMemoryMemoryStore, MemoryStore
 from aitester.orchestration import drop_thread, new_thread_id, run_echo, stream_graph
@@ -72,6 +73,7 @@ class PreparedRun:
     project_id: str = ""
     project_dir: str = ""         # expanduser 再 resolve：判定与续跑守卫都认它
     gate: GateContext | None = None
+    case_env: CaseDesignEnv | None = None   # 专属 loop 的注入通道（None=直通）
 
 
 class ChatService:
@@ -223,6 +225,7 @@ class ChatService:
             project_id=pid,
             project_dir=project_dir,
             gate=build_gate_context(mode, project_dir, key, self.pending.remembered_for(key)),
+            case_env=instance.case_env,
         )
 
     def _persist(
@@ -259,6 +262,7 @@ class ChatService:
         events = stream_graph(
             prepared.build, prepared.provider, prepared.tools, prepared.messages,
             control=control, thread_id=thread_id, gate=prepared.gate,
+            case_env=prepared.case_env,
         )
         return self._fold_turn(events, prepared, control, thread_id)
 
@@ -385,6 +389,7 @@ class ChatService:
             yield from stream_graph(
                 prepared.build, prepared.provider, prepared.tools, prepared.messages,
                 control=control, thread_id=entry.thread_id, gate=prepared.gate,
+                case_env=prepared.case_env,
                 resume={"decision": taken["decision"], "remember": taken["remember"]},
             )
 
