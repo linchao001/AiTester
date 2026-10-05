@@ -42,8 +42,9 @@ GENERAL_PURPOSE_SPEC = AgentSpec(
     id="general-purpose",
     icon="🕵️",
     name="通用子智能体",
-    desc="Read-only investigator for delegated tasks: explores files, searches code "
-         "and the web, then reports back a concise summary.",
+    desc="Investigator for delegated tasks: explores files, searches code "
+         "and the web, then reports back one concise summary. It can only use the "
+         "tools listed in its tool face below.",
     prompt=_load_prompt("general-purpose"),
     default_tool_ids=("read", "grep_search", "glob_search", "web_search"),
 )

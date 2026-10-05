@@ -107,11 +107,12 @@ class AgentRuntime:
         勾上写 / 命令 / 知识库写，该子自动退回「一轮一个」的串行通路——这不是新加的
         闸门，是「会挂起的子没法并行续跑」这条机制事实，且在设置页看得见、改得动。
         """
-        roster = {spec.id: {"name": spec.name, "desc": spec.desc}
+        faces = {spec.id: self._capability.agent_state(spec.id)["tool_ids"]
+                 for spec in SUBAGENT_CATALOG}
+        roster = {spec.id: {"name": spec.name, "desc": spec.desc, "tools": faces[spec.id]}
                   for spec in SUBAGENT_CATALOG}
-        parallel = {spec.id: not face_can_suspend(
-            self._capability.agent_state(spec.id)["tool_ids"])
-            for spec in SUBAGENT_CATALOG}
+        parallel = {spec.id: not face_can_suspend(faces[spec.id])
+                    for spec in SUBAGENT_CATALOG}
 
         def build_child(sub_agent_id: str) -> ChildRuntime:
             spec = find_subagent(sub_agent_id)

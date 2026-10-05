@@ -28,7 +28,8 @@ def test_subagent_catalog_is_separate_from_agent_catalog() -> None:
     assert [s.id for s in SUBAGENT_CATALOG] == ["general-purpose"]
     spec = SUBAGENT_CATALOG[0]
     assert spec.icon == "🕵️" and spec.name == "通用子智能体"
-    assert spec.desc.startswith("Read-only investigator")            # 模型可见：英文
+    assert not spec.desc.startswith("Read-only")                      # 面可调：静态文案不许断言只读
+    assert spec.desc.startswith("Investigator for delegated tasks")   # 模型可见：英文
     assert spec.default_tool_ids == ("read", "grep_search", "glob_search", "web_search")
     assert "task" not in spec.default_tool_ids                       # 深度 1 结构锁
     assert all(s.id != "general-purpose" for s in AGENT_CATALOG)     # 不进直选面
@@ -87,7 +88,8 @@ def test_legacy_config_activates_task_via_settings_path(tmp_path: Path) -> None:
 
 # —— T3：task 工具壳与注册表缝 ——
 
-_ROSTER = {"general-purpose": {"name": "通用子智能体", "desc": "Read-only investigator."}}
+_ROSTER = {"general-purpose": {"name": "通用子智能体", "desc": "Investigator.",
+                              "tools": ["read", "grep_search"]}}
 
 
 def test_task_tool_rejects_unknown_subagent_type() -> None:
@@ -152,7 +154,16 @@ def test_render_description_lists_roster() -> None:
     text = render_description(_ROSTER)
     assert text.startswith(TASK_TOOL_DESC)
     assert "Available subagents:" in text
-    assert "- 通用子智能体 (general-purpose): Read-only investigator." in text
+    assert ("- 通用子智能体 (general-purpose): Investigator. "
+            "[tool face: read, grep_search]") in text
+
+
+def test_render_description_preamble_does_not_claim_read_only() -> None:
+    """T10 走查 8：固定文案曾写「read-only investigation」，父模型据此拒绝派发写任务。
+    只读只能由每行的当前工具面表达，不能在 preamble 里断言。"""
+    assert "read-only investigation" not in TASK_TOOL_DESC
+    assert "[tool face: none]" in render_description(
+        {"ghost": {"name": "幽灵", "desc": "d"}})      # 面无条目时不崩、不假装有能力
 
 
 def test_registry_registers_task_only_when_injected(tmp_path: Path) -> None:

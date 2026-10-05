@@ -20,8 +20,8 @@ TASK_TOOL_ID = "task"
 DEFAULT_SUBAGENT_TYPE = "general-purpose"   # 入参缺省值：gate 塑形也按它查 parallel 表（R14）
 
 TASK_TOOL_DESC = (
-    "Delegate a self-contained, read-only investigation to a subagent and get one "
-    "summary back. Use it when the work would take many steps (searching, reading "
+    "Delegate a self-contained investigation to a subagent and get one summary back. "
+    "Use it when the work would take many steps (searching, reading "
     "files, web search) and only the conclusion matters — the subagent's intermediate "
     "steps never enter this conversation, so your own context stays small. The "
     "subagent cannot see this conversation: put every detail it needs (goal, paths, "
@@ -49,9 +49,14 @@ class TaskInput(BaseModel):
                     "(e.g. '调查失败用例'). Optional; defaults to the subagent's name.")
 
 
-def render_description(roster: dict[str, dict[str, str]]) -> str:
-    """工具 description = 固定文案 + 在册清单（模型只能派清单里的子智能体）。"""
+def render_description(roster: dict[str, dict[str, Any]]) -> str:
+    """工具 description = 固定文案 + 在册清单（模型只能派清单里的子智能体）。
+
+    每行尾带该子的**当前工具面**（装配期从同一份能力勾选取，与 parallel 表同源）：
+    面是用户在设置页可调的，静态 desc 一旦断言只读，父模型就会据此拒绝派发写任务
+    （T10 走查 8 实测）。"""
     lines = [f"- {meta['name']} ({agent_id}): {meta['desc']}"
+             f" [tool face: {', '.join(meta.get('tools') or []) or 'none'}]"
              for agent_id, meta in roster.items()]
     return TASK_TOOL_DESC + "\n\nAvailable subagents:\n" + "\n".join(lines)
 
@@ -60,7 +65,8 @@ class TaskTool(AiTooler):
     """委派一件调查任务给子智能体独立完成，只回收一份摘要字符串。
 
     四个缝全部由装配层注入（R13 断环）：
-    - ``roster``：``{agent_id: {"name": …, "desc": …}}``——模型可见清单与未知类型报错依据；
+    - ``roster``：``{agent_id: {"name": …, "desc": …, "tools": [tool_id, …]}}``——
+      模型可见清单与未知类型报错依据，``tools`` 是该子当前工具面（可缺，渲染成 none）；
     - ``build_child``：``(agent_id) -> ChildRuntime``；未知 id 或装配失败直接抛异常；
     - ``drive``：``(child, brief, *, call_id, name, title, config, isolated) -> str`` 编排层驱动函数；
     - ``parallel``：``{agent_id: 能不能并行派发}``——同一份表既给 gate 塑形用，也决定本次
@@ -70,7 +76,7 @@ class TaskTool(AiTooler):
     name: str = TASK_TOOL_ID
     description: str = TASK_TOOL_DESC
     args_schema: type[BaseModel] = TaskInput
-    roster: dict[str, dict[str, str]] = {}
+    roster: dict[str, dict[str, Any]] = {}
     build_child: Any = None
     drive: Any = None
     parallel: dict[str, bool] = {}
@@ -93,7 +99,7 @@ class TaskTool(AiTooler):
                           isolated=self.parallel.get(subagent_type, False))
 
 
-def build_task_tool(roster: dict[str, dict[str, str]], build_child: Callable[[str], Any],
+def build_task_tool(roster: dict[str, dict[str, Any]], build_child: Callable[[str], Any],
                     drive: Callable[..., str],
                     parallel: dict[str, bool] | None = None) -> TaskTool:
     """按在册清单产出一把 task 工具（description 里带清单一节；parallel 缺省全按串行）。"""

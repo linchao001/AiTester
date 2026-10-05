@@ -183,8 +183,12 @@ def test_parallel_table_follows_the_settings_face(tmp_path: Path) -> None:
     task_tool = {t.tool_id(): t for t in runtime.build(
         "case_design", "s1", provider_override=MockProvider()).tools}["task"]
     assert task_tool.parallel == {"general-purpose": True}
+    # 同一份勾选取决第二件事：模型可见的工具面清单——父模型只有看到 write 在场才敢派写任务
+    assert "[tool face: read, grep_search, glob_search, web_search]" in task_tool.description
     capability.set_agent_tools("general-purpose",
                                ["read", "grep_search", "glob_search", "web_search", "write"])
     reopened = {t.tool_id(): t for t in runtime.build(
         "case_design", "s2", provider_override=MockProvider()).tools}["task"]
     assert reopened.parallel == {"general-purpose": False}
+    assert ("[tool face: read, grep_search, glob_search, web_search, write]"
+            in reopened.description)
