@@ -16,8 +16,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 -FrontendPor
 Ctrl+C 或按任意键停止，退出时清理整棵进程树（不会残留 uvicorn/node 孤儿进程）。
 也可按下方说明分别手动启动。
 
-「⚙ 设置」弹窗分三节：🧠 模型设置 / 🤖 智能体配置（本期仅「用例设计智能体」，系统提示词只读）/ 🛠 工具
-（文件处理与检索、命令执行、网页搜索，跑不了的会标灰显示原因）。
+「⚙ 设置」弹窗分三节：🧠 模型设置 / 🤖 智能体配置（「用例设计智能体」+「子智能体（被派发用）」，
+系统提示词只读）/ 🛠 工具（文件处理与检索、命令执行、网页搜索、子智能体工具，跑不了的会标灰显示原因）。
 
 ## 后端（backend/）
 
@@ -36,8 +36,8 @@ uv run python -m aitester.main
   （提示词 / 有效模型 / 携带工具 / 图拓扑），该智能体的默认模型可用则用、否则回落全局默认，未知 `agent_id` 返回 404。
   守门在流开始前同步跑完（配置缺失 / 项目不可达 → 普通 400·404，prepare 阶段其余上游失败 → 502，
   detail 与迁移前逐字相同），
-  过后响应 `text/event-stream`，逐 token 推 `start / delta / call / step / draft / wait / done / error`
-  八类事件，终态恒为一条（`done`，或被停止时 `done{stopped:true}`；流中模型失败 → `error`；
+  过后响应 `text/event-stream`，逐 token 推 `start / delta / call / step / draft / wait / sub / done / error`
+  九类事件，终态恒为一条（`done`，或被停止时 `done{stopped:true}`；流中模型失败 → `error`；
   待授权时不发终态，`wait` 之后直接断流，本轮一个字都不落盘）
 - `POST /api/chat/stop`：`{run_id}` 置取消位终止在途回答；`run_id` 已结束返回 404「这条回答已经结束」，
   已生成的部分文本与已完成步骤照旧落盘，会话行标 `stopped`；待批期间同样可停：命中在途流优先，
@@ -58,7 +58,8 @@ uv run python -m aitester.main
   失败归因为可照做的中文文案（Key 无效 / 地址不可达 / 连接超时 / 路径不对 / 限流），
   未知 `pid` 返回 404
 - `GET /api/capabilities` + 三个 `PUT`：智能体默认模型 / 携带工具 / 工具启用停用的运行期读写
-  （对应前端「⚙ 设置 · 智能体配置 / 工具」；禁用工具会从所有智能体级联摘除，重新启用不自动补回）
+  （对应前端「⚙ 设置 · 智能体配置 / 工具」；禁用工具会从所有智能体级联摘除，重新启用不自动补回；
+  响应含 `subagents` 节——「被派发用」子智能体，模型与工具同样可调，但不进项目清单与聊天页直选）
 - 工具可用性取自本机探测（`available` / `unavailable_reason`）：本机缺 shell 的工具
   只读为不可用 —— 不能启用、不能携带；旧配置在读取时自动落回禁用并摘掉携带
 - `web_search`（网页搜索）：对齐 QwenPaw 原理的可插拔 provider 架构 —— 默认 Tavily keyless
@@ -93,6 +94,14 @@ uv run python -m aitester.main
   **边界执法由用户自控**：composer 的 🛡 芯片三档（档位存 `aitester.chat.permMode`，默认 `free`）——
   `free` 零执法（绝对路径照旧可出项目）；`boundary` 拦界外写与全部命令、界内写与知识库写入放行；
   `strict` 对界内外写、命令与 `save_to_knowledge` 逐次批准；平台智能体（如 `/kb`）无项目落点，不受辖
+- 子智能体（委派式，`task` 工具）：`case_design` 携带 `task`，按提示词唤起「通用子智能体」——模型自行判断该派就派、
+  用户点名必派、用户要求「同时/分别查」时一轮发多个；同线程内跑只读四件
+  `read / grep_search / glob_search / web_search` 的独立实例，只回一份摘要，子内消息不进主上下文——主会话恰多一条工具结果；
+  只读子面的多个任务在同一批并行跑（各占由 `call_id` 派生的独立 `checkpoint_ns`，仍共用父线程与同一份清理）；
+  一旦在设置页给某个子勾上写 / 命令 / 知识库写，该子自动退回一轮一个（挂起续跑只在父 ns 上验证过）；
+  失败收结构化英文错误、主线程继续；子过程实时透出（`sub` 帧建卡 + 带 `subagent` 标注的 `call`/`step` 帧），
+  UI 为 🤖 折叠卡（live-only；落盘过程块只含父的 `task` 行）；子内写/命令照走三档审批（授权卡标「来自子智能体」）；
+  停止级联；深度 1 结构锁（子不可再派子，设置页 `task` 置灰）；子智能体不进项目清单与聊天页直选
 - 测试：`uv run pytest`
 - 配置：复制 `.env.example` 为 `.env`（仅 HOST/PORT + 两个可选种子 Key）；
   运行期模型配置存 `backend/data/model_config.json`（gitignore，含密钥），
