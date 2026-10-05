@@ -2622,7 +2622,7 @@ def test_reviewer_child_gets_kb_injection(tmp_path: Path) -> None:
 - [ ] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_subagent.py tests/test_subagent_service.py -x -q`
-Expected: FAIL——`FileNotFoundError: 智能体「case_review」缺少提示词文件`（catalog 模块级 `_load_prompt` 在 import 期就炸；目录断言还没机会跑，这正是 RED）。
+Expected: FAIL——**执行期回填**：按 Step 顺序（先测试后实现）走，Step 2 时刻 catalog 还没引用新 id、import 不炸，**首撞是目录断言的 AssertionError**；`FileNotFoundError: 智能体「case_review」缺少提示词文件`（catalog 模块级 `_load_prompt` 在 import 期就炸）只出现在「catalog 已引用新 id、prompts 尚未建」的中间态。两种形态都算 RED，但预告写死其一会让后人误判"RED 没按预期发生"。
 
 - [ ] **Step 3: 实现三件**
 
@@ -2715,7 +2715,7 @@ knowledge_search 要查证业务信息；未启用时注册表自动不注册，
 
 以下 9 处期望值同步；逐处仅「在 general-purpose 条目后追加两个新条目」或改计数/清单：
 
-1) `tests/test_agents.py` `test_...DEFAULT_AGENT_STATE...`（约 :55）与 `tests/test_capability_config.py` `test_first_start_seeds_and_persists`（约 :80）、`test_hand_edited_drift_is_normalized_and_persisted`（约 :136）、`test_legacy_id_...`（约 :461）四处 `agents` 期望 dict，在 `"general-purpose"` 条目后统一追加：
+1) `tests/test_agents.py` `test_...DEFAULT_AGENT_STATE...`（约 :55）与 `tests/test_capability_config.py` `test_first_start_seeds_and_persists`（约 :80）、`test_hand_edited_drift_is_normalized_and_persisted`（约 :136）、`test_migration_does_not_overwrite_existing_new_key`（约 :477；**执行期回填：原计划此处写作 `test_legacy_id_…`，仓内无此实名**）四处 `agents` 期望 dict，在 `"general-purpose"` 条目后统一追加：
 
 ```python
         "case_review": {
@@ -4044,8 +4044,9 @@ def _cmp_chain(ctx: Ctx, round_no: int) -> None:
                                evidence=enum_path),
             "key": key,
         })
-    entries += [{"opinion": op, "key": f"{op.target.type}:{op.target.value}:{op.kind}"}
-                for op in out.opinions]
+    # 执行期回填（原计划此处有 `entries += [... for op in out.opinions]`）：CompareOut 的
+    # schema 面里根本没有 opinions 字段，那条恒为空——留着一行永不生效的兼容读取是负债，删之。
+    # 对照器（②/对照）只携带「树外遗漏」，补充意见的通道本计划不需要。
     _register(ctx, CHAIN, entries, source="audit", block="")
     _close_missing(ctx, CHAIN, "audit", issued | {e["key"] for e in entries})
 
@@ -4326,23 +4327,66 @@ def _outline_extras(ctx: Ctx, nodes_by_layer: dict) -> dict:
     }
 
 
+def _live_window(ctx: Ctx, layer: str) -> bool:
+    """该层是否真的参与了本 run 的一致性判定（skipped=不在窗口；stale_pending=整层排除出宇宙）。"""
+    return ctx.led.layer(layer)["state"] not in ("skipped", "stale_pending")
+
+
+def _drop_out_of_window_hards(ctx: Ctx, hard: list[dict],
+                              scope: dict[str, set[str]]) -> tuple[list[dict], list[dict]]:
+    """裁定 18 的落地：empty_chain/empty_story 只在下游层真参与判定时才成立。
+
+    checks.build_universe 的口径（R-13/R-14/R-17）是「引用解析走全宇宙、上报只认 in_scope、
+    **草稿行永远在范围内**」，于是 `_scope_for_checks` 的 F≥1/F≥2 门控只静音得住 KB 存量、
+    静音不住本 run 草稿：链层单独收口的任务里，链草稿会因「宇宙里没有故事」被假判 empty_chain，
+    而修复指令要求「在对应层草稿补节点」——对应层恰是 skipped/stale 规则不许动的层。
+    层参与性只在账本里，`checks.py` 的契约是无 LLM、不读账本 → 判据落在驱动侧、六项 code 不动。
+    只丢这两类：empty_chain（故事层不在有效宇宙）、empty_story（点层不在有效宇宙，或被点名故事
+    不在点层计划块里 = 本 run 没要求它出点）。返回（保留, 豁免），豁免侧要能被大纲渲染成计数。
+    """
+    point_blocks = scope.get("stories") or set()
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    for item in hard:
+        code = str(item.get("code") or "")
+        if code == "empty_chain" and not _live_window(ctx, STORY):
+            dropped.append(item)
+            continue
+        if code == "empty_story" and (not _live_window(ctx, POINT)
+                                      or str(item.get("where") or "") not in point_blocks):
+            dropped.append(item)
+            continue
+        kept.append(item)
+    return kept, dropped
+
+
 def h_gate(ctx: Ctx) -> Any:
-    """大纲门 ④：hard 检查清零（修复环 ≤5 轮，仍非零 halted）→ 组增量大纲 → 呈递人审门。"""
+    """大纲门 ④：hard 检查清零（修复环 ≤round_cap 轮，仍非零 halted）→ 组增量大纲 → 呈递人审门。
+
+    裁定 18（执行期追加）：`empty_chain`/`empty_story` 的成立前提是「下游层进了本 run 窗口」，
+    而窗口事实只在账本里（`checks.py` 契约不读账本），故在驱动侧过滤；**被豁免的条目必须可见**
+    ——留在 `report["exempted"]` 并随大纲出一行计数，「hard 全部为 0」不许冒充「0 条被豁免」。
+    六项 hard code 一项不动、不增第七项（验收数字线的计数口径）。
+    """
     led, gate = ctx.led, ctx.led.data["gate"]
+    scope = _scope_for_checks(ctx)
     report = run_checks(
-        _gate_universe(ctx, _scope_for_checks(ctx)),
+        _gate_universe(ctx, scope),
         claims=led.layer(STORY).get("claims") or [],
         matrix_cells=led.layer(POINT).get("matrix") or [],
         unresolved={layer: led.layer(layer)["unresolved"] for layer in LAYERS})
+    kept, exempted = _drop_out_of_window_hards(ctx, report["hard"], scope)
+    report = {**report, "hard": kept, "exempted": exempted}
     if report["hard"]:
-        if int(gate["round"]) >= ROUND_CAP:
+        if int(gate["round"]) >= ctx.round_cap():     # 预算从账本 plan.budget 读（预算单点）
             raise _Halt("大纲门结构检查连续未清零（修复环用尽）")
         gate["round"] = int(gate["round"]) + 1
         issues_path = ctx.env.reviews_dir / f"gate-issues-r{gate['round']}.json"
         _write_json(issues_path, {"round": gate["round"], "hard": report["hard"]})
+        # 修复环计数只用 gate["round"]：ctx.ask 的 nudge 是「同一条指令重问」的预算，
+        # 每轮都是新指令、永不累计到上限，给它传 cap 是一条死预算（评审 M-7）
         return ctx.ask(gate_fix_instruction(issues_path=ctx.rel(issues_path),
-                                            round_no=gate["round"]),
-                       cap=ROUND_CAP)
+                                            round_no=gate["round"]))
     nodes = _outline_nodes(ctx)
     (ctx.env.design / OUTLINE_NAME).write_text(
         compose_outline(led.data, nodes, report, _outline_extras(ctx, nodes)),
@@ -4352,7 +4396,34 @@ def h_gate(ctx: Ctx) -> Any:
     return ctx.end("大纲已生成（design/outline.md），等待人工评审。")
 
 
-# ---- 人审续步（唯一人审门：结构化人的要求 → 回溯重做；无改动意见 → 批准回写） ----
+# ---- 人审续步（唯一人审门：结构化人的要求 → 回溯重做；明示批准才回写） ----
+
+# 批准措辞（闭合集）：回写是不可逆写，「解读子没提取到意见」不等于人说了通过。
+_APPROVAL_WORDS: tuple[str, ...] = ("通过", "批准", "同意", "确认", "回写")
+# 否定/延后标记：全句出现任一即不算明示批准。「不通过」「先别回写」里都含着批准词，字面
+# 匹配会把一句拒绝读成授权——而这条路径的失败代价是不可逆的 KB 写入，方向只能偏保守。
+_NEGATION_MARKS: tuple[str, ...] = ("不", "未", "别", "暂", "没", "先")
+_GATE_UNDECIDED = (
+    "【人审门·待决】上面这条人审消息既没有可执行的意见，也没有明示批准（通过/批准/同意/确认/回写）。"
+    "本轮不回写知识库，大纲 design/outline.md 维持原状。请把上述状态转述给人并等待其明确答复，"
+    "不要代替人给出批准。本轮只输出一条面向人的答复，不要改动任何文件。"
+)
+
+
+def _human_text(messages: list[BaseMessage]) -> str:
+    """本轮人审原话 = 最后一条非空 HumanMessage。批准只认这一条：更早的话在它那一轮就处置完了。"""
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage) and str(m.content or "").strip():
+            return str(m.content).strip()
+    return ""
+
+
+def _explicit_approval(text: str) -> bool:
+    """本轮人话是否是明示批准：出现批准措辞，且全句没有否定/延后标记。"""
+    if any(mark in text for mark in _NEGATION_MARKS):
+        return False
+    return any(word in text for word in _APPROVAL_WORDS)
+
 
 def _target_layer(ops: list) -> str:
     """人审意见的最浅（离链路最近）目标层：反馈落在哪层就从哪层重做成，下游全失效。"""
@@ -4393,10 +4464,25 @@ def h_gate_interpret(ctx: Ctx) -> Any:
     ])
     out, _ = run_reviewer(ctx.task_tool, CASE_REVIEW_AGENT_ID, brief, model_cls=ReviewOut,
                           call_id=f"gate-int-r{k}", title=f"人审解读·r{k}", config=ctx.config)
-    if not out.opinions:
+    # 裁定 19（执行期追加，覆盖本片早稿的「无意见即批准」）：回写是不可逆写，而
+    # 「解读子没提取到意见」≠「人说了通过」。三分支：有意见→回溯重做；本轮原话明示批准→回写；
+    # 两者都不是→**本轮不做任何决定**（不回写、不回溯，状态留 awaiting_review，把待决交回人）。
+    # 批准判据是确定性的：只认**本轮最后一条**人话（上一轮的措辞在它那一轮就处置完了），
+    # 且全句带否定/延后标记即不算授权——「不通过」里也含着「通过」，字面匹配会把拒绝读成授权。
+    if out.opinions:
+        gate["unclear"] = 0
+    elif _explicit_approval(human_text):
         gate["approved_at"] = _now()
+        gate["unclear"] = 0
         _go(ctx, "writeback")
         return None
+    else:
+        gate["unclear"] = int(gate.get("unclear") or 0) + 1
+        if gate["unclear"] > NUDGE_CAP:            # 连续待决：失败模式收口在 halted，绝不猜批准
+            raise _Halt("人审门连续未给出可执行意见也未明示批准")
+        led.status = "awaiting_review"
+        _go(ctx, "gate")
+        return ctx.ask(_GATE_UNDECIDED)            # 只转述状态、不许代给批准
     target = _target_layer(out.opinions)
     for layer in LAYERS[LAYERS.index(target) + 1:]:
         if ctx.led.layer(layer)["state"] != "skipped":
@@ -4641,10 +4727,10 @@ def make_driver_node(task_tool: Any):
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_driver.py -q`
 Expected: PASS（15 项）
 
-- [ ] **Step 6: 全量回归（基线 582 passed 只增不减）**
+- [ ] **Step 6: 全量回归（基线 = 账本 `.superpowers/sdd/2026-10-05-case-design-loop/progress.md` 的最新读数，只增不减；写计划时的 582 已过期）**
 
 Run: `cd backend && .venv/Scripts/python -m pytest -q`
-Expected: PASS；总数 ≥ 582 + 本专项新增
+Expected: PASS；总数 ≥ 基线 + 本专项新增
 
 - [ ] **Step 7: 提交**
 
@@ -5154,10 +5240,10 @@ b) `backend/tests/test_agents.py` `test_catalog_has_exactly_one_readable_id_agen
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_graph.py -q`
 Expected: PASS（7 项）
 
-- [ ] **Step 6: 全量回归（基线 582 passed 只增不减）**
+- [ ] **Step 6: 全量回归（基线 = 账本 `.superpowers/sdd/2026-10-05-case-design-loop/progress.md` 的最新读数，只增不减；写计划时的 582 已过期）**
 
 Run: `cd backend && .venv/Scripts/python -m pytest -q`
-Expected: PASS；总数 ≥ 582 + 本专项已落地用例（T2–T8）+ 7
+Expected: PASS；总数 ≥ 基线 + 本专项已落地用例（T2–T8）+ 7
 
 - [ ] **Step 7: 提交**
 
@@ -5436,10 +5522,10 @@ Expected: PASS（0 failed）
 5. **A2 补充**：盲枚举的「结构强制」实现 = 驱动白名单清单（`design/manifests/sources.json` 只含 KB 业务桶与用户指定项目文件）+ 枚举简报不含树 + 工具面仅 read。
 ~~~
 
-- [ ] **Step 7: 全量回归（基线 582 passed 只增不减）**
+- [ ] **Step 7: 全量回归（基线 = 账本 `.superpowers/sdd/2026-10-05-case-design-loop/progress.md` 的最新读数，只增不减；写计划时的 582 已过期）**
 
 Run: `cd backend && .venv/Scripts/python -m pytest -q`
-Expected: PASS；总数 ≥ 582 + T2–T9 新增（只增不减）
+Expected: PASS；总数 ≥ 基线 + T2–T9 新增（只增不减）
 
 - [ ] **Step 8: 提交**
 
@@ -5797,10 +5883,10 @@ def test_p4_blind_enumeration_sees_sources_not_tree(tmp_path: Path) -> None:
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_e2e.py -q`
 Expected: PASS（3 项）
 
-- [ ] **Step 3: 全量回归（基线 582 passed 只增不减）**
+- [ ] **Step 3: 全量回归（基线 = 账本 `.superpowers/sdd/2026-10-05-case-design-loop/progress.md` 的最新读数，只增不减；写计划时的 582 已过期）**
 
 Run: `cd backend && .venv/Scripts/python -m pytest -q`
-Expected: PASS；总数 ≥ 582 + T2–T11 新增（只增不减）
+Expected: PASS；总数 ≥ 基线 + T2–T11 新增（只增不减）
 
 - [ ] **Step 4: 提交并推送（本专项第一次推送；走查记录/修复若有追加提交，随 T12 收尾再推）**
 
