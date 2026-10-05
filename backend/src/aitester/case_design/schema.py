@@ -1,0 +1,211 @@
+"""制品与判决的数据形状：草稿节点、结构化意见、评审/枚举/对照/矩阵判决。
+
+判据（spec §2）：意见没有等级字段；target 必须表达「节点 / 接缝 / 树外遗漏 / 矩阵空格」
+四类落点；点节点 entities 与 directions 必填（③ 矩阵组装前提 + P-6 方向不占点数）。
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+from aitester.case_design.constants import DIRECTIONS, ID_RE, LAYERS, PRIORITY_RANK, TYPE_PREFIX
+
+_FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
+
+
+def parse_json_fence(text: str) -> Any:
+    """唯一围栏 JSON 解析：0 个或多个代码块都响亮失败（不允许模型蒙混）。"""
+    blocks = _FENCE_RE.findall(text or "")
+    if len(blocks) != 1:
+        raise ValueError(f"要求恰好一个 ```json 代码块，实得 {len(blocks)} 个")
+    return json.loads(blocks[0])
+
+
+class DraftNode(BaseModel):
+    """一个草稿节点（upsert 或 delete）。新增节点 id 留空由驱动分配。"""
+
+    op: Literal["upsert", "delete"] = "upsert"
+    type: Literal["chain", "story", "point"]
+    id: str = ""
+    name: str = ""
+    # chain
+    level: int = 0
+    parent: str = ""
+    business_scope: str = ""
+    excluded: str = ""
+    # story（chains 多父 = 重复的合法表达，裁定 2）
+    chains: list[str] = Field(default_factory=list)
+    actor: str = ""
+    preconditions: str = ""
+    trigger: str = ""
+    expected: str = ""
+    assumptions: list[str] = Field(default_factory=list)
+    # point（P-6：一个场景一个点；方向不占点数）
+    story: str = ""
+    scenario: str = ""
+    entities: list[str] = Field(default_factory=list)
+    directions: list[str] = Field(default_factory=list)
+    # 共用
+    priority: str = "P1"
+    reason: str = ""                       # delete 的理由（必填）
+
+    def is_delete(self) -> bool:
+        return self.op == "delete"
+
+
+class OpinionTarget(BaseModel):
+    type: Literal["node", "seam", "outside", "matrix_cell"]
+    value: str = ""                        # node: 节点 id；seam: "a,b"；outside: 空；matrix_cell: "实体,故事id"
+
+
+class Opinion(BaseModel):
+    target: OpinionTarget
+    kind: Literal["漏测", "颗粒度", "边界归属", "命名漂移", "失效"]
+    ask: str
+    evidence: str = ""
+
+
+class Resolution(BaseModel):
+    ref: str
+    resolved: bool
+    note: str = ""
+
+
+class ReviewOut(BaseModel):
+    """块审 / 全局审（①②）判决。复审轮用 resolutions 逐条回执上一轮意见。"""
+
+    opinions: list[Opinion] = Field(default_factory=list)
+    resolutions: list[Resolution] = Field(default_factory=list)
+
+
+class EnumeratorOut(BaseModel):
+    """盲枚举器判决：业务对象 / 角色 / 阶段 三类清单。"""
+
+    items: list[dict[str, str]] = Field(default_factory=list)   # {"kind","name","evidence"}
+
+
+class CompareOut(BaseModel):
+    """① 对照器判决：逐条给落点；landing 为空 = 树外遗漏。"""
+
+    items: list[dict[str, str]] = Field(default_factory=list)   # {"name","kind","landing","note"}
+
+
+class ClaimRow(BaseModel):
+    ref: str
+    claimant: str
+    claim: str
+
+
+class ClaimsOut(BaseModel):
+    """② 声称核对判决。"""
+
+    claims: list[dict[str, Any]] = Field(default_factory=list)  # {"ref","verdict","owner","note"}
+    opinions: list[Opinion] = Field(default_factory=list)
+
+
+class MatrixOut(BaseModel):
+    """③ 矩阵空格判决：判 not_needed 必须写 reason，无理由空格 = 不通过。"""
+
+    cells: list[dict[str, str]] = Field(default_factory=list)   # {"entity","story","verdict","reason"}
+
+
+def _check_common(node: DraftNode, errors: list[str], where: str) -> None:
+    if node.op == "upsert":
+        if not node.name.strip():
+            errors.append(f"{where}: name 不能为空")
+        if node.id and not ID_RE.match(node.id):
+            errors.append(f"{where}: id「{node.id}」形状非法（应为 {TYPE_PREFIX[node.type]}-四位数字）")
+    else:
+        if not node.id:
+            errors.append(f"{where}: delete 必须带 id")
+        elif not ID_RE.match(node.id):
+            errors.append(f"{where}: id「{node.id}」形状非法")
+        if not node.reason.strip():
+            errors.append(f"{where}: delete 必须带 reason")
+
+
+def _check_chain(node: DraftNode, errors: list[str], where: str) -> None:
+    if node.op != "upsert":
+        return
+    if node.level < 1:
+        errors.append(f"{where}: chain.level 必须 ≥1")
+    if not node.business_scope.strip():
+        errors.append(f"{where}: chain 必须写 business_scope")
+    if node.level > 1 and not node.parent:
+        errors.append(f"{where}: level>{1} 的 chain 必须带 parent")
+
+
+def _check_story(node: DraftNode, errors: list[str], where: str) -> None:
+    if node.op != "upsert":
+        return
+    if not node.chains:
+        errors.append(f"{where}: story 必须带 chains（≥1）")
+    for field in ("actor", "trigger", "expected"):
+        if not str(getattr(node, field)).strip():
+            errors.append(f"{where}: story 必须写 {field}")
+
+
+def _check_point(node: DraftNode, errors: list[str], where: str) -> None:
+    if node.op != "upsert":
+        return
+    if not node.story:
+        errors.append(f"{where}: point 必须带 story")
+    if not node.scenario.strip():
+        errors.append(f"{where}: point 必须写 scenario")
+    if not node.entities:
+        errors.append(f"{where}: point 必须带 entities（③ 矩阵组装前提）")
+    if not node.directions:
+        errors.append(f"{where}: point 必须带 directions（正向/负向/边界，不许空）")
+    bad = [d for d in node.directions if d not in DIRECTIONS]
+    if bad:
+        errors.append(f"{where}: directions 含非法值 {bad}（只许 {list(DIRECTIONS)}）")
+    if node.priority not in PRIORITY_RANK:
+        errors.append(f"{where}: priority「{node.priority}」非法（P0/P1/P2）")
+
+
+_CHECKS = {"chain": _check_chain, "story": _check_story, "point": _check_point}
+
+
+def validate_drafts(layer: str, raw: Any) -> tuple[list[DraftNode], list[str]]:
+    """校验一个块草稿文件：形状 + 层字段 + 交叉字段。返回 (节点表, 错误表)。"""
+    errors: list[str] = []
+    if not isinstance(raw, dict):
+        return [], ["草稿根必须是对象 {layer, block, nodes}"]
+    if raw.get("layer") != layer:
+        errors.append(f"layer 字段应为「{layer}」")
+    if not isinstance(raw.get("block"), str):
+        errors.append("block 字段缺失")
+    raws = raw.get("nodes")
+    if not isinstance(raws, list) or not raws:
+        return [], [*errors, "nodes 必须是非空数组"]
+    nodes: list[DraftNode] = []
+    for i, item in enumerate(raws):
+        where = f"nodes[{i}]"
+        try:
+            node = DraftNode.model_validate(item)
+        except Exception as exc:                       # pydantic 校验失败收敛成错误行
+            errors.append(f"{where}: {exc}")
+            continue
+        if node.type != layer:
+            errors.append(f"{where}: type「{node.type}」与本层「{layer}」不符")
+            continue
+        nodes.append(node)
+        _check_common(node, errors, where)
+        _CHECKS[layer](node, errors, where)
+    return (nodes if not errors else []), errors
+
+
+def parse_draft_file(layer: str, path: Path) -> tuple[list[DraftNode], list[str]]:
+    """读一个草稿文件并校验；文件缺失/JSON 坏都收敛为错误表（不抛）。"""
+    if not path.is_file():
+        return [], [f"草稿文件不存在：{path.name}"]
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return [], [f"草稿文件不可解析：{exc}"]
+    return validate_drafts(layer, raw)
