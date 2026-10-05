@@ -235,6 +235,43 @@ def _rows_of(ctx: Ctx, layer: str) -> list[dict]:
     return out
 
 
+def _chain_closure(seeds: list[str], chain_rows: list[dict]) -> set[str]:
+    """链路影响闭包：种子（子树根 / 草稿引用的存量）自身 + 全部后代 + 上游祖先 + 祖先的同父兄弟。
+
+    兄弟只带**自身**（接缝可见即可），不带兄弟子树——否则一条兄弟枝整枝被拖进宇宙，
+    窄任务的闭包会趋近全 KB，既违背契约 §3「同父兄弟」的字面口径，也毁掉「审按范围缩」。
+    兄弟真正引用的节点仍由种子（草稿引用解析）那条腿带回来。
+    """
+    by_id = {str(r.get("id") or ""): r for r in chain_rows}
+    children: dict[str, list[str]] = {}
+    for r in chain_rows:
+        children.setdefault(str(r.get("parent") or ""), []).append(str(r.get("id") or ""))
+    keep: set[str] = set()
+    expand: list[str] = []
+    for seed in seeds:
+        stack = [str(seed or "")]
+        while stack:                              # 目标子树本体：自身 + 全部后代
+            cid = stack.pop()
+            if not cid or cid in keep:
+                continue
+            keep.add(cid)
+            expand.append(cid)
+            stack.extend(children.get(cid, []))
+    for cid in expand:                            # 上游祖先链 + 祖先的同父兄弟（接缝，只带自身）
+        cur = cid
+        while True:
+            row = by_id.get(cur)
+            if row is None:
+                break
+            parent = str(row.get("parent") or "")
+            if not parent:
+                break                             # 已是根：children[""] 是全树根，绝不能当兄弟收
+            keep.add(parent)
+            keep.update(children.get(parent, []))
+            cur = parent
+    return keep
+
+
 def _kb_closure(ctx: Ctx) -> dict[str, list[dict]]:
     """R-10 影响闭包：给人审门大纲与 ④ 结构检查的 KB 存量快照（单点口径）。
 
@@ -249,28 +286,11 @@ def _kb_closure(ctx: Ctx) -> dict[str, list[dict]]:
     subtree = str(descriptor.get("target_subtree") or "")
     if not subtree:
         return rows
-    chain_rows = rows[CHAIN]
-    by_id = {str(r.get("id") or ""): r for r in chain_rows}
-    children: dict[str, list[str]] = {}
-    for r in chain_rows:
-        children.setdefault(str(r.get("parent") or ""), []).append(str(r.get("id") or ""))
     keep: dict[str, set[str]] = {layer: set() for layer in LAYERS}
-    stack = [subtree]
-    for node in _draft_nodes(ctx, STORY):        # 草稿合法引用的存量必须留在闭包内
-        stack += [str(c) for c in (node.get("chains") or [])]
-    while stack:
-        cid = str(stack.pop() or "")
-        if not cid or cid in keep[CHAIN]:
-            continue
-        keep[CHAIN].add(cid)
-        row = by_id.get(cid)
-        if row is None:
-            continue
-        parent = str(row.get("parent") or "")
-        if parent:
-            stack.append(parent)                 # 上游祖先链
-        stack.extend(children.get(cid, []))      # 子树后代（= 目标子树本体）
-        stack.extend(children.get(parent, []))   # 同父兄弟（接缝）
+    # 草稿合法引用的存量必须留在闭包内（与子树根同等待遇）
+    keep[CHAIN] = _chain_closure(
+        [subtree] + [str(c) for node in _draft_nodes(ctx, STORY)
+                     for c in (node.get("chains") or [])], rows[CHAIN])
     for node in _draft_nodes(ctx, POINT):
         keep[STORY].add(str(node.get("story") or ""))
     for r in rows[STORY]:
@@ -307,14 +327,36 @@ def _write_manifests(ctx: Ctx, descriptor: dict) -> None:
                  "kb_files": KbClient(ctx.env.kb).list_business_files()})
 
 
+def _target_chains(ctx: Ctx) -> set[str] | None:
+    """target_subtree 与**当前链路宇宙**（KB 存量 ∪ 本 run 链草稿）的交集；None = 全量任务。
+
+    与 `_enter_layer` 的块物化同源（都走 `in_scope_targets` 的 chains 腿）：h_plan 的幻影子树
+    预检时链草稿还不存在，回溯重做后再次进层时草稿已经有了——用同一表达式两边都对。
+    """
+    descriptor = ctx.led.data["task"]["descriptor"]
+    if not str(descriptor.get("target_subtree") or ""):
+        return None
+    return in_scope_targets(descriptor, _rows_of(ctx, CHAIN), [])["chains"]
+
+
+def _phantom_subtree_halt(layer: str, subtree: str) -> _Halt:
+    """契约 §7：幻影 target_subtree 显式终止报因，不空转、也不把「0 块」渲染成「已完成」。"""
+    return _Halt(f"目标子树「{subtree or '全量'}」在链路树里不存在："
+                 f"范围内没有任何可生成的块（{LAYER_CN[layer]}层）")
+
+
 def _enter_layer(ctx: Ctx, layer: str) -> None:
     """进入一层：按活宇宙物化块（链路层 init_task 已物化）→ 游标指向该层生成。"""
     ctx.led.layer(layer)["state"] = "active"
+    descriptor = ctx.led.data["task"]["descriptor"]
+    subtree = str(descriptor.get("target_subtree") or "")
     scope: dict[str, set[str]] | None = None
     if layer == CHAIN:
         blocks = ["ALL"]
+        if subtree and not _target_chains(ctx):
+            # 兜底：h_plan 已在任何生成/评审之前做过同一预检，这里只挡直接以链路层入口的流。
+            raise _phantom_subtree_halt(layer, subtree)
     else:
-        descriptor = ctx.led.data["task"]["descriptor"]
         story_rows = _rows_of(ctx, STORY) if layer == POINT else []
         scope = in_scope_targets(descriptor, _rows_of(ctx, CHAIN), story_rows)
         blocks = materialize_blocks(layer, scope)
@@ -323,9 +365,7 @@ def _enter_layer(ctx: Ctx, layer: str) -> None:
         # → 范围里没有任何块，显式终止报因，不进循环空转、不把「0 块」渲染成「已完成」。
         # 注意与「chains 非空但 stories 暂为空」区分：后者是草稿坏引用（如 story 引用了
         # 不存在链路）导致的零块，属合法流——交给 ④ 结构检查在大纲门修复环处置。
-        subtree = str((ctx.led.data["task"].get("descriptor") or {}).get("target_subtree") or "")
-        raise _Halt(f"范围内没有任何可生成的块（{LAYER_CN[layer]}层；"
-                    f"目标子树「{subtree or '全量'}」内没有链路节点）")
+        raise _phantom_subtree_halt(layer, subtree)
     ctx.led.data["task"]["plan"]["blocks"][layer] = blocks
     ctx.led.layer(layer)["blocks"] = [{"id": b, "state": "todo", "round": 0} for b in blocks]
     _go(ctx, "gen", layer=layer)
@@ -375,6 +415,12 @@ def h_plan(ctx: Ctx) -> Any:
         if owner is not None:
             modes[owner] = "skipped"           # R5：目标层自身只做只读上下文
     init_task(ctx.led.data, descriptor, probe, modes)
+    subtree = str(descriptor.get("target_subtree") or "")
+    if subtree and not _target_chains(ctx):
+        # 契约 §7 幻影子树预检（在任何生成/评审之前）：target_subtree 指向的 id 不在链路树里
+        # → 立刻终止报因。只靠 _enter_layer 的守卫不够：owner 层被 R5 置 skipped 时（例如
+        # 幻影故事 id），入口层 chains=["ALL"] 绕过守卫，整层的真实评审调用与草稿先被烧掉。
+        raise _phantom_subtree_halt(_layer_of_id(subtree) or descriptor["entry_layer"], subtree)
     _seed_counters(ctx)
     _write_manifests(ctx, descriptor)
     entry = _first_live(descriptor["entry_layer"], descriptor["terminal_layer"], modes)
@@ -761,8 +807,6 @@ def _cmp_chain(ctx: Ctx, round_no: int) -> None:
                                evidence=enum_path),
             "key": key,
         })
-    entries += [{"opinion": op, "key": f"{op.target.type}:{op.target.value}:{op.kind}"}
-                for op in getattr(out, "opinions", [])]   # CompareOut 无 opinions 面（T2 schema 冻结）
     _register(ctx, CHAIN, entries, source="audit", block="")
     _close_missing(ctx, CHAIN, "audit", issued | {e["key"] for e in entries})
 
@@ -879,7 +923,6 @@ def _matrix_point(ctx: Ctx, round_no: int) -> None:
                 "key": key,
             })
         _register(ctx, POINT, entries, source="audit", block=cid)
-        issued |= {e["key"] for e in entries}
     st["matrix"] = round_cells
     _close_missing(ctx, POINT, "audit", issued)
 
@@ -1050,7 +1093,7 @@ def _live_window(ctx: Ctx, layer: str) -> bool:
 
 
 def _drop_out_of_window_hards(ctx: Ctx, hard: list[dict],
-                              scope: dict[str, set[str]]) -> list[dict]:
+                              scope: dict[str, set[str]]) -> tuple[list[dict], list[dict]]:
     """F 规则在 R-17 口径下的补全：empty_chain/empty_story 只在下游层真参与判定时才成立。
 
     checks.build_universe 现语义（契约 R-13/R-14/R-17）：引用解析走全宇宙、上报只认 in_scope、
@@ -1062,18 +1105,24 @@ def _drop_out_of_window_hards(ctx: Ctx, hard: list[dict],
     - empty_chain：下游故事层不在本 run 有效宇宙 → 丢弃；
     - empty_story：测试点层不在本 run 有效宇宙，或被点名故事不在点层计划块里
       （「点层对某故事零块 = 本 run 没有要求它出点」，与 _scope_for_checks 同源判据）→ 丢弃。
+
+    返回（保留, 豁免）：R-18(a) 要求豁免对人是**可见**的——「hard 全 0」绝不能冒充
+    「0 条被下游未进窗口豁免掉」，所以被丢弃的条目原样交给大纲渲染计数。
     """
     point_blocks = scope.get("stories") or set()
-    out: list[dict] = []
+    kept: list[dict] = []
+    dropped: list[dict] = []
     for item in hard:
         code = str(item.get("code") or "")
         if code == "empty_chain" and not _live_window(ctx, STORY):
+            dropped.append(item)
             continue
         if code == "empty_story" and (not _live_window(ctx, POINT)
                                       or str(item.get("where") or "") not in point_blocks):
+            dropped.append(item)
             continue
-        out.append(item)
-    return out
+        kept.append(item)
+    return kept, dropped
 
 
 def h_gate(ctx: Ctx) -> Any:
@@ -1085,16 +1134,22 @@ def h_gate(ctx: Ctx) -> Any:
         claims=led.layer(STORY).get("claims") or [],
         matrix_cells=led.layer(POINT).get("matrix") or [],
         unresolved={layer: led.layer(layer)["unresolved"] for layer in LAYERS})
-    report = {**report, "hard": _drop_out_of_window_hards(ctx, report["hard"], scope)}
+    # 同源不变式（R-18(b)）：_live_window 与 scope 都读 layers[layer]["state"]，而进门的唯一路径
+    # （_after_layer / _go(ctx, "gate")）保证窗口内每个非 skipped/非 stale 层都已被 _layer_audited
+    # 置 audited；若将来加一条「跳过某层直接进 gate」的边，这里与 scope 会立刻漂开。
+    kept, exempted = _drop_out_of_window_hards(ctx, report["hard"], scope)
+    # exempted 只用于大纲渲染豁免计数（R-18(a)）：④ 每次进门都确定性重算，不必落账本。
+    report = {**report, "hard": kept, "exempted": exempted}
     if report["hard"]:
         if int(gate["round"]) >= ctx.round_cap():
             raise _Halt("大纲门结构检查连续未清零（修复环用尽）")
         gate["round"] = int(gate["round"]) + 1
         issues_path = ctx.env.reviews_dir / f"gate-issues-r{gate['round']}.json"
         _write_json(issues_path, {"round": gate["round"], "hard": report["hard"]})
+        # 修复环的计数器是 gate["round"]（每轮 +1，与 round_cap 同源）：ask 游标的 nudge 在
+        # 同一「gate」游标里最多走到 4，拿它当预算永远不触发，所以这里只吃 Ctx.ask 的默认上限。
         return ctx.ask(gate_fix_instruction(issues_path=ctx.rel(issues_path),
-                                            round_no=gate["round"]),
-                       cap=ctx.round_cap())
+                                            round_no=gate["round"]))
     nodes = _outline_nodes(ctx)
     (ctx.env.design / OUTLINE_NAME).write_text(
         compose_outline(led.data, nodes, report, _outline_extras(ctx, nodes)),
@@ -1104,7 +1159,40 @@ def h_gate(ctx: Ctx) -> Any:
     return ctx.end("大纲已生成（design/outline.md），等待人工评审。")
 
 
-# ---- 人审续步（唯一人审门：结构化人的要求 → 回溯重做；无改动意见 → 批准回写） ----
+# ---- 人审续步（唯一人审门：结构化人的要求 → 回溯重做；明示批准才回写） ----
+
+# 批准措辞（闭合集）：回写是不可逆写，「解读子没提取到意见」不等于人说了通过。
+_APPROVAL_WORDS: tuple[str, ...] = ("通过", "批准", "同意", "确认", "回写")
+_PUNCT_RE = re.compile(r"[\s\W_]+", re.UNICODE)
+_GATE_UNDECIDED = (
+    "【人审门·待决】上面这条人审消息既没有可执行的意见，也没有明示批准（通过/批准/同意/确认/回写）。"
+    "本轮不回写知识库，大纲 design/outline.md 维持原状。请把上述状态转述给人并等待其明确答复，"
+    "不要代替人给出批准。本轮只输出一条面向人的答复，不要改动任何文件。"
+)
+
+
+def _human_texts(messages: list[BaseMessage], limit: int = 3) -> list[str]:
+    """人审原话候选：最后 limit 条非空 HumanMessage（时间正序，末条=本轮）。
+
+    解读子吃不到会话历史（独立子图），措辞只能由驱动递进去；批准认**全部**候选
+    （多回合人审里「确认」可能落在倒数第二条），brief 只贴末条，免得把已被处置的旧话
+    重新当成新意见。
+    """
+    out: list[str] = []
+    for m in reversed(messages):
+        if isinstance(m, HumanMessage):
+            text = str(m.content or "").strip()
+            if text:
+                out.append(text)
+            if len(out) >= limit:
+                break
+    return list(reversed(out))
+
+
+def _explicit_approval(texts: list[str]) -> bool:
+    """人话里是否出现明示批准措辞（剥掉空白与标点后做闭合集子串匹配）。"""
+    return any(word in _PUNCT_RE.sub("", text) for text in texts for word in _APPROVAL_WORDS)
+
 
 def _target_layer(ops: list) -> str:
     """人审意见的最浅（离链路最近）目标层：反馈落在哪层就从哪层重做成，下游全失效。"""
@@ -1125,15 +1213,16 @@ def _target_layer(ops: list) -> str:
 
 
 def h_gate_interpret(ctx: Ctx) -> Any:
-    """人审门续步：审人话 → 结构化意见 → 目标层及其下各层失效 → 交人工优化环；无意见即批准。"""
+    """人审门续步：审人话 → 结构化意见 → 目标层及其下各层失效 → 交人工优化环。
+
+    回写是不可逆写，所以**批准必须明示**：解读子返回空 opinions 只代表「没提取到意见」，
+    不等于人说了通过；两者都不是时本轮不做任何决定（不回写、不回溯），把待决状态交回主智能体转述。
+    """
     led, gate = ctx.led, ctx.led.data["gate"]
     k = int(gate.get("int_round") or 0) + 1
     gate["int_round"] = k
-    human_text = ""
-    for m in reversed(ctx.state_messages):
-        if isinstance(m, HumanMessage):
-            human_text = str(m.content or "")
-            break
+    human_texts = _human_texts(ctx.state_messages)
+    human_text = human_texts[-1] if human_texts else ""
     brief = "\n".join([
         "【人审解读·大纲门】人审是最权威的评审。把人审原话转成结构化意见（纯批准或没有要改的内容 → opinions 留空）：",
         "人审原文：",
@@ -1147,10 +1236,22 @@ def h_gate_interpret(ctx: Ctx) -> Any:
     out, raw = run_reviewer(ctx.task_tool, CASE_REVIEW_AGENT_ID, brief, model_cls=ReviewOut,
                             call_id=call_id, title=f"人审解读·r{k}", config=ctx.config)
     _archive_review(ctx, call_id, raw)
-    if not out.opinions:
+    if out.opinions:
+        gate["unclear"] = 0                        # 人给了意见：待决计数清零
+    elif _explicit_approval(human_texts):
         gate["approved_at"] = _now()
+        gate["unclear"] = 0
         _go(ctx, "writeback")
         return None
+    else:
+        gate["unclear"] = int(gate.get("unclear") or 0) + 1
+        if gate["unclear"] > NUDGE_CAP:            # 连续待决：失败模式收口在 halted，绝不猜批准
+            raise _Halt("人审门连续未给出可执行意见也未明示批准")
+        # 待决＝本轮不做任何决定：游标回 gate（_boot 的 awaiting_review 分支才认得出人审续步），
+        # 指令只教主智能体向人转述；状态保持 awaiting_review，回写仍然零次。
+        led.status = "awaiting_review"
+        _go(ctx, "gate")
+        return ctx.ask(_GATE_UNDECIDED)
     target = _target_layer(out.opinions)
     for layer in LAYERS[LAYERS.index(target) + 1:]:
         if ctx.led.layer(layer)["state"] != "skipped":
@@ -1172,7 +1273,11 @@ def h_gate_interpret(ctx: Ctx) -> Any:
 # ---- 回写（只回写本 run 过审层；人审通过之前零 KB 写入） ----
 
 def _patch_ids(ctx: Ctx, layer: str, block: str) -> None:
-    """优化/回溯阶段新添的节点仍可能留空 id：以账本序分配并就地改写草稿。"""
+    """优化/回溯阶段新添的节点仍可能留空 id：以账本序分配并就地改写草稿。
+
+    顺带撤回 no_change 记账：块先以「判定无变化」过账、后来被优化/人工回溯写进了真实节点时，
+    「本次无变化块」清单必须跟着缩——否则大纲说没动、回写却在推，两处自相矛盾。
+    """
     blocks = [block] if block else [str(e["id"]) for e in ctx.led.layer(layer)["blocks"]]
     for bid in blocks:
         path = ctx.env.drafts_dir(layer) / f"{bid}.json"
@@ -1187,9 +1292,49 @@ def _patch_ids(ctx: Ctx, layer: str, block: str) -> None:
                 changed = True
         if changed:
             _write_json(path, raw)
+        if raw.get("nodes"):
+            ctx.led.data["no_change"] = [
+                e for e in (ctx.led.data.get("no_change") or [])
+                if not (e.get("layer") == layer and str(e.get("block") or "") == bid)]
 
 
 _BANNED_PAYLOAD_KEYS = ("op", "block", "state", "in_scope", "round", "reason")
+
+
+def _collect_writeback_items(ctx: Ctx) -> list[tuple[str, str, dict | None]]:
+    """待写项 = 过审层各块草稿节点，按 (layer, id) 去重；payload=None 表示删除。
+
+    同一个节点（尤其 delete）会被同层多个块草稿重复表达：不去重就按文件重复下发，
+    幂等所以不坏，但人在唯一的那道门上看到 N 条一模一样的删除。
+    """
+    items: list[tuple[str, str, dict | None]] = []
+    seen: set[tuple[str, str]] = set()
+    for layer in LAYERS:
+        if ctx.led.layer(layer)["state"] != "audited":
+            continue
+        for path in sorted(ctx.env.drafts_dir(layer).glob("*.json")):
+            if _is_no_change(_read_json(path)):
+                continue                   # 无变化块：零节点零写入（合法终态）
+            nodes, errors = parse_draft_file(layer, path)
+            if errors:
+                raise KbClientError(f"{layer}/{path.name} 不可解析：{errors[0]}")
+            for node in nodes:
+                nid = str(node.id or "")
+                if node.is_delete():
+                    if not nid or (layer, nid) in seen:
+                        continue
+                    seen.add((layer, nid))
+                    items.append((layer, nid, None))
+                    continue
+                payload = node.model_dump()
+                for banned in _BANNED_PAYLOAD_KEYS:
+                    payload.pop(banned, None)
+                if nid:
+                    if (layer, nid) in seen:
+                        continue
+                    seen.add((layer, nid))
+                items.append((layer, nid, payload))
+    return items
 
 
 def h_writeback(ctx: Ctx) -> Any:
@@ -1202,24 +1347,11 @@ def h_writeback(ctx: Ctx) -> Any:
     ok = False
     for attempt in range(1, WRITEBACK_FIX_CAP + 2):
         try:
-            for layer in LAYERS:
-                if led.layer(layer)["state"] != "audited":
-                    continue
-                for path in sorted(ctx.env.drafts_dir(layer).glob("*.json")):
-                    if _is_no_change(_read_json(path)):
-                        continue                   # 无变化块：零节点零写入（合法终态）
-                    nodes, errors = parse_draft_file(layer, path)
-                    if errors:
-                        raise KbClientError(f"{layer}/{path.name} 不可解析：{errors[0]}")
-                    for node in nodes:
-                        if node.is_delete():
-                            if node.id:
-                                kb.delete_node(layer, str(node.id))
-                            continue
-                        payload = node.model_dump()
-                        for banned in _BANNED_PAYLOAD_KEYS:
-                            payload.pop(banned, None)
-                        kb.upsert_node(layer, payload)
+            for layer, node_id, payload in _collect_writeback_items(ctx):
+                if payload is None:
+                    kb.delete_node(layer, node_id)
+                else:
+                    kb.upsert_node(layer, payload)
             ok = True
             break
         except GraphBubbleUp:

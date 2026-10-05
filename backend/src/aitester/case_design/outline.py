@@ -9,8 +9,17 @@ _LAYER_STATE_CN = {"done": "已定稿", "audited": "已过审", "active": "进�
 
 
 def _tree_lines(nodes_by_layer: dict, layers: dict) -> list[str]:
-    deleted = [n for layer in LAYERS
-               for n in nodes_by_layer.get(layer, []) if n.get("op") == "delete"]
+    deleted: list[dict] = []
+    seen_deleted: set[str] = set()
+    for layer in LAYERS:                            # 同一节点被多个块草稿重复表达时只出一条（id 带层前缀）
+        for n in nodes_by_layer.get(layer, []):
+            if n.get("op") != "delete":
+                continue
+            nid = str(n.get("id") or "")
+            if nid and nid in seen_deleted:
+                continue
+            seen_deleted.add(nid)
+            deleted.append(n)
     chains = [n for n in nodes_by_layer.get(CHAIN, []) if n.get("op") != "delete"]
     stories = [n for n in nodes_by_layer.get(STORY, []) if n.get("op") != "delete"]
     points = [n for n in nodes_by_layer.get(POINT, []) if n.get("op") != "delete"]
@@ -92,6 +101,12 @@ def compose_outline(ledger_data: dict, nodes_by_layer: dict, report: dict, extra
     lines += ["", "## 增量树", *_tree_lines(nodes_by_layer, layers), "", "## 结构指标（④）"]
     hard = report.get("hard") or []
     lines.append("- hard：" + ("全部为 0" if not hard else f"{len(hard)} 项未清零"))
+    exempted = report.get("exempted") or []
+    if exempted:                                   # R-18(a)：豁免必须可见，hard 全 0 不等于「没有可豁免的」
+        lines.append("- hard 豁免（下游层未进本 run 窗口）："
+                     f"empty_chain {sum(1 for f in exempted if f.get('code') == 'empty_chain')}"
+                     "／"
+                     f"empty_story {sum(1 for f in exempted if f.get('code') == 'empty_story')}")
     for f in hard:
         lines.append(f"  - [{f.get('code')}] {f.get('layer')}/{f.get('where')}：{f.get('detail')}")
     rep = report.get("report") or {}
