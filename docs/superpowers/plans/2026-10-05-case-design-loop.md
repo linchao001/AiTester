@@ -1551,9 +1551,9 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
                 if int(c.get("level") or 0) != int(p.get("level") or 0) + 1:
                     add("cross_level", CHAIN, cid,
                         f"level={c.get('level')} 与父 {parent} level={p.get('level')} 不连续")
-                if rank(c.get("priority")) > rank(p.get("priority")):
+                if rank(c.get("priority")) < rank(p.get("priority")):
                     add("priority_violation", CHAIN, cid,
-                        f"优先级 {c.get('priority')} 低于父 {parent} 的 {p.get('priority')}")
+                        f"优先级 {c.get('priority')} 高于其父 {parent} 的 {p.get('priority')}")
     for sid, s in stories.items():
         parents = [str(x) for x in (s.get("chains") or [])]
         if not parents:
@@ -1562,9 +1562,9 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
             p = chains.get(cid)
             if p is None:
                 add("broken_parent", STORY, sid, f"chains「{cid}」不在引用宇宙内")
-            elif rank(s.get("priority")) > rank(p.get("priority")):
+            elif rank(s.get("priority")) < rank(p.get("priority")):
                 add("priority_violation", STORY, sid,
-                    f"优先级 {s.get('priority')} 低于所属链路 {cid} 的 {p.get('priority')}")
+                    f"优先级 {s.get('priority')} 高于所属链路 {cid} 的 {p.get('priority')}")
         if str(s.get("state")) not in _APPROVED:
             add("unapproved_ref", STORY, sid, f"节点状态 {s.get('state')} 未过审")
     for pid, p in points.items():
@@ -1573,9 +1573,9 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
         if parent is None:
             add("broken_parent", POINT, pid, f"story「{sid}」不在引用宇宙内")
         else:
-            if rank(p.get("priority")) > rank(parent.get("priority")):
+            if rank(p.get("priority")) < rank(parent.get("priority")):
                 add("priority_violation", POINT, pid,
-                    f"优先级 {p.get('priority')} 低于所属故事 {sid} 的 {parent.get('priority')}")
+                    f"优先级 {p.get('priority')} 高于所属故事 {sid} 的 {parent.get('priority')}")
         if str(p.get("state")) not in _APPROVED:
             add("unapproved_ref", POINT, pid, f"节点状态 {p.get('state')} 未过审")
 
@@ -4551,7 +4551,7 @@ def gate_fix_instruction(*, issues_path: str, round_no: int) -> str:
         "请逐条修复对应的层草稿（design/drafts/ 下），只改被点名的文件：",
         "- broken_parent：引用（parent/chains/story）必须指向引用宇宙内存在的节点 id。",
         "- cross_level：父子 level 必须连续（子 = 父 + 1）。",
-        "- priority_violation：子节点优先级不得低于其父（P0 > P1 > P2）。",
+        "- priority_violation：子节点优先级不得**高于**其父（重要性 P0 > P1 > P2；父比子更重要是正常降级，子比父更重要才是违例——要么父该提级，要么子该降级）。",
         "- unapproved_ref：被引用的节点必须已过审；失效层节点不得被引用。",
         "- empty_chain / empty_story：范围内链路必须有故事认领、范围内故事必须有测试点（在对应层草稿补节点）。",
         "不要做与问题无关的改动；修完即停，编排层会重新检查。",
