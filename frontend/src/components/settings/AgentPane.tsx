@@ -24,7 +24,11 @@ function modelLabel(models: ModelsResponse, uid: string): string {
 export default function AgentPane({ models, caps, saving, onAction }: AgentPaneProps) {
   const [selectedId, setSelectedId] = useState(caps.agents[0].id);
   const [promptOpen, setPromptOpen] = useState(false);
-  const agent = caps.agents.find((a) => a.id === selectedId) ?? caps.agents[0];
+  // 旧后端载荷（前端热更撞上未重启的 8000）没有这个键：空数组即整节不渲染
+  const subagents = caps.subagents ?? [];
+  // 子智能体与智能体同库同权：同一个选中态、同一个右栏（模型与工具可调、提示词只读）
+  const agent = [...caps.agents, ...subagents].find((a) => a.id === selectedId) ?? caps.agents[0];
+  const isSubagent = subagents.some((a) => a.id === agent.id);
   const stale = agent.default_uid !== "" && agent.default_uid !== agent.effective_uid;
 
   function toggleTool(toolId: string, checked: boolean): void {
@@ -61,6 +65,37 @@ export default function AgentPane({ models, caps, saving, onAction }: AgentPaneP
         <div className="hint" style={{ fontSize: 11.5 }}>
           内置 {caps.agents.length} 个测试智能体，职责与提示词由平台维护。
         </div>
+        {subagents.length > 0 && (
+          <>
+            <div className="set-l-head">
+              子智能体（被派发用） <span className="num">{subagents.length}</span>
+            </div>
+            <div className="m-list">
+              {subagents.map((a) => (
+                <div
+                  key={a.id}
+                  className={a.id === selectedId ? "m-item on" : "m-item"}
+                  onClick={() => {
+                    setSelectedId(a.id);
+                    setPromptOpen(false);
+                  }}
+                >
+                  <div className="n">
+                    {a.icon} <span className="nm">{a.name}</span>
+                    {a.default_uid === "" && <span className="p-tag">跟随默认</span>}
+                  </div>
+                  <div className="s">
+                    {modelLabel(models, a.effective_uid)} · 携带 {a.tool_ids.length} 个工具
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="hint" style={{ fontSize: 11.5 }}>
+              由主智能体按提示词唤起（自行判断 / 用户点名 / 用户要求「同时查」时多任务并行）；
+              勾上写 / 命令 / 知识库写后，该子智能体退回一轮一个（不可并行）。模型与工具可在右栏调，提示词只读。
+            </div>
+          </>
+        )}
       </div>
       <div className="set-right">
         <div className="sec-title">智能体配置 <span>{agent.name}</span></div>
@@ -105,18 +140,22 @@ export default function AgentPane({ models, caps, saving, onAction }: AgentPaneP
           </label>
           <div className="agent-opts">
             {caps.tools.map((t) => {
+              // 深度 1 结构锁（R7）：子智能体勾不了 task——勾上也不会生效（子注册表装配时本就不注入）
+              const lockedForSub = isSubagent && t.id === "task";
               const carried = t.enabled && agent.tool_ids.includes(t.id);
-              const cls = carried ? "on" : t.enabled && t.available ? "" : "dis";
+              const cls = carried ? "on" : t.enabled && t.available && !lockedForSub ? "" : "dis";
               return (
                 <label
                   key={t.id}
                   className={cls === "" ? undefined : cls}
-                  title={t.available ? t.desc : `不可用：${t.unavailable_reason}`}
+                  title={lockedForSub
+                    ? "子智能体不能再派发子智能体（深度 1 结构锁）"
+                    : t.available ? t.desc : `不可用：${t.unavailable_reason}`}
                 >
                   <input
                     type="checkbox"
                     checked={carried}
-                    disabled={saving || !t.enabled}
+                    disabled={saving || !t.enabled || lockedForSub}
                     onChange={(e) => toggleTool(t.id, e.target.checked)}
                   />
                   {t.icon} {t.label}
