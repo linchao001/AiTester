@@ -853,3 +853,61 @@ def test_re_review_note_keeps_disposition_note_in_order(tmp_path):
     assert op["ref"] == "op-01" and op["resolved"] is True
     assert op["note"] == "已改；复审：已补 ch-0002"              # simulate 的处置说明仍在最前
     assert "已改；复审：已补 ch-0002" in (env.design / "outline.md").read_text(encoding="utf-8")
+
+
+# ---- 裁定 27（回写续跑的再入授权：否定句绝不写库）----
+
+_RETRY_REFUSAL = "回写未执行：本轮消息里没有重试授权（回复「重试」再写；回复意见则回到大纲门）。"
+
+
+def _to_writeback_failed(tmp_path: Path):
+    """复现「人已明示批准、回写整体失败」的账本（fail_upserts=3：1+2 次尝试全落空）。"""
+    kb = StubKb(fail_upserts=3)
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask())
+    _drive(env, {"messages": [HumanMessage("通过")], "case": {}}, ScriptTask())
+    led = Ledger.load(env.design)
+    assert led.status == "writeback_failed" and led.data["writeback"]["log"]
+    assert kb.upserts == [] and kb.deletes == []               # 失败轮自己一条也没写进去
+    return env, kb
+
+
+def test_writeback_resume_requires_retry_authorization(tmp_path):
+    """R-27：writeback_failed 的续跑入口也要过授权判据——拒绝句绝不是重试授权。
+
+    _boot 只按账本状态直接 _go("writeback")，本轮人话没经过任何解读；不在真正下笔前
+    再看一次，「别写了，先停下」就会被当成授权把 5 个节点写进知识库（裁定 19 要拦的那类）。
+    """
+    env, kb = _to_writeback_failed(tmp_path)
+    frames: list[dict] = []
+    turn = _drive(env, {"messages": [HumanMessage("别写了，先停下")], "case": {}},
+                  ScriptTask(), writer=frames.append)
+    assert turn["case"]["route"] == "end"
+    assert _end_text(frames) == _RETRY_REFUSAL                 # 措辞钉死：只重述重试承诺
+    led = Ledger.load(env.design)
+    assert led.status == "writeback_failed"                    # 不推进，也不退回 active
+    assert [led.layer(x)["state"] for x in ("chain", "story", "point")] == ["audited"] * 3
+    assert kb.upserts == [] and kb.deletes == []
+
+
+def test_writeback_resume_accepts_retry_word(tmp_path):
+    """正对照：同一个入口换「重试」就该写全——不然上一条测试是假绿。"""
+    env, kb = _to_writeback_failed(tmp_path)
+    turn = _drive(env, {"messages": [HumanMessage("重试")], "case": {}}, ScriptTask())
+    led = Ledger.load(env.design)
+    assert turn["case"]["route"] == "end" and led.status == "done"
+    assert len(kb.upserts) == 5 and kb.deletes == []
+    assert [led.layer(x)["state"] for x in ("chain", "story", "point")] == ["done"] * 3
+
+
+def test_writeback_resume_negated_words_are_not_authorization(tmp_path):
+    """R-27 补刀：否定/延后标记先判——「先不用重试」里含着「重试」也不是授权。"""
+    for i, text in enumerate(("先不用重试", "别重试", "不重试", "暂不回写")):
+        env, kb = _to_writeback_failed(tmp_path / f"wb-neg-{i}")
+        frames: list[dict] = []
+        turn = _drive(env, {"messages": [HumanMessage(text)], "case": {}},
+                      ScriptTask(), writer=frames.append)
+        assert turn["case"]["route"] == "end", text
+        assert _end_text(frames) == _RETRY_REFUSAL, text
+        assert kb.upserts == [] and kb.deletes == [], text
+        assert Ledger.load(env.design).status == "writeback_failed", text

@@ -560,6 +560,7 @@ def _apply_resolutions(ctx: Ctx, resolutions: list) -> None:
                     if r.resolved:
                         op["resolved"] = True
                     if op["note"] and r.note:
+                        # 全链路累积（有界于 ROUND_CAP）：唯一人审门要看得懂整条处置轨迹，故意不截断。
                         op["note"] = f"{op['note']}；复审：{r.note}"
                     else:
                         op["note"] = r.note or op["note"]
@@ -1170,6 +1171,9 @@ def h_gate(ctx: Ctx) -> Any:
 
 # 批准措辞（闭合集）：回写是不可逆写，「解读子没提取到意见」不等于人说了通过。
 _APPROVAL_WORDS: tuple[str, ...] = ("通过", "批准", "同意", "确认", "回写")
+# 重试措辞：只在「回写失败的续跑」这条路合法（R-27），不进 _APPROVAL_WORDS——
+# 在大纲门说一句「重试」不该触发一次不可逆写。
+_RETRY_WORDS: tuple[str, ...] = ("重试",)
 # 否定/延后标记：全句出现任一即不算明示批准。「不通过」「先别回写」里都含着批准词，字面
 # 匹配会把一句拒绝读成授权——而这条路径的失败代价是不可逆的 KB 写入，方向只能偏保守。
 _NEGATION_MARKS: tuple[str, ...] = ("不", "未", "别", "暂", "没", "先")
@@ -1193,6 +1197,18 @@ def _explicit_approval(text: str) -> bool:
     if any(mark in text for mark in _NEGATION_MARKS):
         return False
     return any(word in text for word in _APPROVAL_WORDS)
+
+
+def _writeback_authorized(text: str) -> bool:
+    """回写再入授权（R-27）：没有否定/延后标记，且出现批准措辞或「重试」。
+
+    与 `_explicit_approval` 的差别只多认一个「重试」：那条路是**首次**批准（大纲门），
+    措辞必须是批准词；这条路是裁定 19 的续跑支路——人已经在更早的回合过了一次门，
+    本轮只需要一个不带否定的重试信号即可把不可逆写接着做完。否定句仍然一律不算授权。
+    """
+    if any(mark in text for mark in _NEGATION_MARKS):
+        return False
+    return any(word in text for word in _APPROVAL_WORDS + _RETRY_WORDS)
 
 
 def _target_layer(ops: list) -> str:
@@ -1338,8 +1354,16 @@ def _collect_writeback_items(ctx: Ctx) -> list[tuple[str, str, dict | None]]:
 
 
 def h_writeback(ctx: Ctx) -> Any:
-    """回写：只写 state=="audited" 层（stale/skipped 一律不写）；失败自动重试 1+2 次。"""
+    """回写：只写 state=="audited" 层（stale/skipped 一律不写）；失败自动重试 1+2 次。
+
+    再入授权闸门（R-27）：这条路有两个入口——大纲门明示批准（h_gate_interpret）与
+    writeback_failed 的续跑（_boot 只按账本状态 _go，本轮人话没被任何地方审过）。闸门
+    放在唯一真正下笔的地方，两个入口一次覆盖：续跑时没有本轮授权就零写入、状态原样退回。
+    """
     led, wb = ctx.led, ctx.led.data["writeback"]
+    if not _writeback_authorized(_human_text(ctx.state_messages)):
+        led.status = "writeback_failed"                        # _boot 已置 active：原样退回
+        return ctx.end("回写未执行：本轮消息里没有重试授权（回复「重试」再写；回复意见则回到大纲门）。")
     for layer in LAYERS:
         if led.layer(layer)["state"] == "audited":
             _patch_ids(ctx, layer, "")             # 兜底：任何空 id 在写库前补齐
