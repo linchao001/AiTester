@@ -36,12 +36,58 @@ def test_broken_parent_cross_level_and_priority():
     nodes = _nodes()
     nodes["chain"][1]["parent"] = "ch-9999"                       # 父引用破损
     nodes["story"][0]["chains"] = ["ch-0002"]
-    nodes["point"][0]["priority"] = "P2"
+    nodes["point"][0]["priority"] = "P0"                          # 测试点优先级高于所属故事（R-12 方向）
     out = run_checks(build_universe(nodes, {"chain": [], "story": [], "point": []},
                                     {"chains": {"ch-0001", "ch-0002"}, "stories": {"st-0001"}}),
                      claims=[], matrix_cells=[], unresolved={})
     codes = {f["code"] for f in out["hard"]}
     assert "broken_parent" in codes and "priority_violation" in codes
+
+
+def test_story_priority_above_chain_fires_once():
+    # R-12：P0 故事挂在 P2 链路下 = 有一层定级有误，须恰好一条 priority_violation。
+    nodes = _nodes()
+    nodes["chain"][1]["priority"] = "P2"
+    nodes["story"][0]["priority"] = "P0"
+    nodes["point"][0]["priority"] = "P2"
+    out = run_checks(build_universe(nodes, {"chain": [], "story": [], "point": []},
+                                    {"chains": {"ch-0001", "ch-0002"}, "stories": {"st-0001"}}),
+                     claims=[], matrix_cells=[], unresolved={})
+    hits = [f for f in out["hard"] if f["code"] == "priority_violation"]
+    assert [(f["layer"], f["where"]) for f in hits] == [("story", "st-0001")]
+    assert "高于" in hits[0]["detail"]
+
+
+def test_point_priority_above_story_fires_once():
+    nodes = _nodes()
+    nodes["point"][0]["priority"] = "P0"                          # 故事 P1
+    out = run_checks(build_universe(nodes, {"chain": [], "story": [], "point": []},
+                                    {"chains": {"ch-0001", "ch-0002"}, "stories": {"st-0001"}}),
+                     claims=[], matrix_cells=[], unresolved={})
+    hits = [f for f in out["hard"] if f["code"] == "priority_violation"]
+    assert [(f["layer"], f["where"]) for f in hits] == [("point", "pt-0001")]
+
+
+def test_child_chain_priority_above_parent_fires_once():
+    nodes = _nodes()
+    nodes["chain"][0]["priority"] = "P1"
+    nodes["chain"][1]["priority"] = "P0"                          # 子链路高于父链路
+    out = run_checks(build_universe(nodes, {"chain": [], "story": [], "point": []},
+                                    {"chains": {"ch-0001", "ch-0002"}, "stories": {"st-0001"}}),
+                     claims=[], matrix_cells=[], unresolved={})
+    hits = [f for f in out["hard"] if f["code"] == "priority_violation"]
+    assert [(f["layer"], f["where"]) for f in hits] == [("chain", "ch-0002")]
+
+
+def test_descending_priority_down_the_tree_is_legal():
+    # 向上聚合语义：P0 链路 → P2 故事 → P2 测试点是正常降级覆盖，零 hard。
+    nodes = _nodes()
+    nodes["story"][0]["priority"] = "P2"
+    nodes["point"][0]["priority"] = "P2"
+    out = run_checks(build_universe(nodes, {"chain": [], "story": [], "point": []},
+                                    {"chains": {"ch-0001", "ch-0002"}, "stories": {"st-0001"}}),
+                     claims=[], matrix_cells=[], unresolved={})
+    assert out["hard"] == []
 
 
 def test_cross_level_ref_and_stale_reference():
@@ -68,6 +114,35 @@ def test_empty_chain_and_empty_story():
     codes = [f["code"] for f in out["hard"]]
     assert "empty_chain" in codes          # ch-0003 无故事
     assert "empty_story" in codes          # st-0002 无点
+
+
+def test_empty_chain_uses_subtree_story_coverage_not_direct_claim():
+    # 只有子链路才有用户故事：祖先链经子孙链路认领即非空；真正无故事的分支才报。
+    nodes = _nodes()
+    nodes["chain"] += [
+        {"id": "ch-0003", "type": "chain", "level": 3, "parent": "ch-0002",
+         "priority": "P0", "state": "approved"},
+        {"id": "ch-0004", "type": "chain", "level": 3, "parent": "ch-0002",
+         "priority": "P0", "state": "approved"},
+    ]
+    nodes["story"][0]["chains"] = ["ch-0003"]
+    scope = {"chains": {"ch-0001", "ch-0002", "ch-0003", "ch-0004"}, "stories": {"st-0001"}}
+    out = run_checks(build_universe(nodes, {"chain": [], "story": [], "point": []}, scope),
+                     claims=[], matrix_cells=[], unresolved={})
+    assert {f["where"] for f in out["hard"] if f["code"] == "empty_chain"} == {"ch-0004"}
+    # 父指针成环时 covered 上行走查也要终止：环上链有故事 → 环内链都非空，其余照报
+    cyc = _nodes()
+    cyc["chain"] += [
+        {"id": "ch-0003", "type": "chain", "level": 3, "parent": "ch-0002",
+         "priority": "P0", "state": "approved"},
+        {"id": "ch-0004", "type": "chain", "level": 3, "parent": "ch-0002",
+         "priority": "P0", "state": "approved"},
+    ]
+    cyc["chain"][0]["parent"] = "ch-0002"
+    cyc["story"][0]["chains"] = ["ch-0002"]
+    out = run_checks(build_universe(cyc, {"chain": [], "story": [], "point": []}, scope),
+                     claims=[], matrix_cells=[], unresolved={})
+    assert {f["where"] for f in out["hard"] if f["code"] == "empty_chain"} == {"ch-0003", "ch-0004"}
 
 
 def test_chain_parent_cycle_reported_as_broken_parent():

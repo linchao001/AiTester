@@ -81,9 +81,13 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
                 if int(c.get("level") or 0) != int(p.get("level") or 0) + 1:
                     add("cross_level", CHAIN, cid,
                         f"level={c.get('level')} 与父 {parent} level={p.get('level')} 不连续")
-                if rank(c.get("priority")) > rank(p.get("priority")):
+                # 优先级沿树（R-12）：违例 = 子节点优先级**高于**其父（rank 更小）。
+                # 链路 priority 是业务分支的重要性、索引树向上聚合，P0 链路下挂 P1/P2
+                # 属正常降级；反过来才说明某一层定级有误。三处比较方向一致：
+                # 子链路↔父链路、故事↔所属链路、测试点↔所属故事。
+                if rank(c.get("priority")) < rank(p.get("priority")):
                     add("priority_violation", CHAIN, cid,
-                        f"优先级 {c.get('priority')} 低于父 {parent} 的 {p.get('priority')}")
+                        f"优先级 {c.get('priority')} 高于其父 {parent} 的 {p.get('priority')}")
     for sid, s in stories.items():
         parents = [str(x) for x in (s.get("chains") or [])]
         if not parents:
@@ -92,9 +96,9 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
             p = chains.get(cid)
             if p is None:
                 add("broken_parent", STORY, sid, f"chains「{cid}」不在引用宇宙内")
-        # 简报此处有 `rank(story) > rank(chain)` 的 priority_violation，与其自带
-        # clean-tree 用例（P0 链路挂 P1 故事须零违例）自相矛盾，按用例裁定不检查
-        # 故事↔链层：父高子低属正常降级覆盖。链路↔父链、测试点↔所属故事仍按简报检查。
+            elif rank(s.get("priority")) < rank(p.get("priority")):
+                add("priority_violation", STORY, sid,
+                    f"优先级 {s.get('priority')} 高于其父 {cid} 的 {p.get('priority')}")
         if str(s.get("state")) not in _APPROVED:
             add("unapproved_ref", STORY, sid, f"节点状态 {s.get('state')} 未过审")
     for pid, p in points.items():
@@ -103,9 +107,9 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
         if parent is None:
             add("broken_parent", POINT, pid, f"story「{sid}」不在引用宇宙内")
         else:
-            if rank(p.get("priority")) > rank(parent.get("priority")):
+            if rank(p.get("priority")) < rank(parent.get("priority")):
                 add("priority_violation", POINT, pid,
-                    f"优先级 {p.get('priority')} 低于所属故事 {sid} 的 {parent.get('priority')}")
+                    f"优先级 {p.get('priority')} 高于其父 {sid} 的 {parent.get('priority')}")
         if str(p.get("state")) not in _APPROVED:
             add("unapproved_ref", POINT, pid, f"节点状态 {p.get('state')} 未过审")
 
