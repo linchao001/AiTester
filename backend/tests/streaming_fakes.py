@@ -39,6 +39,36 @@ class ChunkedStreamMixin:
         yield from chunks_from(self.invoke_messages(messages))  # type: ignore[attr-defined]
 
 
+class ScriptedProvider(ChunkedStreamMixin):
+    """严格剧本 provider：给「父—子同一条链」的多回合脚本用。
+
+    与 test_agent_graph.ScriptedProvider / test_chat_auth.ScriptProvider 的差别：
+    那两位剧本见底后静默回 "done"（旧用例的宽松口径）；父—子同链回合多，
+    漏写一回合会被静默 "done" 假绿盖住，故本类见底即响亮失败。
+    剧本元素可以是 Exception：轮到它就抛，模拟 provider 侧故障；
+    `calls` 记录每次喂进来的消息表（断子体独立入参用）。
+    """
+
+    name = "scripted"
+    model_ref = "scripted/model"
+
+    def __init__(self, script: list[AIMessage | Exception]) -> None:
+        self._script = list(script)
+        self.calls: list[list] = []
+
+    def bind_tools(self, tools: list) -> "ScriptedProvider":
+        return self
+
+    def invoke_messages(self, messages: list) -> AIMessage:
+        self.calls.append(list(messages))
+        if not self._script:
+            raise AssertionError("剧本见底：嵌套链还有回合没写进 script")
+        item = self._script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
 class CancelAfterProvider:
     """在第 n 块产出时置取消位：验「chunk 之间」的检查点真的生效。
 

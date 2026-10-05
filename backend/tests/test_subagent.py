@@ -2,6 +2,16 @@
 
 from pathlib import Path
 
+import pytest
+from langchain_core.tools import ToolException
+
+from aitester.adapters.tools import build_default_registry
+from aitester.adapters.tools.file_tools.observation import FileObservationStore
+from aitester.adapters.tools.subagent_tools import (
+    TASK_TOOL_DESC,
+    build_task_tool,
+    render_description,
+)
 from aitester.agents import (
     AGENT_CATALOG,
     DEFAULT_AGENT_STATE,
@@ -73,3 +83,85 @@ def test_legacy_config_activates_task_via_settings_path(tmp_path: Path) -> None:
         "case_design",
         ["read", "write", "edit", "grep_search", "glob_search", "web_search", "task"])
     assert "task" in _stored(tmp_path)["agents"]["case_design"]["tool_ids"]
+
+
+# —— T3：task 工具壳与注册表缝 ——
+
+_ROSTER = {"general-purpose": {"name": "通用子智能体", "desc": "Read-only investigator."}}
+
+
+def test_task_tool_rejects_unknown_subagent_type() -> None:
+    """R11：未知子类型是模型可见错误——英文、带在册清单，不许静默回退默认体。"""
+    tool = build_task_tool(_ROSTER, build_child=lambda _aid: None,
+                           drive=lambda _c, _b, **_k: "摘要")
+    with pytest.raises(ToolException) as exc:
+        tool._run(description="look into it", subagent_type="nope")
+    assert "Unknown subagent_type 'nope'" in str(exc.value)
+    assert "general-purpose" in str(exc.value)
+
+
+def test_task_tool_wraps_build_failure_in_english() -> None:
+    """装配失败（如 provider 配置缺失）也要以模型可见英文错误收场，模型可自纠。"""
+    def boom(_aid: str):
+        raise RuntimeError("provider config missing")
+
+    tool = build_task_tool(_ROSTER, build_child=boom, drive=lambda _c, _b, **_k: "摘要")
+    with pytest.raises(ToolException) as exc:
+        tool._run(description="x")
+    assert str(exc.value) == ("Subagent 'general-purpose' could not be started: "
+                              "provider config missing")
+
+
+def test_task_tool_passes_drive_the_contract_keys() -> None:
+    """drive 收到的七件：child / brief / call_id / name / title（缺省回落名字）/ config /
+    isolated（并行安全表决定走不走派生 ns，R14）。"""
+    seen: dict = {}
+    child = object()
+
+    def drive(c, brief, *, call_id, name, title, config, isolated):
+        seen.update(child=c, brief=brief, call_id=call_id, name=name, title=title,
+                    config=config, isolated=isolated)
+        return "子摘要"
+
+    tool = build_task_tool(_ROSTER, build_child=lambda _aid: child, drive=drive,
+                           parallel={"general-purpose": True})
+    cfg = {"configurable": {"thread_id": "t"}}
+    out = tool._run(description="调查失败用例", subagent_type="general-purpose",
+                    title="", tool_call_id="c9", config=cfg)
+    assert out == "子摘要"
+    assert seen == {"child": child, "brief": "调查失败用例", "call_id": "c9",
+                    "name": "通用子智能体", "title": "通用子智能体", "config": cfg,
+                    "isolated": True}
+
+
+def test_task_tool_defaults_to_serial_when_parallel_table_is_silent() -> None:
+    """表里没有 = 按串行办：isolated 缺省 False，宁可少并行也不踩同 ns 双跑。"""
+    seen: dict = {}
+
+    def drive(c, brief, *, call_id, name, title, config, isolated):
+        seen["isolated"] = isolated
+        return "摘要"
+
+    tool = build_task_tool(_ROSTER, build_child=lambda _aid: object(), drive=drive)
+    tool._run(description="x", subagent_type="general-purpose", tool_call_id="c1",
+              config=None)
+    assert seen == {"isolated": False}
+
+
+def test_render_description_lists_roster() -> None:
+    text = render_description(_ROSTER)
+    assert text.startswith(TASK_TOOL_DESC)
+    assert "Available subagents:" in text
+    assert "- 通用子智能体 (general-purpose): Read-only investigator." in text
+
+
+def test_registry_registers_task_only_when_injected(tmp_path: Path) -> None:
+    """注入缝：默认注册表没有 task；装配层传了才有——深度 1 结构锁的装配基点（R7）。"""
+    tool = build_task_tool(_ROSTER, build_child=lambda _aid: object(),
+                           drive=lambda _c, _b, **_k: "摘要")
+    plain = build_default_registry(cwd=str(tmp_path), session_id="s1",
+                                   observed=FileObservationStore())
+    assert "task" not in {t.name for t in plain.as_langchain_tools()}
+    with_task = build_default_registry(cwd=str(tmp_path), session_id="s1",
+                                       observed=FileObservationStore(), task=tool)
+    assert "task" in {t.name for t in with_task.as_langchain_tools()}
