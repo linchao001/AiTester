@@ -87,6 +87,15 @@ def test_first_start_seeds_and_persists(tmp_path: Path) -> None:
             "default_uid": "",
             "tool_ids": ["read", "grep_search", "glob_search", "web_search"],
         },
+        "case_review": {
+            "default_uid": "",
+            "tool_ids": ["read", "grep_search", "glob_search", "web_search",
+                         "knowledge_search"],
+        },
+        "case_review_blind": {
+            "default_uid": "",
+            "tool_ids": ["read"],
+        },
     }
 
 
@@ -99,6 +108,11 @@ def test_existing_file_is_not_reseeded(tmp_path: Path) -> None:
             # read 已被禁用 → 新补种的子智能体面里也不留 read（剥禁用工具对所有条目一视同仁）
             "general-purpose": {"default_uid": "",
                                 "tool_ids": ["grep_search", "glob_search", "web_search"]},
+            "case_review": {
+                "default_uid": "",
+                "tool_ids": ["grep_search", "glob_search", "web_search", "knowledge_search"],
+            },
+            "case_review_blind": {"default_uid": "", "tool_ids": []},
         },
     }
     FileJsonConfigRepository(tmp_path / "capability_config.json").save(saved)
@@ -137,6 +151,15 @@ def test_hand_edited_drift_is_normalized_and_persisted(tmp_path: Path) -> None:
         "case_design": {"default_uid": "", "tool_ids": kept},
         "general-purpose": {"default_uid": "",
                             "tool_ids": ["read", "grep_search", "glob_search", "web_search"]},
+        "case_review": {
+            "default_uid": "",
+            "tool_ids": ["read", "grep_search", "glob_search", "web_search",
+                         "knowledge_search"],
+        },
+        "case_review_blind": {
+            "default_uid": "",
+            "tool_ids": ["read"],
+        },
     }
 
 
@@ -183,7 +206,8 @@ def test_get_view_tools_shape_and_carried_by(tmp_path: Path) -> None:
     assert read["group"] == "文件处理工具"
     assert read["enabled"] is True
     assert read["available"] is True and read["unavailable_reason"] is None
-    assert read["carried_by"] == ["case_design", "general-purpose"]
+    assert read["carried_by"] == ["case_design", "general-purpose", "case_review",
+                                  "case_review_blind"]
     bash = next(t for t in view["tools"] if t["id"] == "bash")
     assert bash["os"] == "macOS / Linux"
     assert bash["enabled"] is _seed_tool_state()["bash"]
@@ -288,7 +312,8 @@ def test_set_agent_tools_keeps_order_and_dedups(tmp_path: Path) -> None:
     view = capability.get_view()
     assert view["agents"][0]["tool_ids"] == ["edit", "read", "write"]
     assert [t["id"] for t in view["tools"] if t["carried_by"]] == [
-        "read", "write", "edit", "grep_search", "glob_search", "web_search"]
+        "read", "write", "edit", "grep_search", "glob_search", "web_search",
+        "knowledge_search"]
 
 
 def test_set_agent_tools_empty_list_is_allowed(tmp_path: Path) -> None:
@@ -298,8 +323,12 @@ def test_set_agent_tools_empty_list_is_allowed(tmp_path: Path) -> None:
     carried = {t["id"]: t["carried_by"] for t in capability.get_view()["tools"]}
     # 主智能体清空后不再有携带者；剩下的携带者只可能来自子智能体那一张面
     assert {tid: v for tid, v in carried.items() if v} == {
-        tid: ["general-purpose"]
-        for tid in ("read", "grep_search", "glob_search", "web_search")}
+        "read": ["general-purpose", "case_review", "case_review_blind"],
+        "grep_search": ["general-purpose", "case_review"],
+        "glob_search": ["general-purpose", "case_review"],
+        "web_search": ["general-purpose", "case_review"],
+        "knowledge_search": ["case_review"],
+    }
 
 
 def test_set_agent_tools_rejects_disabled_tool(tmp_path: Path) -> None:
@@ -462,6 +491,15 @@ def test_migration_does_not_overwrite_existing_new_key(tmp_path: Path) -> None:
         "case_design": {"default_uid": "", "tool_ids": ["write"]},
         "general-purpose": {"default_uid": "",
                             "tool_ids": ["read", "grep_search", "glob_search", "web_search"]},
+        "case_review": {
+            "default_uid": "",
+            "tool_ids": ["read", "grep_search", "glob_search", "web_search",
+                         "knowledge_search"],
+        },
+        "case_review_blind": {
+            "default_uid": "",
+            "tool_ids": ["read"],
+        },
     }
 
 

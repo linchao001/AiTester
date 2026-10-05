@@ -34,7 +34,8 @@ def test_capabilities_seed_view(tmp_path: Path) -> None:
         "task",
     ]
     assert [a["id"] for a in body["agents"]] == ["case_design"]
-    assert [s["id"] for s in body["subagents"]] == ["general-purpose"]
+    assert [s["id"] for s in body["subagents"]] == [
+        "general-purpose", "case_review", "case_review_blind"]
     agent = body["agents"][0]
     assert agent["name"] == "用例设计智能体"
     assert "## 职责" in agent["prompt"]

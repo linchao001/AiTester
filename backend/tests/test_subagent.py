@@ -25,7 +25,8 @@ from test_capability_config import _stored, _svc  # noqa: F401  复用能力配�
 
 
 def test_subagent_catalog_is_separate_from_agent_catalog() -> None:
-    assert [s.id for s in SUBAGENT_CATALOG] == ["general-purpose"]
+    assert [s.id for s in SUBAGENT_CATALOG] == [
+        "general-purpose", "case_review", "case_review_blind"]
     spec = SUBAGENT_CATALOG[0]
     assert spec.icon == "🕵️" and spec.name == "通用子智能体"
     assert not spec.desc.startswith("Read-only")                      # 面可调：静态文案不许断言只读
@@ -35,6 +36,21 @@ def test_subagent_catalog_is_separate_from_agent_catalog() -> None:
     assert all(s.id != "general-purpose" for s in AGENT_CATALOG)     # 不进直选面
     assert find_subagent("general-purpose") is spec
     assert find_subagent("case_design") is None
+
+
+def test_review_subagent_specs_are_cataloged_with_review_faces() -> None:
+    review = find_subagent("case_review")
+    blind = find_subagent("case_review_blind")
+    assert review is not None and blind is not None
+    assert review.default_tool_ids == ("read", "grep_search", "glob_search",
+                                       "web_search", "knowledge_search")
+    assert blind.default_tool_ids == ("read",)
+    assert review.name == "用例评审子智能体" and blind.name == "盲枚举子智能体"
+    for spec in (review, blind):
+        assert "task" not in spec.default_tool_ids            # 深度 1 结构锁
+        assert not spec.desc.startswith("Read-only")          # 面可调：静态文案不许断言只读
+        assert all(ord(ch) < 128 for ch in spec.desc)         # 模型可见：全英文
+        assert all(s.id != spec.id for s in AGENT_CATALOG)    # 不进直选面
 
 
 def test_case_design_default_face_includes_task() -> None:
@@ -52,7 +68,8 @@ def test_tool_catalog_has_task_after_knowledge_tools() -> None:
 def test_view_exposes_subagents_beside_agents(tmp_path: Path) -> None:
     capability, _ = _svc(tmp_path)
     view = capability.get_view()
-    assert [s["id"] for s in view["subagents"]] == ["general-purpose"]
+    assert [s["id"] for s in view["subagents"]] == [
+        "general-purpose", "case_review", "case_review_blind"]
     assert [a["id"] for a in view["agents"]] == ["case_design"]      # 不进直选面
     sub = view["subagents"][0]
     assert sub["tool_ids"] == ["read", "grep_search", "glob_search", "web_search"]

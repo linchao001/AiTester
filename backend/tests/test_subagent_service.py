@@ -18,6 +18,7 @@ from aitester.adapters.llm import MockProvider
 from aitester.config import Settings
 from aitester.main import create_app
 from aitester.services import ChatService
+from aitester.services.agent_runtime import AgentRuntime
 
 
 def _app(tmp_path: Path, provider):
@@ -156,7 +157,8 @@ def test_unknown_subagent_type_is_a_plain_tool_error(tmp_path: Path) -> None:
     err = provider.calls[1][-1]
     assert isinstance(err, ToolMessage) and err.status == "error"
     assert "Unknown subagent_type 'ghost'" in str(err.content)
-    assert "Available subagents: general-purpose" in str(err.content)
+    assert ("Available subagents: case_review, case_review_blind, general-purpose"
+            in str(err.content))
 
 
 def test_assembly_level_structure_locks(tmp_path: Path) -> None:
@@ -170,6 +172,11 @@ def test_assembly_level_structure_locks(tmp_path: Path) -> None:
     child = tools["task"].build_child("general-purpose")
     assert {t.tool_id() for t in child.tools} == {"read", "grep_search",
                                                   "glob_search", "web_search"}
+    review = tools["task"].build_child("case_review")
+    assert {t.tool_id() for t in review.tools} == {"read", "grep_search", "glob_search",
+                                                   "web_search"}   # kb 未注入：面收缩为四件
+    blind = tools["task"].build_child("case_review_blind")
+    assert {t.tool_id() for t in blind.tools} == {"read"}
     assert child.provider is mock                       # provider_override 继承（R13 测试缝）
     assert child.system_prompt.startswith("你是「通用子智能体」")
     kb_inst = runtime.build("kb_assistant", "kb-console", provider_override=mock)
@@ -182,13 +189,29 @@ def test_parallel_table_follows_the_settings_face(tmp_path: Path) -> None:
     runtime, capability, _ = _runtime(tmp_path)
     task_tool = {t.tool_id(): t for t in runtime.build(
         "case_design", "s1", provider_override=MockProvider()).tools}["task"]
-    assert task_tool.parallel == {"general-purpose": True}
+    assert task_tool.parallel == {"general-purpose": True, "case_review": True,
+                                  "case_review_blind": True}
     # 同一份勾选取决第二件事：模型可见的工具面清单——父模型只有看到 write 在场才敢派写任务
     assert "[tool face: read, grep_search, glob_search, web_search]" in task_tool.description
     capability.set_agent_tools("general-purpose",
                                ["read", "grep_search", "glob_search", "web_search", "write"])
     reopened = {t.tool_id(): t for t in runtime.build(
         "case_design", "s2", provider_override=MockProvider()).tools}["task"]
-    assert reopened.parallel == {"general-purpose": False}
+    assert reopened.parallel == {"general-purpose": False, "case_review": True,
+                                 "case_review_blind": True}
     assert ("[tool face: read, grep_search, glob_search, web_search, write]"
             in reopened.description)
+
+
+def test_reviewer_child_gets_kb_injection(tmp_path: Path) -> None:
+    """T7：注入 kb 后评审子面收敛为五件，knowledge_search 拿到父装配同一份 KB。"""
+    _, capability, model_config = _runtime(tmp_path)
+    fake_kb = _NoopKbManager()
+    runtime = AgentRuntime(capability, model_config, kb=fake_kb)
+    parent = runtime.build("case_design", "s1", provider_override=MockProvider())
+    task_tool = {t.tool_id(): t for t in parent.tools}["task"]
+    child = task_tool.build_child("case_review")
+    tools = {t.tool_id(): t for t in child.tools}
+    assert set(tools) == {"read", "grep_search", "glob_search", "web_search",
+                          "knowledge_search"}
+    assert tools["knowledge_search"].kb is fake_kb

@@ -69,6 +69,15 @@ def test_default_agent_state_is_derived_from_catalog() -> None:
             "default_uid": "",
             "tool_ids": ["read", "grep_search", "glob_search", "web_search"],
         },
+        "case_review": {
+            "default_uid": "",
+            "tool_ids": ["read", "grep_search", "glob_search", "web_search",
+                         "knowledge_search"],
+        },
+        "case_review_blind": {
+            "default_uid": "",
+            "tool_ids": ["read"],
+        },
     }
 
 

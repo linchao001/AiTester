@@ -49,9 +49,32 @@ GENERAL_PURPOSE_SPEC = AgentSpec(
     default_tool_ids=("read", "grep_search", "glob_search", "web_search"),
 )
 
+CASE_REVIEW_SPEC = AgentSpec(
+    id="case_review",
+    icon="🧐",
+    name="用例评审子智能体",
+    desc="Independent reviewer for the case-design loop: judges attribution, seams and "
+         "coverage-matrix cells against the evidence given in the brief, and returns "
+         "exactly one fenced JSON block of structured opinions.",
+    prompt=_load_prompt("case_review"),
+    default_tool_ids=("read", "grep_search", "glob_search", "web_search", "knowledge_search"),
+)
+
+CASE_REVIEW_BLIND_SPEC = AgentSpec(
+    id="case_review_blind",
+    icon="🧭",
+    name="盲枚举子智能体",
+    desc="Independent enumerator for the case-design loop: lists business objects, roles "
+         "and stages only from the explicit source list in the brief, and returns "
+         "exactly one fenced JSON block.",
+    prompt=_load_prompt("case_review_blind"),
+    default_tool_ids=("read",),
+)
+
 # 子智能体目录：只可被 task 工具派发——不进 AGENT_CATALOG（聊天页下拉/项目挂载不可见），
 # 只随能力视图的 subagents 子表出现在设置页；状态仍进 DEFAULT_AGENT_STATE（模型与勾选要可配）。
-SUBAGENT_CATALOG: tuple[AgentSpec, ...] = (GENERAL_PURPOSE_SPEC,)
+SUBAGENT_CATALOG: tuple[AgentSpec, ...] = (GENERAL_PURPOSE_SPEC, CASE_REVIEW_SPEC,
+                                           CASE_REVIEW_BLIND_SPEC)
 
 DEFAULT_AGENT_STATE: dict[str, dict[str, Any]] = {
     spec.id: {"default_uid": "", "tool_ids": list(spec.default_tool_ids)}

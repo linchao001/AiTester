@@ -101,7 +101,8 @@ class AgentRuntime:
 
         子面与父面同源不同表：工具来自子自己的能力勾选（设置可调），cwd 认同父项目
         落点（子写界外仍走父审批通道——子 gate 读同一份 configurable）；子注册表
-        不传 task=（R7：深度 1 是装配锁），kb 不注入（首版子面只吃文件与网页）。
+        不传 task=（R7：深度 1 是装配锁）；kb 注入父装配同一份（T7：评审子
+        knowledge_search 要查证业务信息；未启用时注册表自动不注册，面按既有口径收敛）。
 
         parallel 表由同一份能力勾选推导（R14）：只读面 → 可并行扇出；用户一旦给子
         勾上写 / 命令 / 知识库写，该子自动退回「一轮一个」的串行通路——这不是新加的
@@ -131,7 +132,7 @@ class AgentRuntime:
                     cwd=cwd,
                     session_id=f"{spec.id}:{session_id}",
                     observed=self._observations,
-                    kb=None,
+                    kb=self._kb,          # T7：评审子 knowledge_search 与父同一份 KB（原为 kb=None）
                     agent_id=spec.id,
                 )
                 tools = registry.get_many(tool_ids)
