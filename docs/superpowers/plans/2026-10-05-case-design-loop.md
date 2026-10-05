@@ -1848,16 +1848,19 @@ from aitester.case_design.constants import ID_RE, LAYER_BUCKET, TYPE_PREFIX
 _FRONT_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 
 # 层字段（frontmatter 键序即此序）；链路的 parent 空串也必须落键——P-3 靠 "parent" in row 判维护性
+# priority 是三层共用字段（schema 标 共用），链路/故事也必须落：④ 的优先级沿树检查直接读
+# 宇宙里的 chain/story 行，回写丢字段会让下一轮把 P0 存量当成 P1，从而假报 hard 违例（R-16）。
 _NODE_FIELDS: dict[str, tuple[str, ...]] = {
-    "chain": ("level", "parent", "business_scope", "excluded"),
-    "story": ("chains", "actor", "preconditions", "trigger", "expected", "assumptions"),
+    "chain": ("priority", "level", "parent", "business_scope", "excluded"),
+    "story": ("priority", "chains", "actor", "preconditions", "trigger", "expected", "assumptions"),
     "point": ("story", "scenario", "entities", "directions", "priority"),
 }
 _BODY_LABELS: dict[str, tuple[tuple[str, str], ...]] = {
-    "chain": (("level", "层级"), ("parent", "上级链路"), ("business_scope", "业务范围"),
-              ("excluded", "不含范围")),
-    "story": (("chains", "所属链路"), ("actor", "主角"), ("preconditions", "业务前置"),
-              ("trigger", "触发"), ("expected", "期望结果"), ("assumptions", "假设")),
+    "chain": (("priority", "优先级"), ("level", "层级"), ("parent", "上级链路"),
+              ("business_scope", "业务范围"), ("excluded", "不含范围")),
+    "story": (("priority", "优先级"), ("chains", "所属链路"), ("actor", "主角"),
+              ("preconditions", "业务前置"), ("trigger", "触发"), ("expected", "期望结果"),
+              ("assumptions", "假设")),
     "point": (("story", "所属故事"), ("scenario", "场景"), ("entities", "涉及实体"),
               ("directions", "方向"), ("priority", "优先级")),
 }
