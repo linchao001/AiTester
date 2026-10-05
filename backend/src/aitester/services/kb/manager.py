@@ -12,6 +12,7 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
+from aitester.case_design.constants import NODE_BUCKETS
 from aitester.services.kb.config import KbConfig, build_reme_config
 from aitester.services.kb.paths import resolve_kb_root
 
@@ -21,6 +22,24 @@ DEFAULT_CONSOLE_AGENT = "console"
 
 class KbUnavailableError(RuntimeError):
     """知识库未启用或 ReMe 实例不可用。"""
+
+
+def _ensure_node_buckets(cfg: KbConfig) -> None:
+    """三层节点桶物理落地：workspace/knowledge 是整根 junction，实体侧建目录即挂载侧可见。
+
+    必须在 Application 构造前调用：实例启动即建立 watch 基线，桶要先存在；
+    KB 根缺失且允许自建时先走 ensure_kb（补 KB.md 骨架——mount 只在根不存在时建骨架，
+    根已存在则直接挂载）。根缺失且不允许自建时无声返回，后续 mount 照旧响亮失败。
+    """
+    from reme.knowledge.store import ensure_kb, kb_root  # 与 _start_app 同：延迟导入
+
+    root = kb_root(cfg.kb_id, knowledge_bases_dir=cfg.kb_bases_dir or None)
+    if not root.is_dir():
+        if not cfg.create_missing:
+            return
+        ensure_kb(cfg.kb_id, knowledge_bases_dir=cfg.kb_bases_dir or None)
+    for bucket in NODE_BUCKETS:
+        (root / bucket).mkdir(parents=True, exist_ok=True)
 
 
 class RemeKbManager:
@@ -93,7 +112,10 @@ class RemeKbManager:
             # _start_tasks，该 key 之后每次 _get_app 都重放旧异常而无法重试
             from reme import Application
 
-            app = Application(**build_reme_config(self._kb_config(project_id, agent_id)))
+            cfg = self._kb_config(project_id, agent_id)
+            # 实例启动即建立 watch 基线——三层节点桶必须先于 Application 构造存在
+            _ensure_node_buckets(cfg)
+            app = Application(**build_reme_config(cfg))
             await app.start()
         except BaseException as exc:
             # 启动失败必须摘除在途任务，否则该 key 被永久污染无法重试

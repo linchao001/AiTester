@@ -16,10 +16,15 @@ dependencies = [
   # reme 包顶层 import 链（reme.steps.base_step）硬依赖 agentscope 核心；
   # 只装基础包以规避 reme-ai[core] 的重依赖（faiss/neo4j/polars 等本期不需要）。
   "agentscope==2.0.6",
+  # 节点 markdown 的 frontmatter 读写（services/kb/steps.py）；不依赖 reme 链的传递可得性
+  "PyYAML>=6",
 ]
 
 [dependency-groups]
 dev = ["pytest>=8"]
+
+[project.entry-points."reme.plugins"]
+aitester = "aitester.kb_plugin"
 
 [build-system]
 requires = ["hatchling"]

@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+from aitester.case_design.constants import NODE_BUCKETS
 
 DEFAULT_EMBEDDING_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 DEFAULT_EMBEDDING_MODEL = "text-embedding-v4"
@@ -102,6 +105,19 @@ _KB_JOBS: dict[str, Any] = {
         "backend": "base",
         "steps": [{"backend": "reject_knowledge_inbox_step"}],
     },
+    # 三层节点桶（P-2）：op 由 step 配置注入；layer/node/id 走 job 调用 kwargs。
+    "case_nodes_list": {
+        "backend": "base",
+        "steps": [{"backend": "aitester_kb_nodes_step", "op": "list"}],
+    },
+    "case_node_upsert": {
+        "backend": "base",
+        "steps": [{"backend": "aitester_kb_nodes_step", "op": "upsert"}],
+    },
+    "case_node_delete": {
+        "backend": "base",
+        "steps": [{"backend": "aitester_kb_nodes_step", "op": "delete"}],
+    },
 }
 
 
@@ -148,6 +164,15 @@ def build_reme_config(cfg: KbConfig) -> dict[str, Any]:
         }
         components["file_store"]["default"]["embedding_store"] = "default"
 
+    jobs = copy.deepcopy(_KB_JOBS)
+    # P-4：三层节点桶不在 reme 的 PUBLISHED_BUCKETS 里，启动期 augment_jobs_for_knowledge
+    # 不会替我们追加；必须在这里显式把 junction 侧绝对路径摆进 index_update_loop 的 watch_dirs。
+    watch_dirs = jobs["index_update_loop"]["watch_dirs"]
+    for bucket in NODE_BUCKETS:
+        path = str(Path(cfg.workspace_dir) / "knowledge" / bucket)
+        if path not in watch_dirs:
+            watch_dirs.append(path)
+
     return {
         "enable_logo": False,
         "log_to_file": False,
@@ -158,7 +183,10 @@ def build_reme_config(cfg: KbConfig) -> dict[str, Any]:
         "knowledge_dir": "knowledge",
         "create_knowledge_base": cfg.create_missing,
         "knowledge_write_mode": "open",
+        # reme 插件机制：entry point aitester → aitester.kb_plugin/plugin.yaml 注册节点 step。
+        # entry point 元数据缺失（未重装）时 Application 构造响亮失败——重装是运行前提。
+        "plugins": ["aitester"],
         "service": {"backend": "http", "web_enabled": False, "port": 8199},
         "components": components,
-        "jobs": copy.deepcopy(_KB_JOBS),
+        "jobs": jobs,
     }
