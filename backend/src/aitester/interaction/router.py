@@ -148,7 +148,8 @@ def _stream_response(runs: RunRegistry, run_id: str, session_id: str,
                         frame = _draft_frame(event["draft"])
                         if frame is not None:
                             yield frame
-                    elif kind == "step":
+                    elif kind == "step" and event.get("subagent") is None:
+                        # 子步骤帧（带来源标注）落 else 原样透传：_step_payload 会把标注吃掉
                         yield _frame(kind, _step_payload(event))
                     elif kind == "wait":
                         # 折叠已严格取键（Task 4）：这里只把续跑与停止要用的 run_id 附上

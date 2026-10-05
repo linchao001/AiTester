@@ -9,12 +9,15 @@ from dataclasses import dataclass
 from logging import getLogger
 from typing import Any
 
-from aitester.agents import find_agent, is_platform_agent
+from aitester.agents import SUBAGENT_CATALOG, find_agent, find_subagent, is_platform_agent
 from aitester.adapters.llm import LlmProvider
 from aitester.adapters.tools import build_default_registry
 from aitester.adapters.tools.base import AiTooler
 from aitester.adapters.tools.file_tools import FileObservationStore
+from aitester.adapters.tools.subagent_tools import TaskTool, build_task_tool
+from aitester.orchestration.auth_rules import face_can_suspend
 from aitester.orchestration.graph_registry import GraphBuilder, get_graph_builder
+from aitester.orchestration.subagent import ChildRuntime, drive_child
 from aitester.services.capability_config import CapabilityConfigService
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
 
@@ -80,6 +83,7 @@ class AgentRuntime:
                 observed=self._observations,
                 kb=self._kb,
                 agent_id=agent_id,
+                task=self._task_tool(session_id, cwd, provider_override),
             )
             tools = registry.get_many(state["tool_ids"])
 
@@ -90,6 +94,55 @@ class AgentRuntime:
             tools=tools,
             build_graph=get_graph_builder(spec.graph_builder),
         )
+
+    def _task_tool(self, session_id: str, cwd: str,
+                   provider_override: LlmProvider | None) -> TaskTool:
+        """task 工具实例：roster 来自子智能体目录，build_child 现装现弃子实例。
+
+        子面与父面同源不同表：工具来自子自己的能力勾选（设置可调），cwd 认同父项目
+        落点（子写界外仍走父审批通道——子 gate 读同一份 configurable）；子注册表
+        不传 task=（R7：深度 1 是装配锁），kb 不注入（首版子面只吃文件与网页）。
+
+        parallel 表由同一份能力勾选推导（R14）：只读面 → 可并行扇出；用户一旦给子
+        勾上写 / 命令 / 知识库写，该子自动退回「一轮一个」的串行通路——这不是新加的
+        闸门，是「会挂起的子没法并行续跑」这条机制事实，且在设置页看得见、改得动。
+        """
+        roster = {spec.id: {"name": spec.name, "desc": spec.desc}
+                  for spec in SUBAGENT_CATALOG}
+        parallel = {spec.id: not face_can_suspend(
+            self._capability.agent_state(spec.id)["tool_ids"])
+            for spec in SUBAGENT_CATALOG}
+
+        def build_child(sub_agent_id: str) -> ChildRuntime:
+            spec = find_subagent(sub_agent_id)
+            if spec is None:
+                raise ValueError(f"未知子智能体「{sub_agent_id}」")
+            provider: LlmProvider = (
+                provider_override
+                if provider_override is not None
+                else self._model_config.build_provider(
+                    self._capability.effective_uid(spec.id))
+            )
+            tools: list[AiTooler] = []
+            tool_ids = self._capability.agent_state(spec.id)["tool_ids"]
+            if tool_ids:
+                registry = build_default_registry(
+                    cwd=cwd,
+                    session_id=f"{spec.id}:{session_id}",
+                    observed=self._observations,
+                    kb=None,
+                    agent_id=spec.id,
+                )
+                tools = registry.get_many(tool_ids)
+            return ChildRuntime(
+                agent_id=spec.id,
+                system_prompt=spec.prompt,
+                provider=provider,
+                tools=tools,
+                build_graph=get_graph_builder(spec.graph_builder),
+            )
+
+        return build_task_tool(roster, build_child, drive_child, parallel)
 
     def _build_platform_agent(
         self, spec, session_id: str, provider_override: LlmProvider | None

@@ -141,6 +141,7 @@ def test_registry_uses_given_cwd_and_shared_observations(
         observed: Any = None,
         kb: Any = None,
         agent_id: str = "console",
+        task: Any = None,
     ) -> Any:
         captured.update(
             {"cwd": cwd, "session_id": session_id, "observed": observed, "kb": kb, "agent_id": agent_id}
@@ -180,6 +181,7 @@ def test_registry_uses_project_cwd_when_given(
         observed: Any = None,
         kb: Any = None,
         agent_id: str = "console",
+        task: Any = None,
     ) -> Any:
         captured.update(
             {"cwd": cwd, "session_id": session_id, "observed": observed, "kb": kb, "agent_id": agent_id}
