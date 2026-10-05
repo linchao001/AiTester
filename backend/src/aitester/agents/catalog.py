@@ -33,13 +33,28 @@ AGENT_CATALOG: tuple[AgentSpec, ...] = (
             "grep_search",
             "glob_search",
             "web_search",
+            "task",
         ),
     ),
 )
 
+GENERAL_PURPOSE_SPEC = AgentSpec(
+    id="general-purpose",
+    icon="🕵️",
+    name="通用子智能体",
+    desc="Read-only investigator for delegated tasks: explores files, searches code "
+         "and the web, then reports back a concise summary.",
+    prompt=_load_prompt("general-purpose"),
+    default_tool_ids=("read", "grep_search", "glob_search", "web_search"),
+)
+
+# 子智能体目录：只可被 task 工具派发——不进 AGENT_CATALOG（聊天页下拉/项目挂载不可见），
+# 只随能力视图的 subagents 子表出现在设置页；状态仍进 DEFAULT_AGENT_STATE（模型与勾选要可配）。
+SUBAGENT_CATALOG: tuple[AgentSpec, ...] = (GENERAL_PURPOSE_SPEC,)
+
 DEFAULT_AGENT_STATE: dict[str, dict[str, Any]] = {
     spec.id: {"default_uid": "", "tool_ids": list(spec.default_tool_ids)}
-    for spec in AGENT_CATALOG
+    for spec in (*AGENT_CATALOG, *SUBAGENT_CATALOG)
 }
 
 LEGACY_AGENT_IDS: dict[str, str] = {"a1": "case_design"}
@@ -71,6 +86,13 @@ def is_platform_agent(agent_id: str) -> bool:
 
 def find_agent(agent_id: str) -> AgentSpec | None:
     for spec in (*AGENT_CATALOG, *PLATFORM_AGENT_CATALOG):
+        if spec.id == agent_id:
+            return spec
+    return None
+
+
+def find_subagent(agent_id: str) -> AgentSpec | None:
+    for spec in SUBAGENT_CATALOG:
         if spec.id == agent_id:
             return spec
     return None

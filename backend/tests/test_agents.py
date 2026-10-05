@@ -55,8 +55,13 @@ def test_default_agent_state_is_derived_from_catalog() -> None:
                 "grep_search",
                 "glob_search",
                 "web_search",
+                "task",
             ],
-        }
+        },
+        "general-purpose": {
+            "default_uid": "",
+            "tool_ids": ["read", "grep_search", "glob_search", "web_search"],
+        },
     }
 
 

@@ -80,8 +80,13 @@ def test_first_start_seeds_and_persists(tmp_path: Path) -> None:
     assert stored["agents"] == {
         "case_design": {
             "default_uid": "",
-            "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search"],
-        }
+            "tool_ids": ["read", "write", "edit", "grep_search", "glob_search",
+                         "web_search", "task"],
+        },
+        "general-purpose": {
+            "default_uid": "",
+            "tool_ids": ["read", "grep_search", "glob_search", "web_search"],
+        },
     }
 
 
@@ -90,7 +95,10 @@ def test_existing_file_is_not_reseeded(tmp_path: Path) -> None:
         "version": 1,
         "tool_state": {**_seed_tool_state(), "read": False},
         "agents": {
-            "case_design": {"default_uid": "deepseek/deepseek-flash", "tool_ids": ["write"]}
+            "case_design": {"default_uid": "deepseek/deepseek-flash", "tool_ids": ["write"]},
+            # read 已被禁用 → 新补种的子智能体面里也不留 read（剥禁用工具对所有条目一视同仁）
+            "general-purpose": {"default_uid": "",
+                                "tool_ids": ["grep_search", "glob_search", "web_search"]},
         },
     }
     FileJsonConfigRepository(tmp_path / "capability_config.json").save(saved)
@@ -125,7 +133,11 @@ def test_hand_edited_drift_is_normalized_and_persisted(tmp_path: Path) -> None:
     stored = _stored(tmp_path)
     assert stored["version"] == 1  # version 归一到目录种子并被真正使用
     assert stored["tool_state"] == _seed_tool_state()  # bool("yes") 收敛为 True，与种子同值
-    assert stored["agents"] == {"case_design": {"default_uid": "", "tool_ids": kept}}
+    assert stored["agents"] == {
+        "case_design": {"default_uid": "", "tool_ids": kept},
+        "general-purpose": {"default_uid": "",
+                            "tool_ids": ["read", "grep_search", "glob_search", "web_search"]},
+    }
 
 
 def test_seed_identical_config_is_not_rewritten(tmp_path: Path) -> None:
@@ -145,7 +157,7 @@ def test_seed_identical_config_is_not_rewritten(tmp_path: Path) -> None:
     assert missing.save_calls == 1
 
 
-def test_catalog_seeds_exactly_one_agent_and_ten_tools() -> None:
+def test_catalog_seeds_exactly_one_agent_and_eleven_tools() -> None:
     assert [s.id for s in AGENT_CATALOG] == ["case_design"]
     assert AGENT_CATALOG[0].name == "用例设计智能体"
     assert [t["id"] for t in TOOL_CATALOG] == [
@@ -159,6 +171,7 @@ def test_catalog_seeds_exactly_one_agent_and_ten_tools() -> None:
         "web_search",
         "knowledge_search",
         "save_to_knowledge",
+        "task",
     ]
 
 
@@ -170,7 +183,7 @@ def test_get_view_tools_shape_and_carried_by(tmp_path: Path) -> None:
     assert read["group"] == "文件处理工具"
     assert read["enabled"] is True
     assert read["available"] is True and read["unavailable_reason"] is None
-    assert read["carried_by"] == ["case_design"]
+    assert read["carried_by"] == ["case_design", "general-purpose"]
     bash = next(t for t in view["tools"] if t["id"] == "bash")
     assert bash["os"] == "macOS / Linux"
     assert bash["enabled"] is _seed_tool_state()["bash"]
@@ -204,6 +217,7 @@ def test_get_view_agent_carries_readonly_prompt(tmp_path: Path) -> None:
         "grep_search",
         "glob_search",
         "web_search",
+        "task",
     ]
 
 
@@ -273,14 +287,19 @@ def test_set_agent_tools_keeps_order_and_dedups(tmp_path: Path) -> None:
     assert _stored(tmp_path)["agents"]["case_design"]["tool_ids"] == ["edit", "read", "write"]
     view = capability.get_view()
     assert view["agents"][0]["tool_ids"] == ["edit", "read", "write"]
-    assert [t["id"] for t in view["tools"] if t["carried_by"]] == ["read", "write", "edit"]
+    assert [t["id"] for t in view["tools"] if t["carried_by"]] == [
+        "read", "write", "edit", "grep_search", "glob_search", "web_search"]
 
 
 def test_set_agent_tools_empty_list_is_allowed(tmp_path: Path) -> None:
     capability, _ = _svc(tmp_path)
     capability.set_agent_tools("case_design", [])
     assert _stored(tmp_path)["agents"]["case_design"]["tool_ids"] == []
-    assert all(t["carried_by"] == [] for t in capability.get_view()["tools"])
+    carried = {t["id"]: t["carried_by"] for t in capability.get_view()["tools"]}
+    # 主智能体清空后不再有携带者；剩下的携带者只可能来自子智能体那一张面
+    assert {tid: v for tid, v in carried.items() if v} == {
+        tid: ["general-purpose"]
+        for tid in ("read", "grep_search", "glob_search", "web_search")}
 
 
 def test_set_agent_tools_rejects_disabled_tool(tmp_path: Path) -> None:
@@ -296,6 +315,7 @@ def test_set_agent_tools_rejects_disabled_tool(tmp_path: Path) -> None:
         "grep_search",
         "glob_search",
         "web_search",
+        "task",
     ]
 
 
@@ -375,6 +395,7 @@ def test_disable_tool_strips_every_agent(tmp_path: Path) -> None:
         "grep_search",
         "glob_search",
         "web_search",
+        "task",
     ]
 
 
@@ -437,7 +458,11 @@ def test_migration_does_not_overwrite_existing_new_key(tmp_path: Path) -> None:
     )
     _svc(tmp_path)
     stored = _stored(tmp_path)
-    assert stored["agents"] == {"case_design": {"default_uid": "", "tool_ids": ["write"]}}
+    assert stored["agents"] == {
+        "case_design": {"default_uid": "", "tool_ids": ["write"]},
+        "general-purpose": {"default_uid": "",
+                            "tool_ids": ["read", "grep_search", "glob_search", "web_search"]},
+    }
 
 
 def test_legacy_id_is_not_an_alias_at_read_time(tmp_path: Path) -> None:
@@ -454,13 +479,13 @@ def test_agent_state_returns_copy_and_is_public(tmp_path: Path) -> None:
     state = capability.agent_state("case_design")
     assert state == {
         "default_uid": "",
-        "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search"],
+        "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search", "task"],
     }
     state["tool_ids"].append("pwsh")
     state["default_uid"] = "hacked"
     assert capability.agent_state("case_design") == {
         "default_uid": "",
-        "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search"],
+        "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search", "task"],
     }
 
 

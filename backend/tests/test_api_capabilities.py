@@ -31,8 +31,10 @@ def test_capabilities_seed_view(tmp_path: Path) -> None:
         "web_search",
         "knowledge_search",
         "save_to_knowledge",
+        "task",
     ]
     assert [a["id"] for a in body["agents"]] == ["case_design"]
+    assert [s["id"] for s in body["subagents"]] == ["general-purpose"]
     agent = body["agents"][0]
     assert agent["name"] == "用例设计智能体"
     assert "## 职责" in agent["prompt"]
@@ -45,6 +47,7 @@ def test_capabilities_seed_view(tmp_path: Path) -> None:
         "grep_search",
         "glob_search",
         "web_search",
+        "task",
     ]
 
 
@@ -107,6 +110,7 @@ def test_disabled_model_falls_back_in_view_without_touching_storage(tmp_path: Pa
         "grep_search",
         "glob_search",
         "web_search",
+        "task",
     ]
 
 

@@ -180,6 +180,7 @@ class AgentInfo(BaseModel):
 class CapabilityResponse(BaseModel):
     tools: list[ToolInfo]
     agents: list[AgentInfo]
+    subagents: list[AgentInfo] = []
 
 
 class AgentDefaultUpdate(BaseModel):

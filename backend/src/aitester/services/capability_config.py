@@ -8,7 +8,7 @@ import sys
 from typing import Any
 
 from aitester.adapters.tools.availability import unavailable_reason
-from aitester.agents import AGENT_CATALOG, DEFAULT_AGENT_STATE, LEGACY_AGENT_IDS
+from aitester.agents import AGENT_CATALOG, DEFAULT_AGENT_STATE, LEGACY_AGENT_IDS, SUBAGENT_CATALOG, SUBAGENT_CATALOG
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
 from aitester.storage import JsonConfigRepository
 
@@ -92,6 +92,14 @@ TOOL_CATALOG: list[dict[str, Any]] = [
         "label": "save_to_knowledge",
         "os": "全平台",
         "desc": "把已确认的知识节点写入共享知识库发布桶，全项目共享可见；写入前必须经用户确认。",
+    },
+    {
+        "id": "task",
+        "group": "子智能体工具",
+        "icon": "🤖",
+        "label": "task",
+        "os": "全平台",
+        "desc": "把一件调查性任务派给通用子智能体独立完成，只回收一份摘要，不占主会话上下文。",
     },
 ]
 
@@ -231,22 +239,22 @@ class CapabilityConfigService:
                     ],
                 }
             )
-        views: list[dict[str, Any]] = []
-        for spec in AGENT_CATALOG:
+        def _agent_view(spec) -> dict[str, Any]:
             state = agents_state[spec.id]
-            views.append(
-                {
-                    "id": spec.id,
-                    "icon": spec.icon,
-                    "name": spec.name,
-                    "desc": spec.desc,
-                    "prompt": spec.prompt,
-                    "default_uid": state["default_uid"],
-                    "effective_uid": self.effective_uid(spec.id),
-                    "tool_ids": list(state["tool_ids"]),
-                }
-            )
-        return {"tools": tools, "agents": views}
+            return {
+                "id": spec.id,
+                "icon": spec.icon,
+                "name": spec.name,
+                "desc": spec.desc,
+                "prompt": spec.prompt,
+                "default_uid": state["default_uid"],
+                "effective_uid": self.effective_uid(spec.id),
+                "tool_ids": list(state["tool_ids"]),
+            }
+
+        views = [_agent_view(spec) for spec in AGENT_CATALOG]
+        sub_views = [_agent_view(spec) for spec in SUBAGENT_CATALOG]
+        return {"tools": tools, "agents": views, "subagents": sub_views}
 
     def set_agent_default_model(self, agent_id: str, uid: str) -> None:
         state = self._agent_state(agent_id)
