@@ -230,6 +230,9 @@
   .c-chip.orange{border-color:#f3d9b8;background:var(--primary-soft);color:var(--primary-deep)}
   .c-chip.blue{border-color:#cdddfb;color:#4f7cff}
   .c-chip.perm{position:relative}
+  /* 待批锁档的置灰态（验收 15「有 pending 时 chip 置灰」）：色值取自家 :583 禁用态现成的两枚，不新增 token；
+     cursor 必须一起改，否则 aria-disabled 的 chip 看着仍可点——与 :72 那条「0 个死按钮」同一条判据 */
+  .c-chip.perm[aria-disabled="true"]{color:#a9a196;border-color:var(--line);cursor:not-allowed}
   .pop.up{top:auto;bottom:135%}
   .composer .spacer{flex:1}
   .btn-send{
