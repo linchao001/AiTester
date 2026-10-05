@@ -548,14 +548,21 @@ def _register(ctx: Ctx, layer: str, entries: list[dict], *, source: str,
 
 
 def _apply_resolutions(ctx: Ctx, resolutions: list) -> None:
-    """复审回执销账：ref 全局唯一，跨层查；resolved=False 只更新 note 不销账。"""
+    """复审回执销账：ref 全局唯一，跨层查；resolved=False 只更新 note 不销账。
+
+    裁定 25（双文保留）：处置说明是「意见落点对照表」里人要看的东西，复审回执不得
+    无条件顶掉它——两处都有时处置说明在前、回执说明以「复审：」缀在后。
+    """
     for r in resolutions:
         for st in ctx.led.data["layers"].values():
             for op in st["opinions"]:
                 if op["ref"] == r.ref:
                     if r.resolved:
                         op["resolved"] = True
-                    op["note"] = r.note or op["note"]
+                    if op["note"] and r.note:
+                        op["note"] = f"{op['note']}；复审：{r.note}"
+                    else:
+                        op["note"] = r.note or op["note"]
 
 
 def _close_missing(ctx: Ctx, layer: str, source: str, issued_keys: set[str]) -> None:

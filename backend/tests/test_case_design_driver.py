@@ -827,3 +827,29 @@ def test_human_gate_undecided_beyond_nudge_cap_halts(tmp_path):
     led = Ledger.load(env.design)
     assert led.status == "halted"
     assert kb.upserts == [] and kb.deletes == []
+
+
+# ---- 裁定 25（复审回执不覆盖处置说明）----
+
+def test_re_review_note_keeps_disposition_note_in_order(tmp_path):
+    """双文保留：处置说明（h_opt）在前、复审回执（_apply_resolutions）以「复审：」缀在后。
+
+    意见落点对照表是人审门的主要读物，承载「改了什么」；评审子的一句回执不得把它顶掉。
+    旧实现 `op["note"] = r.note or op["note"]` 会把「已改」覆盖成「已补 ch-0002」。
+    """
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    task = ScriptTask({
+        "blk-chain-ALL-r0": _j({"opinions": [{"target": {"type": "node", "value": "ch-0001"},
+            "kind": "颗粒度", "ask": "补充退款子链路", "evidence": "design/drafts/chain/ALL.json"}],
+            "resolutions": []}),
+        "blk-chain-ALL-r1": _j({"opinions": [], "resolutions": [
+            {"ref": "op-01", "resolved": True, "note": "已补 ch-0002"}]}),
+    })
+    drain(env, kb, task, plan={"task_kind": "design", "entry_layer": "chain",
+                               "terminal_layer": "chain", "target_subtree": "",
+                               "source_files": [], "note": "只链层"})
+    op = Ledger.load(env.design).layer("chain")["opinions"][0]
+    assert op["ref"] == "op-01" and op["resolved"] is True
+    assert op["note"] == "已改；复审：已补 ch-0002"              # simulate 的处置说明仍在最前
+    assert "已改；复审：已补 ch-0002" in (env.design / "outline.md").read_text(encoding="utf-8")
