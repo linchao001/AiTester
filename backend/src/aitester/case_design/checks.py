@@ -9,12 +9,39 @@ from aitester.case_design.constants import CHAIN, LAYERS, POINT, PRIORITY_RANK, 
 
 _APPROVED = ("approved", "kb")      # 允许被下游引用的节点状态（kb=存量真相，视为已过审）
 
+# 层 → 引用宇宙桶名：build_universe 写入、run_checks 的 R-13 守卫读取，单一映射不散写。
+_BUCKET = {CHAIN: "chains", STORY: "stories", POINT: "points"}
+_BUCKET_ORDER: tuple[str, ...] = ("chains", "stories", "points")
+
+
+def _priority(value: object) -> str:
+    """生效优先级：缺省按 P1（与 rank 的兜底同源，M-a 用它拼 detail）。"""
+    return str(value or "P1")
+
+
+def _level(value: object) -> int | None:
+    """生效层级：非整数返回 None（M-b）——层级坏掉是**违例**，不是让门崩掉的异常。"""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return None
+
 
 def build_universe(nodes_by_layer: dict[str, list[dict]], kb_rows: dict[str, list[dict]],
                    scope: dict[str, set[str]]) -> dict:
-    """引用宇宙 = 本任务草稿 ∪ KB 存量；in_scope 标记本次任务范围内的节点。"""
+    """引用宇宙 = 本任务草稿 ∪ KB 存量；in_scope 标记本次任务范围内的节点。
+
+    范围语义（R-13/R-14）：
+    - scope 缺省或为空 dict = 全量任务，**所有节点都在范围内**（fail closed）。
+      「范围」绝不用「没打标」表达：否则全量树任务与「检查根本没跑」在大纲上同为 hard 全 0，
+      人审门唯一的信号就此静默丢失。
+    - 计划的 scope 只有 chains/stories 两键（见 T8 `_scope_for_checks`），点层节点的范围**从
+      所属故事继承**；否则 R-13 的守卫会把点层检查全部静音，后人新加的点层检查也会静默不响。
+    - 显式给出但集合为空（如 `{"chains": set(), "stories": set()}`）是调用方的有意收窄
+      （本 run 不进下游层），仍按「范围内无节点」处理，不做 fail closed。
+    """
     uni: dict[str, dict[str, dict]] = {"chains": {}, "stories": {}, "points": {}}
-    key_of = {CHAIN: "chains", STORY: "stories", POINT: "points"}
+    story_scope = scope.get("stories", set()) if scope else set()
     for source, state in ((kb_rows, "kb"), (nodes_by_layer, None)):
         for layer in LAYERS:
             for row in source.get(layer, []) or []:
@@ -26,10 +53,13 @@ def build_universe(nodes_by_layer: dict[str, list[dict]], kb_rows: dict[str, lis
                 item = dict(row)
                 item.setdefault("state", "kb" if state == "kb" else "approved")
                 if scope:
-                    scope_ids = scope.get("chains" if layer == CHAIN else
-                                          "stories" if layer == STORY else "points", set())
-                    item["in_scope"] = nid in scope_ids
-                uni[key_of[layer]][nid] = item
+                    if layer == POINT:
+                        item["in_scope"] = str(item.get("story") or "") in story_scope
+                    else:
+                        item["in_scope"] = nid in scope.get(_BUCKET[layer], set())
+                else:
+                    item["in_scope"] = True
+                uni[_BUCKET[layer]][nid] = item
     return uni
 
 
@@ -60,10 +90,24 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
     hard: list[dict] = []
 
     def add(code: str, layer: str, where: str, detail: str) -> None:
+        # R-13：引用**解析**走全宇宙（父节点/所属故事可以合法地落在范围外，仍必须找得到），
+        # 但只对**被点名的范围内节点**报违例。范围外节点是本次任务没动过的 KB 存量，修复指令
+        # 限定「只改被点名的 design/drafts/ 文件」，主智能体无法合法修复——报出来只会白烧满
+        # 5 轮修复环然后 halted；而大纲只渲染本任务节点，人也看不见这个 where。
+        # 守卫按 where 定位节点，不按 layer：empty_chain/empty_story 的 layer 标注的是
+        # 「缺失的那一层」，与被点名节点不在同一桶。
+        for bucket in _BUCKET_ORDER:
+            node = (universe.get(bucket) or {}).get(where)
+            if node is not None:
+                if not node.get("in_scope", True):
+                    return
+                break
         hard.append({"code": code, "layer": layer, "where": where, "detail": detail})
 
-    rank = lambda v: PRIORITY_RANK.get(str(v or "P1"), 1)  # noqa: E731
+    rank = lambda v: PRIORITY_RANK.get(_priority(v), 1)  # noqa: E731
 
+    # 输出顺序稳定（M-c）：修复环各轮之间、以及人类与主智能体看到的同一份缺陷清单，顺序必须
+    # 一致——违例按 (桶, 节点 id) 的自然序 emit，不跟随宇宙插入顺序（草稿列举顺序可能变）。
     # 父引用完整：断链（parent 不在宇宙）与闭环（parent 互指成环）都算破损，共用 broken_parent；
     # 闭环按 R-11 不新增 code，环上每个参与节点报一条。
     cycle_members = _parent_cycle_members(chains)
@@ -71,14 +115,20 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
         parent = str(chains[cid].get("parent") or "")
         add("broken_parent", CHAIN, cid, f"parent「{parent}」与祖先闭合成环，该分支在大纲中无法呈递")
 
-    for cid, c in chains.items():
+    for cid in sorted(chains):
+        c = chains[cid]
         parent = str(c.get("parent") or "")
         if parent:
             p = chains.get(parent)
             if p is None:
                 add("broken_parent", CHAIN, cid, f"parent「{parent}」不在引用宇宙内")
             else:
-                if int(c.get("level") or 0) != int(p.get("level") or 0) + 1:
+                level, parent_level = _level(c.get("level")), _level(p.get("level"))
+                if level is None or parent_level is None:
+                    bad = c if level is None else p
+                    add("cross_level", CHAIN, cid,
+                        f"level「{bad.get('level')}」不是整数，无法校验与父 {parent} 的层级连续性")
+                elif level != parent_level + 1:
                     add("cross_level", CHAIN, cid,
                         f"level={c.get('level')} 与父 {parent} level={p.get('level')} 不连续")
                 # 优先级沿树（R-12）：违例 = 子节点优先级**高于**其父（rank 更小）。
@@ -87,9 +137,11 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
                 # 子链路↔父链路、故事↔所属链路、测试点↔所属故事。
                 if rank(c.get("priority")) < rank(p.get("priority")):
                     add("priority_violation", CHAIN, cid,
-                        f"优先级 {c.get('priority')} 高于其父 {parent} 的 {p.get('priority')}")
-    for sid, s in stories.items():
-        parents = [str(x) for x in (s.get("chains") or [])]
+                        f"优先级 {_priority(c.get('priority'))} 高于其父 {parent} 的"
+                        f" {_priority(p.get('priority'))}")
+    for sid in sorted(stories):
+        s = stories[sid]
+        parents = sorted(str(x) for x in (s.get("chains") or []))
         if not parents:
             add("broken_parent", STORY, sid, "story 无 chains 引用")
         for cid in parents:
@@ -98,10 +150,12 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
                 add("broken_parent", STORY, sid, f"chains「{cid}」不在引用宇宙内")
             elif rank(s.get("priority")) < rank(p.get("priority")):
                 add("priority_violation", STORY, sid,
-                    f"优先级 {s.get('priority')} 高于其父 {cid} 的 {p.get('priority')}")
+                    f"优先级 {_priority(s.get('priority'))} 高于其父 {cid} 的"
+                    f" {_priority(p.get('priority'))}")
         if str(s.get("state")) not in _APPROVED:
             add("unapproved_ref", STORY, sid, f"节点状态 {s.get('state')} 未过审")
-    for pid, p in points.items():
+    for pid in sorted(points):
+        p = points[pid]
         sid = str(p.get("story") or "")
         parent = stories.get(sid)
         if parent is None:
@@ -109,13 +163,15 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
         else:
             if rank(p.get("priority")) < rank(parent.get("priority")):
                 add("priority_violation", POINT, pid,
-                    f"优先级 {p.get('priority')} 高于其父 {sid} 的 {parent.get('priority')}")
+                    f"优先级 {_priority(p.get('priority'))} 高于其父 {sid} 的"
+                    f" {_priority(parent.get('priority'))}")
         if str(p.get("state")) not in _APPROVED:
             add("unapproved_ref", POINT, pid, f"节点状态 {p.get('state')} 未过审")
 
     # 空链路按**子树**口径：链路自身或其任一子孙链路有故事认领即非空。
     # 简报的直接认领版与其 clean-tree 用例矛盾（P0 根链 ch-0001 只经子链 ch-0002 挂故事，
     # 须零违例）；按用例裁定。从有故事的链沿 parent 指针向上盖到根，重访即停，父成环亦终止。
+    # 认领关系读全宇宙（范围外的故事也算认领）——被点名节点仍由 add() 的 R-13 守卫把关。
     story_chains = {str(cid) for s in stories.values() for cid in (s.get("chains") or [])}
     covered: set[str] = set()
     for start in story_chains:
@@ -123,12 +179,12 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
         while cur in chains and cur not in covered:
             covered.add(cur)
             cur = str(chains[cur].get("parent") or "")
-    for cid, c in chains.items():
-        if c.get("in_scope") and cid not in covered:
+    for cid in sorted(chains):
+        if chains[cid].get("in_scope") and cid not in covered:
             add("empty_chain", STORY, cid, "范围内链路没有任何故事认领（空链路）")
     point_stories = {str(p.get("story") or "") for p in points.values()}
-    for sid, s in stories.items():
-        if s.get("in_scope") and sid not in point_stories:
+    for sid in sorted(stories):
+        if stories[sid].get("in_scope") and sid not in point_stories:
             add("empty_story", POINT, sid, "范围内故事没有任何测试点（空故事）")
 
     report = {
