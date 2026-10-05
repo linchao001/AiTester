@@ -33,8 +33,9 @@
 | P3 | **无 checkpointer 时 `interrupt` 静默通过**：不报错、不挂起、工具一个都不跑，图直接提前收尾 | checkpointer 是硬前提而非可选项；漏装的表现是「回答凭空断掉 + 执法等于零」 |
 | P4 | 同一 `thread_id` 复跑会把历史累积进 state（实测第二次跑完 `messages` 6 条，含上一轮的） | `thread_id` 必须 = `run_id`（每轮新建），只有 pending→resume 复用同一个 |
 | P5 | **拦截点不能放在工具内部**：一条 AIMessage 里两个 gated 并行调用时 interrupt 逐个挂；答第二个时整个工具节点体从头重跑，**第一个工具的函数体连副作用一起又执行一遍**（实测 `RUNS=['write_a:a.md:approve','write_a:a.md:approve','write_b:b.md:reject']`） | `write` 重复覆盖、`edit` 再改一遍、`shell` 重复执行一次 `del`/`mkdir`——都是真事故，此形态否决 |
-| P6 | **gate 节点形态成立**（`agent→gate→tools`，gate 逐条 `interrupt`、工具内部零 interrupt）：gate 体被重跑 3 次，**真写入各只 1 次**；用同 id 覆盖最后一条 AIMessage（`tool_calls` 只留批准的）后 `ToolNode` 只见批准的那条；被拒的调用由 gate 合成 `ToolMessage(status="error")` 回给模型，图继续跑到收尾；两条都拒时真写入为空 | 拦截点定在 gate；拒绝用「改写待执行清单 + 合成错误结果」表达，正对齐裁定「拒绝单条、本轮继续」 |
+| P6 | **gate 节点形态成立**（`agent→gate→tools`，gate 逐条 `interrupt`、工具内部零 interrupt）：gate 体被重跑 3 次，**真写入各只 1 次**；被拒的调用由 gate 合成 `ToolMessage(status="error")`，两条都拒时真写入为空。「同 id 覆盖成只剩批准的」这半条**已被 P9 否决** | 拦截点定在 gate；拒绝用「合成错误结果 + 执行侧按已有结果过滤」表达，正对齐裁定「拒绝单条、本轮继续」 |
 | P7 | gate 重跑会把**已答过的** custom 帧再发一遍（resume#2 段里 `gate c1` 重出现） | 前端折叠必须按 `call_id` 幂等去重，否则授权卡状态会被打回 |
+| P9 | **真机（DeepSeek）拒收「剔除被拒调用」的形状**（2026-10-05 走查项 4/5/6 实测）：部分拒绝 → `400 An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'`；全拒 → `400 Messages with role 'tool' must be a response to a preceding message with 'tool_calls'`。两种都是 `error` 帧收尾、**整轮不落盘**（用户那一行一起丢） | provider 的硬约束是「声明 ⇔ 结果」双向配对：清单必须完整，被拒的吃合成结果；「哪条真的跑」改由 tools 节点按有无结果过滤。假模型不吃形状，所以 P6 当时看不出——判别锁是 `check_tool_protocol` |
 
 ## 用户裁定（2026-10-04，逐条确认）
 
@@ -57,9 +58,9 @@ gate 节点体只做三件事，且**必须是纯判定**（P5 的教训：含 i
 
 1. 取最后一条 AIMessage 的 `tool_calls`，逐条算 `needs_approval(...)`；
 2. 需要批且记住表未命中的，按数组顺序**逐条** `interrupt(payload)`（P1/P7：一次只挂一条）；
-3. 按决策改写清单：批准的留在 `tool_calls` 里，被拒的从 `tool_calls` 剔除并为它合成 `ToolMessage(content="用户拒绝了此操作：…", status="error")`，用**同 id 覆盖**那条 AIMessage（P6）。
+3. 按决策合成结果：批准的什么都不做（留在清单里等执行），被拒的那几条各补一条 `ToolMessage(content="用户拒绝了此操作：…", status="error")`；**那条 AIMessage 的 `tool_calls` 一字不动**（P9：清单完整是 provider 的硬约束）。
 
-`ToolNode` 一行不改——它永远只执行已批准的调用，工具内部零 interrupt，因此不存在副作用二次执行。gate 之后用**条件边**：有批准 → `tools`，全拒 → 直接回 `agent`。理由是把「拒绝」的语义建立在实测过的行为上，而不是 `ToolNode` 拿到空 `tool_calls` 时「恰好不报错」这个巧合（P6 场景 3 实测确实不抛，但那是未承诺行为）。
+`ToolNode` 本身不改语义，但它前面加一层**过滤**：只把「清单里还没有对应 ToolMessage」的调用交给它（实测 `ToolNode` 会把最后一条 AIMessage 的 `tool_calls` 全跑一遍，不做任何去重，tool_node.py:1265），因此被拒的调用看得见、却不会再执行一次，工具内部零 interrupt，也就没有副作用二次执行。gate 之后仍是**条件边**：有未答的调用 → `tools`，全拒（都已有结果）→ 直接回 `agent`。理由是把「拒绝」的语义建立在实测过的行为上，而不是 `ToolNode` 拿到空 `tool_calls` 时「恰好不报错」这个巧合（P6 场景 3 实测确实不抛，但那是未承诺行为）。
 
 装配参数：`thread_id = run_id`（P4，每轮新建，pending→resume 复用）；`config.configurable` 同时带既有的 `RUN_CONTROL_KEY`，取消位仍能在节点之间被读到——待批期间用户按停止就是走这条路。
 
@@ -167,8 +168,8 @@ chip 三档文案（`free` 与 `strict` 的 `desc` 逐字取原型 `:1452-1453`�
 
 1. **判定矩阵表驱动**：三档 × 四类别 × 界内界外 × 记住命中/未命中，逐格钉 `needs_approval` 的返回值；`free` 全 False 单独钉（默认档零行为是红线）。
 2. **gate 重跑不重复副作用**（P5/P6 钉成回归锁）：一条 AIMessage 里两个待批并行调用，两个都批准后真执行次数必须**恰为 2**；只批一个则真执行为 1、被拒的那条不执行；两个都拒则 `ToolNode` 一次不跑且本轮继续收尾。
-3. **拒绝的形状**：合成 `ToolMessage` 的 `status == "error"`、内容含中文「用户拒绝了此操作」、`tool_call_id` 对齐；覆盖后的 AIMessage 同 id 且 `tool_calls` 只留批准的。
-4. **同 id 覆盖 + 条件边**：全拒时不经过 `tools` 节点（断言节点访问序列，不依赖 `ToolNode` 空跑行为）。
+3. **拒绝的形状**：合成 `ToolMessage` 的 `status == "error"`、内容含中文「用户拒绝了此操作」、`tool_call_id` 对齐；那条 AIMessage 同 id 且 `tool_calls` 原样完整（P9），批准的才真执行。
+4. **provider 协议配对 + 条件边**：批一条拒一条、以及全拒，续跑后每一次问模型的消息序列都必须「声明 ⇔ 结果」双向配对（假模型不吃形状，单独钉）；全拒时不经过 `tools` 节点（断言节点访问序列，不依赖 `ToolNode` 空跑行为）。
 5. **`thread_id` 隔离**（P4）：同一会话连发两轮，两个 `run_id` 各自独立，state 消息不累积；resume 用同一 `thread_id` 才续得上。
 6. **`~` 项目的对称性**：项目 dir 配成 `~/x` 时，判定用的解析口与 `fs_tool._resolve` 一致，界内文件真的落在展开后的家目录路径下（第 2 片教训的正面锁）。
 7. **事件与折叠**：`wait` 帧的字段严格取键；`streamState` 对同一 `call_id` 重发的 `wait` 幂等；`wait` 后收尾不误标「已完成」。

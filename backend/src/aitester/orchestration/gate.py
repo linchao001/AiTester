@@ -100,7 +100,7 @@ def plan_items(calls: list[dict[str, Any]], ctx: GateContext) -> list[AuthItem]:
 
 def make_gate_node(lookup: Callable[[RunnableConfig | None], GateContext | None]):
     """返回 gate 节点体。spec「架构与拦截点」的三件事一气呵成，不拆函数：
-    逐条判定 → 逐条 interrupt → 按决策改写清单 + 合成拒绝。
+    逐条判定 → 逐条 interrupt → 给被拒的调用合成结果。
     """
 
     def gate_node(state: dict, config: RunnableConfig) -> dict[str, list]:
@@ -126,11 +126,10 @@ def make_gate_node(lookup: Callable[[RunnableConfig | None], GateContext | None]
         # langgraph 的续跑值按「第几次挂起」位置匹配（实测 scratchpad.resume[idx]），
         # 中途改 remembered 会让下一次重跑的 plan_items 变短，后面的调用继承前一条的决策。
         ctx.remembered.update(remembered_keys)
-        if not rejected_ids:
-            return {"messages": []}
-        kept = [c for c in last.tool_calls if str(c.get("id")) not in rejected_ids]
-        replaced = last.model_copy(update={"tool_calls": kept})   # R4：同 id 覆盖
-        return {"messages": [replaced,
-                             *[i.rejected_message() for i in items if i.call_id in rejected_ids]]}
+        # 原样保留那条 AIMessage 的 tool_calls，只补被拒调用的结果：provider 的硬约束是
+        # 「声明了的每个 tool_call_id 都要有对应 tool 消息」，把被拒的剔出清单反而失衡
+        # （真机 400，见 test_chat_auth.check_tool_protocol）。不执行由 tools 节点负责。
+        return {"messages": [i.rejected_message()
+                             for i in items if i.call_id in rejected_ids]}
 
     return gate_node

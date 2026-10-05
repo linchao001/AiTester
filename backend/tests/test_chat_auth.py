@@ -181,6 +181,45 @@ def _thread_state(graph, thread_id: str):
     return graph.get_state({"configurable": {"thread_id": thread_id}})
 
 
+def check_tool_protocol(messages: list) -> None:
+    """按 provider 的硬约束核对发给模型的消息序列（真机 400 的复现口）。
+
+    DeepSeek 原文两条：'An assistant message with tool_calls must be followed by tool
+    messages responding to each tool_call_id' 与 "Messages with role 'tool' must be a
+    response to a preceding message with 'tool_calls'"。合起来即：每条带 tool_calls 的
+    AIMessage 之后、下一条非 tool 消息之前，ToolMessage 的 id 集合与它的 tool_calls
+    双向相等——少一条（被拒的没结果）多一条（结果找不到主人）都算违约。
+    """
+    from langchain_core.messages import ToolMessage
+    pending: set[str] = set()
+    for msg in messages:
+        if isinstance(msg, ToolMessage):
+            if msg.tool_call_id not in pending:
+                raise AssertionError(f"孤儿 tool 消息 {msg.tool_call_id}：上一条 AIMessage 没声明它")
+            pending.discard(msg.tool_call_id)
+            continue
+        if isinstance(msg, AIMessage):
+            if pending:
+                raise AssertionError(f"AIMessage 之前还欠着这些 tool_call_id 的结果：{sorted(pending)}")
+            pending = {str(c.get("id")) for c in msg.tool_calls}
+            continue
+        if pending:
+            raise AssertionError(f"tool_calls 未答完就插进了 {type(msg).__name__}：{sorted(pending)}")
+        pending = set()
+    if pending:
+        raise AssertionError(f"序列末尾还欠着这些 tool_call_id 的结果：{sorted(pending)}")
+
+
+class StrictProvider(ScriptProvider):
+    """每次问模型都先验协议：真机是 provider 侧报错，这里在同一条线上响亮失败。"""
+
+    name = "strict-scripted"
+
+    def invoke_messages(self, messages):
+        check_tool_protocol(messages)
+        return super().invoke_messages(messages)
+
+
 def test_graph_compiles_with_the_shared_checkpointer(tmp_path: Path) -> None:
     """P3：无 checkpointer 时 interrupt 静默通过 = 假执法。「装了、而且装的是单例」钉成回归锁。"""
     graph = build_agent_graph(MockProvider(), [])
@@ -277,11 +316,16 @@ def test_reject_keeps_the_round_alive_and_asks_the_model(tmp_path: Path) -> None
     assert out[-1]["tool_traces"] == []                          # R9：拒绝不进过程行
 
 
-def test_rejected_call_is_rewritten_out_of_the_pending_list(tmp_path: Path) -> None:
-    """P6 的两条硬形状：同 id 覆盖那条 AIMessage（tool_calls 只剩批准的）；合成拒绝三字段对齐。"""
+def test_rejected_call_keeps_its_slot_and_gets_a_rejection(tmp_path: Path) -> None:
+    """拒绝的形状（走查项 6 修复后的口径）：清单不动、被拒的吃合成 error 结果、只跑批准的。
+
+    旧口径「同 id 覆盖成只剩批准的」在真机被 DeepSeek 400 挡回：声明过的 tool_call_id
+    少了结果就是失衡序列。现在两件事分开锁——provider 看完整清单（check_tool_protocol），
+    执行看已有结果（counter.writes 只有一条）。
+    """
     from langchain_core.messages import ToolMessage
     counter = _Counting()
-    # 一条批准 + 一条拒绝：批准的 c2 真跑，拒绝的 c1 被剔出清单并收到 error
+    # 一条批准 + 一条拒绝：批准的 c2 真跑，拒绝的 c1 留在清单里并收到 error
     provider = ScriptProvider([
         _calls(("c1", "write", _outside("bad.md")), ("c2", "write", _outside("good.md"))),
         AIMessage(content="一个写了一个没写"),
@@ -298,9 +342,9 @@ def test_rejected_call_is_rewritten_out_of_the_pending_list(tmp_path: Path) -> N
     msgs = _thread_state(graph, "r7").values["messages"]
     original = msgs[1]                                           # 脚本第一轮那条 AIMessage
     assert isinstance(original, AIMessage)
-    rewritten = [m for m in msgs if isinstance(m, AIMessage) and m.id == original.id]
-    assert len(rewritten) == 1                                   # 同 id 覆盖，不是新追加一条
-    assert [c["id"] for c in rewritten[0].tool_calls] == ["c2"]  # 只留批准的
+    asserted = [m for m in msgs if isinstance(m, AIMessage) and m.id == original.id]
+    assert len(asserted) == 1                                    # 一条，不追加副本
+    assert [c["id"] for c in asserted[0].tool_calls] == ["c1", "c2"]   # 清单原样完整
     # 批准的 c2 执行后也有 ToolMessage（成功结果）：合成拒绝按 status=="error" 筛，
     # 与 spec 测试 3「拒绝的形状」的判据一致。
     rejected = [m for m in msgs if isinstance(m, ToolMessage) and m.status == "error"]
@@ -308,6 +352,48 @@ def test_rejected_call_is_rewritten_out_of_the_pending_list(tmp_path: Path) -> N
     assert rejected[0].status == "error" and rejected[0].name == "write"
     assert rejected[0].content.startswith("用户拒绝了此操作：")
     assert counter.writes == [str(resolve_path(str(tmp_path), "good.md"))]
+
+
+def test_partial_reject_keeps_the_provider_protocol(tmp_path: Path) -> None:
+    """走查项 6 的判别锁：一条批一条拒，续跑后问模型时消息序列必须自洽。
+
+    真机实测原形状被 DeepSeek 400 挡回（'must be followed by tool messages responding to
+    each tool_call_id'），整轮丢失且落盘为空——mock provider 不吃形状，只有这里能看见。
+    """
+    counter = _Counting()
+    provider = StrictProvider([
+        _calls(("c1", "write", _outside("bad.md")), ("c2", "write", _outside("good.md"))),
+        AIMessage(content="一个写了一个没写"),
+    ])
+    tools = _project_tools(tmp_path, counter)
+    args = dict(build=build_agent_graph, provider=provider, tools=tools,
+                messages=[HumanMessage(content="并行两个")], thread_id="rp1",
+                gate=_gate_ctx(tmp_path, "strict"))
+    list(stream_graph(**args))
+    list(stream_graph(resume=decision_from({"decision": REJECT}), **args))    # 拒 c1 → 挂 c2
+    out = list(stream_graph(resume=decision_from({"decision": APPROVE}), **args))
+    assert out[-1]["type"] == "finish"
+    assert out[-1]["reply"] == "一个写了一个没写"
+    assert counter.writes == [str(resolve_path(str(tmp_path), "good.md"))]
+    assert not (tmp_path / "bad.md").exists()
+
+
+def test_all_rejected_keeps_the_provider_protocol(tmp_path: Path) -> None:
+    """全拒的判别锁：被拒的那条也要有自己的拒绝结果，模型才能继续作答（走查项 6）。"""
+    counter = _Counting()
+    provider = StrictProvider([
+        _calls(("c1", "write", _outside("bad.md"))),
+        AIMessage(content="好的，我不写了"),
+    ])
+    tools = _project_tools(tmp_path, counter)
+    args = dict(build=build_agent_graph, provider=provider, tools=tools,
+                messages=[HumanMessage(content="写界外")], thread_id="rp2",
+                gate=_gate_ctx(tmp_path, "strict"))
+    list(stream_graph(**args))
+    out = list(stream_graph(resume=decision_from({"decision": REJECT}), **args))
+    assert out[-1]["reply"] == "好的，我不写了"
+    assert counter.writes == []
+    assert not (tmp_path / "bad.md").exists()
 
 
 def test_remember_lands_only_after_the_whole_loop(tmp_path: Path) -> None:
@@ -337,10 +423,16 @@ def test_remember_lands_only_after_the_whole_loop(tmp_path: Path) -> None:
 
 def test_all_rejected_routes_back_to_agent(tmp_path: Path) -> None:
     """全拒不经过 tools 节点：断言路由函数本身，不吃 ToolNode 拿到空清单时「恰好不报错」的巧合。"""
+    from langchain_core.messages import ToolMessage
     from aitester.orchestration.agent_graph import route_after_gate
     assert route_after_gate({"messages": [AIMessage(content="", tool_calls=[])]}) == "agent"
     call = {"id": "c1", "name": "write", "args": {}, "type": "tool_call"}
     assert route_after_gate({"messages": [AIMessage(content="", tool_calls=[call])]}) == "tools"
+    # 清单还在（provider 要看），但 c1 已有合成拒绝结果 → 没东西可执行了
+    answered = AIMessage(content="", tool_calls=[call], id="ai1")
+    assert route_after_gate({"messages": [
+        answered, ToolMessage(content="用户拒绝了此操作：写文件", tool_call_id="c1",
+                              name="write", status="error")]}) == "agent"
 
 
 def test_remembered_set_reaps_the_next_identical_call(tmp_path: Path) -> None:

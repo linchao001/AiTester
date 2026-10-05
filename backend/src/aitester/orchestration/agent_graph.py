@@ -46,18 +46,27 @@ def _gate_context(config: RunnableConfig | None) -> GateContext | None:
     return (config.get("configurable") or {}).get(GATE_KEY)
 
 
+def _unanswered(messages: list[BaseMessage]) -> tuple[int, list[Any]]:
+    """(最后一条带 tool_calls 的 AIMessage 下标, 它里面还没有结果可配对的调用)。
+
+    口径与 ToolNode 自己取消息一致（实测它反向扫到第一条 AIMessage 就开跑），
+    判据却是「有没有对应的 ToolMessage」而不是「在不在 tool_calls 里」——被拒的调用
+    由 gate 合成了 error 结果，所以它不再执行，但必须留在清单里给 provider 看。
+    """
+    answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if isinstance(msg, AIMessage):
+            return idx, [c for c in msg.tool_calls if str(c.get("id")) not in answered]
+    return -1, []
+
+
 def route_after_gate(state: AgentState) -> str:
     """gate 之后：还有批准的就执行，一条不剩的就回模型。
 
     显式边走全拒（P6 场景 3 实测 ToolNode 空跑不抛，但那是未承诺行为，不能当语义用）。
-    同 id 覆盖是**就地替换**，合成的拒绝 ToolMessage 落在被改写 AIMessage 之后（实测），
-    所以判据取最后一条 AIMessage——与 ToolNode 自己的取消息口径一致（实测它反向找
-    AIMessage），批准的那条才能真的开跑。
     """
-    last = next((m for m in reversed(state["messages"]) if isinstance(m, AIMessage)), None)
-    if last is not None and last.tool_calls:
-        return "tools"
-    return "agent"
+    return "tools" if _unanswered(state["messages"])[1] else "agent"
 
 
 def _round_no(state: AgentState) -> int:
@@ -140,10 +149,24 @@ def build_agent_graph(provider: LlmProvider, tools: list[AiTooler]) -> CompiledS
             return "gate"
         return END
 
+    def tools_node(state: AgentState, config: RunnableConfig) -> Any:
+        """只把没答过的调用交给 ToolNode——它自己会跑清单里的每一条（实测不过滤）。
+
+        清单完整（被拒的也留在里面）是给 provider 看的形状，执行则必须逐条排除已有结果，
+        否则一条「已拒绝」的写文件会在下一轮真的落盘。
+        """
+        messages = state["messages"]
+        idx, calls = _unanswered(messages)
+        if not calls:
+            return {"messages": []}
+        trimmed = messages[idx].model_copy(update={"tool_calls": calls})
+        return tool_node.invoke(
+            {"messages": [*messages[:idx], trimmed, *messages[idx + 1:]]}, config)
+
     graph = StateGraph(AgentState)
     graph.add_node("agent", agent_node)
     graph.add_node("gate", make_gate_node(_gate_context))
-    graph.add_node("tools", tool_node)
+    graph.add_node("tools", tools_node)
     graph.add_edge(START, "agent")
     graph.add_conditional_edges("agent", should_continue, {"gate": "gate", END: END})
     graph.add_conditional_edges("gate", route_after_gate, {"tools": "tools", "agent": "agent"})
