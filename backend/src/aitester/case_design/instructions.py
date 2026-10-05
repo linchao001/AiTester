@@ -33,6 +33,10 @@ def plan_instruction() -> str:
 def gen_instruction(layer: str, block: str, *, draft_path: str, ref_hint: str,
                     kb_manifest_path: str | None = None, opinions_path: str | None = None,
                     errors: list[str] | None = None, mode: str = "first_build") -> str:
+    # 更新态必须给既有节点清单路径：否则会把字面 None 写进模型可读的指令里，
+    # 诱导生成阶段做一次幻觉读文件（付费轮次）并落进待校验草稿。属编程错误，直接响亮失败。
+    if mode == "update" and not kb_manifest_path:
+        raise ValueError("mode=update 需要 kb_manifest_path")
     lines = [f"【编排·生成·{LAYER_CN[layer]}·块 {block}】（{_MODE_CN.get(mode, mode)}）",
              f"产出本块草稿并写入 {draft_path}（只写这一个文件）。"]
     if mode == "update":

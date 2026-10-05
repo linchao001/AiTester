@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from aitester.case_design.instructions import (
     attribute_instruction, gen_instruction, opt_instruction, plan_instruction,
 )
@@ -28,12 +30,36 @@ def test_validate_plan_ok_and_rejects(tmp_path: Path):
     assert any("miss.md" in e for e in errors) and any("design/" in e for e in errors)
 
 
+def test_validate_plan_rejects_absolute_and_escaping_source_files(tmp_path: Path):
+    """F6：绝对路径 / `..` 段一律拒列——否则 root/rel 落到 project_dir 之外，
+    存在性探测变成任意路径探针，路径还会被当「项目相对路径」写进提示词。"""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "req.md").write_text("需求", encoding="utf-8")
+    escape = str(tmp_path / "docs" / "req.md")          # 确实存在，用于证明拒列与存在性无关
+    raw = {"task_kind": "design", "entry_layer": "chain", "terminal_layer": "point",
+           "target_subtree": "", "note": "",
+           "source_files": [f"/{escape.lstrip('/')}", escape, "docs/../docs/req.md",
+                            "../outside.md", "docs/req.md"]}
+    desc, errors = validate_plan(raw, str(tmp_path))
+    assert desc == {}
+    assert sum("项目相对路径" in e for e in errors) == 4   # 前四项被拒，最后一项合法
+    assert not any(e.endswith("：docs/req.md") for e in errors)      # 合法相对路径不误拒
+    assert not any("不存在" in e for e in errors)                    # 拒列先于探测，不做任意路径探针
+
+
 def test_summarize_probe_p3_rule():
     ok = summarize_probe("chain", [{"id": "ch-0001", "type": "chain", "parent": ""}])
     assert ok["maintained"] is True
     bad = summarize_probe("chain", [{"id": "ch-0001", "type": "chain"}])          # 缺 parent
     assert bad["maintained"] is False
     assert summarize_probe("story", [])["maintained"] is False
+
+    # 各层父引用规则（F10 补测）：story 看 chains、point 看 story，缺任一件即整层未维护
+    assert summarize_probe("story", [{"id": "st-0001", "type": "story", "chains": ["ch-0001"]}])["maintained"] is True
+    assert summarize_probe("story", [{"id": "st-0001", "type": "story", "chains": []}])["maintained"] is False
+    assert summarize_probe("point", [{"id": "pt-0001", "type": "point", "story": "st-0001"}])["maintained"] is True
+    assert summarize_probe("point", [{"id": "pt-0001", "type": "point", "story": ""}])["maintained"] is False
+    assert summarize_probe("chain", [{"id": "ch-0001", "type": "story", "parent": ""}])["maintained"] is False
 
 
 def test_plan_layers_和_blocks():
@@ -70,10 +96,19 @@ def test_plan_layers_和_blocks():
     assert materialize_blocks("point", scope) == ["st-0001", "st-0002"]
 
 
-def test_init_task_shape():
+def test_in_scope_targets_phantom_subtree_is_empty_scope():
+    """F4：target_subtree 指向不存在的链路 id → 范围为空，不为幻影链路物化块。"""
+    chain_rows = [{"id": "ch-0001", "parent": "", "level": 1}, {"id": "ch-0002", "parent": "ch-0001", "level": 2}]
+    story_rows = [{"id": "st-0001", "chains": ["ch-0002"]}, {"id": "st-0002", "chains": ["ch-0001"]}]
+    scope = in_scope_targets({"target_subtree": "ch-9999"}, chain_rows, story_rows)
+    assert scope["chains"] == set() and scope["stories"] == set()
+    assert materialize_blocks("story", scope) == []
+    assert materialize_blocks("point", scope) == []
+
+
+def test_init_task_shape(tmp_path: Path):
     from aitester.case_design.ledger import Ledger
-    import tempfile
-    led = Ledger.fresh(Path(tempfile.mkdtemp()) )
+    led = Ledger.fresh(tmp_path)
     descriptor = {"task_kind": "design", "entry_layer": "chain", "terminal_layer": "point",
                   "target_subtree": "", "source_files": [], "note": ""}
     probe = {l: {"maintained": False, "count": 0, "evidence": "空"} for l in ("chain", "story", "point")}
@@ -82,6 +117,15 @@ def test_init_task_shape():
     assert led.data["task"]["plan"]["blocks"]["chain"] == ["ALL"]
     assert led.layer("chain")["mode"] == "first_build"
     assert led.cursor["stage"] == "gen" and led.cursor["layer"] == "chain"
+
+    # F10 补测：游标块、逐层状态与块清单形状
+    assert led.cursor["block"] == "ALL"
+    for layer in ("chain", "story", "point"):
+        state = led.layer(layer)
+        assert state["state"] == "pending" and state["mode"] == "first_build"
+        expected = [{"id": "ALL", "state": "todo", "round": 0}] if layer == "chain" else []
+        assert state["blocks"] == expected
+    assert led.data["task"]["plan"]["budget"] == {"round_cap": 5}   # F5：取自 constants.ROUND_CAP
 
 
 def test_instructions_carry_paths_and_schema():
@@ -102,22 +146,62 @@ def test_instructions_carry_paths_and_schema():
     assert "业务信息不足" in a and "成本超限" in a
 
 
+def test_gen_instruction_update_requires_kb_manifest_path():
+    """F3：更新态缺清单路径要响亮失败——否则把字面 None 写进模型指令，
+    在生成阶段诱导一次幻觉读文件（付费轮次）并污染待校验草稿。"""
+    with pytest.raises(ValueError, match="kb_manifest_path"):
+        gen_instruction("story", "ch-0001", draft_path="d", ref_hint="r", mode="update")
+    with pytest.raises(ValueError, match="mode=update 需要 kb_manifest_path"):
+        gen_instruction("chain", "ALL", draft_path="d", ref_hint="r", kb_manifest_path="", mode="update")
+
+    first = gen_instruction("chain", "ALL", draft_path="d", ref_hint="r")   # 首建态无需清单
+    assert "None" not in first and "首建" in first and "既有节点清单" not in first
+
+
+_LEDGER_DATA = {
+    "task": {"started_at": "t", "descriptor": {"task_kind": "design", "entry_layer": "chain",
+             "terminal_layer": "point", "target_subtree": "", "note": ""},
+             "probe": {"chain": {"maintained": False, "count": 0, "evidence": "空"}},
+             "plan": {"blocks": {"chain": ["ALL"], "story": [], "point": []},
+                      "budget": {"round_cap": 5}}, "replans": []},
+    "layers": {"chain": {"state": "done", "mode": "first_build"},
+               "story": {"state": "stale_pending", "mode": "update"},
+               "point": {"state": "pending", "mode": "first_build"}},
+}
+
+
+def _outline(nodes_by_layer: dict, report: dict, extras: dict, *, replans: list | None = None) -> str:
+    """夹具：账本切片按层状态取自 _LEDGER_DATA，仅替换本次呈递内容。"""
+    data = {"task": {**_LEDGER_DATA["task"], "replans": replans or []},
+            "layers": _LEDGER_DATA["layers"]}
+    return compose_outline(data, nodes_by_layer, report, extras)
+
+
+def _section(md: str, title: str) -> list[str]:
+    """取「## title」到下一个二级标题之间的正文行（丢掉两侧的空行，只留条目）。"""
+    lines = md.splitlines()
+    start = next(i for i, line in enumerate(lines) if line == f"## {title}")
+    body = []
+    for line in lines[start + 1:]:
+        if line.startswith("## "):
+            break
+        body.append(line)
+    while body and body[-1] == "":
+        body.pop()
+    return body
+
+
 def test_compose_outline_sections():
-    ledger_data = {
-        "task": {"started_at": "t", "descriptor": {"task_kind": "design", "entry_layer": "chain",
-                 "terminal_layer": "point", "target_subtree": "", "note": ""},
-                 "probe": {"chain": {"maintained": False, "count": 0, "evidence": "空"}},
-                 "plan": {"blocks": {"chain": ["ALL"], "story": [], "point": []},
-                          "budget": {"round_cap": 5}}, "replans": []},
-        "layers": {"chain": {"state": "done", "mode": "first_build"},
-                   "story": {"state": "stale_pending", "mode": "update"},
-                   "point": {"state": "pending", "mode": "first_build"}},
-    }
-    nodes_by_layer = {"chain": [{"id": "ch-0001", "name": "下单链路", "op": "upsert",
-                                 "state": "新增", "priority": "P0"}],
+    ledger_data = _LEDGER_DATA
+    nodes_by_layer = {"chain": [{"id": "ch-0001", "name": "示例链路甲", "op": "upsert",
+                                 "parent": "", "state": "新增", "priority": "P0"}],
                       "story": [], "point": []}
-    report = {"hard": [], "report": {"empty_seam": 0, "matrix_unreasoned": 0, "unresolved": 1}}
-    extras = {"claims": [], "matrix_notes": [],
+    report = {"hard": [{"code": "broken_parent", "layer": "story", "where": "st-0003",
+                        "detail": "父引用 ch-9999 不存在"}],
+              "report": {"empty_seam": 0, "matrix_unreasoned": 0, "unresolved": 1}}
+    extras = {"claims": [{"claimant": "块评审", "claim": "交界阶段归属", "verdict": "unclaimed", "owner": ""},
+                          {"claimant": "全局审", "claim": "上下游归属", "verdict": "claimed", "owner": "st-0002"}],
+              "matrix_notes": [{"entity": "实体甲", "story": "st-0002", "reason": "该故事不触及此实体"}],
               "unresolved": [{"layer": "chain", "ref": "op-03", "ask": "补一条",
                               "cause": "评审分歧", "note": "两子意见互斥"}],
               "duplicates": [["st-0007", "st-0012"]]}
@@ -126,3 +210,119 @@ def test_compose_outline_sections():
     assert "stale_pending" in md or "失效待重算" in md
     assert "评审分歧" in md and "st-0007" in md
     assert "结构指标" in md
+
+    # F10 补测：hard 非零明细行、接缝归属表的空归属/已核对两态、矩阵复核行
+    assert "- hard：1 项未清零" in md
+    assert "  - [broken_parent] story/st-0003：父引用 ch-9999 不存在" in md
+    assert "- 块评审 声称「交界阶段归属」→ 空归属（未消化）（owner=）" in md
+    assert "- 全局审 声称「上下游归属」→ 已核对（owner=st-0002）" in md
+    assert "- （实体甲, st-0002）不需要：该故事不触及此实体" in md
+
+
+def test_outline_deletes_appear_once_per_layer():
+    """F1：三层各自的 delete 节点都只进「删除」清单一行，且不在树上以存活形态出现。"""
+    nodes_by_layer = {
+        "chain": [{"id": "ch-0001", "name": "示例链路甲", "op": "upsert", "parent": "",
+                   "state": "新增", "priority": "P0"},
+                  {"id": "ch-0009", "name": "示例链路乙", "op": "delete", "reason": "并入甲"}],
+        "story": [{"id": "st-0001", "name": "示例故事一", "op": "upsert", "chains": ["ch-0001"],
+                   "state": "新增"},
+                  {"id": "st-0009", "name": "示例故事九", "op": "delete", "reason": "与 st-0001 重复"},
+                  {"id": "st-0010", "op": "delete", "reason": "删除节点本就无 name（T2 口径）"}],
+        "point": [{"id": "pt-0001", "name": "示例的点", "op": "upsert", "story": "st-0001",
+                   "directions": ["正向"], "entities": ["实体甲"], "state": "新增"},
+                  {"id": "pt-0009", "name": "示例点九", "op": "delete", "reason": "不在范围"}],
+    }
+    md = _outline(nodes_by_layer, {"hard": [], "report": {}},
+                  {"claims": [], "matrix_notes": [], "unresolved": [], "duplicates": []})
+    for nid in ("ch-0009", "st-0009", "st-0010", "pt-0009"):
+        assert md.count(nid) == 1, nid                     # 一次：删除清单里的唯一一行
+    tree = _section(md, "增量树")
+    assert [line for line in tree if "删除" in line] == [
+        "- ch-0009 示例链路乙（删除：并入甲）",
+        "- st-0009 示例故事九（删除：与 st-0001 重复）",
+        "- st-0010 （删除：删除节点本就无 name（T2 口径））",
+        "- pt-0009 示例点九（删除：不在范围）",
+    ]
+    assert "- ch-0001 示例链路甲（新增，P0）" in md          # 存活节点照常成树
+    assert "  - st-0001 示例故事一（新增，chains: ch-0001）" in md
+    assert "    - pt-0001 示例的点（方向: 正向；实体: 实体甲）" in md
+
+
+def test_outline_renders_orphan_branch():
+    """F2：驱动只把「本次涉及的草稿节点」交给大纲（窄子树任务、父节点被删时上游父节点不在
+    输入里）。父引用落空的链路按根起树并递归下钻——否则整条分支（含其下 upsert 的故事与测试点）
+    静默消失，非空任务会在人审门呈「- （本次无增量节点）」，人类据假完整大纲批准回写。"""
+    nodes_by_layer = {
+        "chain": [{"id": "ch-0001", "name": "示例链路甲", "op": "upsert", "parent": "",
+                   "state": "存量", "priority": "P0"},
+                  {"id": "ch-0003", "name": "示例链路丙", "op": "upsert", "parent": "ch-0002",
+                   "state": "更新", "priority": "P1"},
+                  {"id": "ch-0004", "name": "示例链路丁", "op": "upsert", "parent": "ch-0003",
+                   "state": "更新", "priority": "P2"}],
+        "story": [{"id": "st-0001", "name": "示例故事一", "op": "upsert", "chains": ["ch-0001"],
+                   "state": "新增"},
+                  {"id": "st-0004", "name": "示例故事四", "op": "upsert", "chains": ["ch-0004"],
+                   "state": "新增"}],
+        "point": [{"id": "pt-0004", "name": "示例的点四", "op": "upsert", "story": "st-0004",
+                   "directions": ["正向"], "entities": ["实体丙"], "state": "新增"}],
+    }
+    tree = _section(_outline(nodes_by_layer, {"hard": [], "report": {}},
+                             {"claims": [], "matrix_notes": [], "unresolved": [], "duplicates": []}),
+                    "增量树")
+    assert tree == [
+        "- ch-0001 示例链路甲（存量，P0）",                       # 一级根照常
+        "  - st-0001 示例故事一（新增，chains: ch-0001）",
+        "- ch-0003 示例链路丙（更新，P1）",                       # 父引用落空 → 按根起树
+        "  - ch-0004 示例链路丁（更新，P2）",                     # 孤儿分支递归下钻
+        "    - st-0004 示例故事四（新增，chains: ch-0004）",
+        "      - pt-0004 示例的点四（方向: 正向；实体: 实体丙）",
+        "- [用户故事层] 失效待重算（下次任务重跑）",
+    ]
+    assert "- （本次无增量节点）" not in "\n".join(tree)
+
+
+def test_outline_terminates_on_duplicated_chain_id():
+    """F2 递归的自保：父子引用成环或重复 id 的异常草稿，同一链路只呈递一次、不递归失控。"""
+    nodes_by_layer = {
+        "chain": [{"id": "ch-0001", "name": "示例链路甲", "op": "upsert", "parent": "",
+                   "state": "新增", "priority": "P0"},
+                  {"id": "ch-0001", "name": "示例链路甲", "op": "upsert", "parent": "ch-0001",
+                   "state": "新增", "priority": "P0"}],
+        "story": [], "point": [],
+    }
+    tree = _section(_outline(nodes_by_layer, {"hard": [], "report": {}},
+                             {"claims": [], "matrix_notes": [], "unresolved": [], "duplicates": []}),
+                    "增量树")
+    assert [line for line in tree if line.lstrip("- ").startswith("ch-0001 ")] == [
+        "- ch-0001 示例链路甲（新增，P0）"]
+
+
+def test_outline_empty_and_populated_lists_have_no_blank_artifacts():
+    """F8：清单为空出「- 无」，非空只出条目本身；重规划事件不悬空。"""
+    nodes = {"chain": [{"id": "ch-0001", "name": "示例链路甲", "op": "upsert", "parent": "",
+                        "state": "新增", "priority": "P0"}], "story": [], "point": []}
+    report = {"hard": [], "report": {"empty_seam": 0, "matrix_unreasoned": 0, "unresolved": 0}}
+    populated = {"claims": [{"claimant": "块评审", "claim": "取消阶段归属", "verdict": "claimed",
+                             "owner": "st-0002"}],
+                 "matrix_notes": [{"entity": "实体甲", "story": "st-0002", "reason": "不触及"}],
+                 "unresolved": [{"layer": "story", "ref": "op-01", "ask": "补边界",
+                                 "cause": "业务信息不足", "note": "缺需求"}],
+                 "duplicates": [["st-0007", "st-0012"]]}
+    md = _outline(nodes, report, populated,
+                  replans=[{"at": "2026-10-05T10:00:00", "trigger": "范围收窄"}])
+    for title in ("重复标注清单", "接缝归属表（②摘要）", "矩阵复核（③「不需要」的业务理由）",
+                  "未消化项（含不收敛归因）"):
+        body = _section(md, title)
+        assert body and all(line.startswith("- ") for line in body), title   # 只有条目，无空行产物
+        assert "- 无" not in body, title
+    plan_body = _section(md, "本次计划")
+    head = next(i for i, line in enumerate(plan_body) if line.startswith("- 重规划事件："))
+    assert plan_body[head] == "- 重规划事件："                # 有事件：标题行 + 子项，无悬空值
+    assert plan_body[head + 1] == "  - [2026-10-05T10:00:00] 范围收窄"
+
+    empty = _outline(nodes, report, {"claims": [], "matrix_notes": [], "unresolved": [], "duplicates": []})
+    for title in ("重复标注清单", "接缝归属表（②摘要）", "矩阵复核（③「不需要」的业务理由）",
+                  "未消化项（含不收敛归因）"):
+        assert _section(empty, title) == ["- 无"], title
+    assert "- 重规划事件：无" in empty

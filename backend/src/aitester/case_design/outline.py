@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from aitester.case_design.constants import LAYER_CN, LAYERS
+from aitester.case_design.constants import CHAIN, LAYER_CN, LAYERS, POINT, STORY
 
 _LAYER_STATE_CN = {"done": "已定稿", "audited": "已过审", "active": "进行中", "pending": "未开始",
                    "stale_pending": "失效待重算（下次任务重跑）", "skipped": "本次不动"}
 
 
 def _tree_lines(nodes_by_layer: dict, layers: dict) -> list[str]:
-    chains = [n for n in nodes_by_layer.get("chain", []) if n.get("op") != "delete"]
-    stories = nodes_by_layer.get("story", [])
-    points = nodes_by_layer.get("point", [])
+    deleted = [n for layer in LAYERS
+               for n in nodes_by_layer.get(layer, []) if n.get("op") == "delete"]
+    chains = [n for n in nodes_by_layer.get(CHAIN, []) if n.get("op") != "delete"]
+    stories = [n for n in nodes_by_layer.get(STORY, []) if n.get("op") != "delete"]
+    points = [n for n in nodes_by_layer.get(POINT, []) if n.get("op") != "delete"]
     lines: list[str] = []
     by_parent: dict[str, list[dict]] = {}
     for c in chains:
@@ -24,7 +26,14 @@ def _tree_lines(nodes_by_layer: dict, layers: dict) -> list[str]:
     for p in points:
         points_of.setdefault(str(p.get("story") or ""), []).append(p)
 
+    chain_ids = {str(c.get("id")) for c in chains}
+    walked: set[str] = set()          # 父子引用成环（异常草稿）时同一链路只走一次，绝不挂死
+
     def walk_chain(node: dict, indent: int) -> None:
+        cid = str(node["id"])
+        if cid in walked:
+            return
+        walked.add(cid)
         mark = node.get("state", "")
         lines.append(f"{'  ' * indent}- {node['id']} {node.get('name', '')}"
                      f"（{mark}，{node.get('priority', 'P1')}）")
@@ -35,13 +44,20 @@ def _tree_lines(nodes_by_layer: dict, layers: dict) -> list[str]:
                 lines.append(f"{'  ' * (indent + 2)}- {p['id']} {p.get('name', '')}"
                              f"（方向: {'/'.join(p.get('directions') or [])}；"
                              f"实体: {','.join(p.get('entities') or [])}）")
-    for root in by_parent.get("", []):
+        for child in by_parent.get(cid, []):        # 子链路连同其下故事/测试点一起呈递
+            walk_chain(child, indent + 1)
+
+    # 驱动只把「本次涉及的草稿节点」交给大纲：窄子树任务、或父节点被删时，上游父节点不在输入里。
+    # 只从 parent 为空的节点起树会让整条分支（含其下 upsert 的故事/测试点）静默消失，
+    # 呈给人类的是一份假完整大纲。故：父为空、或父引用落空的链路都按根起树，并递归下钻。
+    orphans = [c for c in chains if str(c.get("parent") or "")
+               and str(c.get("parent") or "") not in chain_ids]
+    for root in by_parent.get("", []) + orphans:
         walk_chain(root, 0)
     for layer in LAYERS:
         st = layers.get(layer, {}).get("state", "")
         if st in ("stale_pending", "skipped"):
             lines.append(f"- [{LAYER_CN[layer]}层] {_LAYER_STATE_CN.get(st, st)}")
-    deleted = [n for n in (chains + stories + points) if n.get("op") == "delete"]
     for d in deleted:
         lines.append(f"- {d['id']} {d.get('name', '')}（删除：{d.get('reason', '')}）")
     return lines or ["- （本次无增量节点）"]
@@ -63,13 +79,16 @@ def compose_outline(ledger_data: dict, nodes_by_layer: dict, report: dict, extra
         f"- 目标子树：{desc.get('target_subtree') or '全量'}",
         "- 探测：" + "；".join(f"{LAYER_CN[l]} {probe.get(l, {}).get('evidence', '未探测')}" for l in LAYERS),
         "- 层判定：" + "；".join(f"{LAYER_CN[l]}={layers.get(l, {}).get('mode', '')}" for l in LAYERS),
-        f"- 块序：链路 {plan.get('blocks', {}).get('chain')}；故事 {plan.get('blocks', {}).get('story')}；"
-        f"测试点 {plan.get('blocks', {}).get('point')}",
+        f"- 块序：链路 {plan.get('blocks', {}).get(CHAIN)}；故事 {plan.get('blocks', {}).get(STORY)}；"
+        f"测试点 {plan.get('blocks', {}).get(POINT)}",
     ]
     replans = task.get("replans") or []
-    lines.append("- 重规划事件：" + ("无" if not replans else ""))
-    for ev in replans:
-        lines.append(f"  - [{ev.get('at', '')}] {ev.get('trigger', '')}")
+    if replans:
+        lines.append("- 重规划事件：")
+        for ev in replans:
+            lines.append(f"  - [{ev.get('at', '')}] {ev.get('trigger', '')}")
+    else:
+        lines.append("- 重规划事件：无")
     lines += ["", "## 增量树", *_tree_lines(nodes_by_layer, layers), "", "## 结构指标（④）"]
     hard = report.get("hard") or []
     lines.append("- hard：" + ("全部为 0" if not hard else f"{len(hard)} 项未清零"))
@@ -87,19 +106,25 @@ def compose_outline(ledger_data: dict, nodes_by_layer: dict, report: dict, extra
                      f"（归因：{u.get('cause', '')}——{u.get('note', '')}）")
     lines += ["", "## 重复标注清单"]
     duplicates = extras.get("duplicates") or []
-    lines.append("- 无" if not duplicates else "")
-    for group in duplicates:
-        lines.append(f"- {' / '.join(group)}（请人工决定是否合并）")
+    if duplicates:
+        for group in duplicates:
+            lines.append(f"- {' / '.join(group)}（请人工决定是否合并）")
+    else:
+        lines.append("- 无")
     lines += ["", "## 接缝归属表（②摘要）"]
     claims = extras.get("claims") or []
-    lines.append("- 无" if not claims else "")
-    for c in claims:
-        lines.append(f"- {c.get('claimant', '')} 声称「{c.get('claim', '')}」→ "
-                     f"{'空归属（未消化）' if c.get('verdict') == 'unclaimed' else '已核对'}"
-                     f"（owner={c.get('owner', '')}）")
+    if claims:
+        for c in claims:
+            lines.append(f"- {c.get('claimant', '')} 声称「{c.get('claim', '')}」→ "
+                         f"{'空归属（未消化）' if c.get('verdict') == 'unclaimed' else '已核对'}"
+                         f"（owner={c.get('owner', '')}）")
+    else:
+        lines.append("- 无")
     lines += ["", "## 矩阵复核（③「不需要」的业务理由）"]
     notes = extras.get("matrix_notes") or []
-    lines.append("- 无" if not notes else "")
-    for n in notes:
-        lines.append(f"- （{n.get('entity', '')}, {n.get('story', '')}）不需要：{n.get('reason', '')}")
+    if notes:
+        for n in notes:
+            lines.append(f"- （{n.get('entity', '')}, {n.get('story', '')}）不需要：{n.get('reason', '')}")
+    else:
+        lines.append("- 无")
     return "\n".join(lines) + "\n"

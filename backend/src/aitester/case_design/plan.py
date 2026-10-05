@@ -3,13 +3,22 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from aitester.case_design.constants import CHAIN, LAYERS, POINT, STORY
+from aitester.case_design.constants import CHAIN, LAYERS, POINT, ROUND_CAP, STORY
 
 _TASK_KINDS = ("design", "mixed", "case_only")
+_ABSOLUTE_RE = re.compile(r"^(?:[A-Za-z]:|/)")   # 盘符开头（Windows）或 / 开头（POSIX/UNC）
+
+
+def _is_project_relative(rel: str) -> bool:
+    """项目相对路径：不得为绝对路径，也不得含 ``..`` 段（否则 root/rel 逃出 project_dir）。"""
+    if _ABSOLUTE_RE.match(rel):
+        return False
+    return ".." not in rel.split("/")
 
 
 def validate_plan(raw: Any, project_dir: str) -> tuple[dict, list[str]]:
@@ -39,6 +48,9 @@ def validate_plan(raw: Any, project_dir: str) -> tuple[dict, list[str]]:
             continue
         if rel.startswith("design/"):
             errors.append(f"来源文件不得列 design/ 工作稿：{rel}")
+            continue
+        if not _is_project_relative(rel):
+            errors.append(f"来源文件必须是项目相对路径（不得为绝对路径或含 .. 段）：{rel}")
             continue
         if not (root / rel).is_file():
             errors.append(f"来源文件不存在：{rel}")
@@ -104,10 +116,14 @@ def _subtree_ids(root_id: str, chain_rows: list[dict]) -> set[str]:
 
 
 def in_scope_targets(descriptor: dict, chain_rows: list[dict], story_rows: list[dict]) -> dict[str, set[str]]:
-    """范围 = 目标子树（target_subtree 为空 = 全集）；故事按 chains 与链路范围相交。"""
+    """范围 = 目标子树（target_subtree 为空 = 全集）；故事按 chains 与链路范围相交。
+
+    子树先与真实链路 id 求交：target_subtree 指向不存在的节点时得到空范围，
+    驱动据此走「范围里没有任何块」的显式路径，而不是为幻影链路物化块。
+    """
     all_chains = {str(r["id"]) for r in chain_rows}
     target = str(descriptor.get("target_subtree") or "")
-    chains = _subtree_ids(target, chain_rows) if target else set(all_chains)
+    chains = (_subtree_ids(target, chain_rows) & all_chains) if target else set(all_chains)
     stories = {str(r["id"]) for r in story_rows
                if chains & {str(c) for c in (r.get("chains") or [])}}
     return {"chains": chains, "stories": stories}
@@ -135,7 +151,7 @@ def init_task(ledger_data: dict, descriptor: dict, probe: dict, modes: dict[str,
         "probe": probe,
         "plan": {"blocks": blocks,
                  "block_rule": {"chain": "ALL", "story": "per chain", "point": "per story"},
-                 "budget": {"round_cap": 5}},
+                 "budget": {"round_cap": ROUND_CAP}},
         "replans": [],
     }
     for layer in LAYERS:
