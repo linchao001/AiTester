@@ -1163,7 +1163,9 @@ def h_gate(ctx: Ctx) -> Any:
 
 # 批准措辞（闭合集）：回写是不可逆写，「解读子没提取到意见」不等于人说了通过。
 _APPROVAL_WORDS: tuple[str, ...] = ("通过", "批准", "同意", "确认", "回写")
-_PUNCT_RE = re.compile(r"[\s\W_]+", re.UNICODE)
+# 否定/延后标记：全句出现任一即不算明示批准。「不通过」「先别回写」里都含着批准词，字面
+# 匹配会把一句拒绝读成授权——而这条路径的失败代价是不可逆的 KB 写入，方向只能偏保守。
+_NEGATION_MARKS: tuple[str, ...] = ("不", "未", "别", "暂", "没", "先")
 _GATE_UNDECIDED = (
     "【人审门·待决】上面这条人审消息既没有可执行的意见，也没有明示批准（通过/批准/同意/确认/回写）。"
     "本轮不回写知识库，大纲 design/outline.md 维持原状。请把上述状态转述给人并等待其明确答复，"
@@ -1171,27 +1173,19 @@ _GATE_UNDECIDED = (
 )
 
 
-def _human_texts(messages: list[BaseMessage], limit: int = 3) -> list[str]:
-    """人审原话候选：最后 limit 条非空 HumanMessage（时间正序，末条=本轮）。
-
-    解读子吃不到会话历史（独立子图），措辞只能由驱动递进去；批准认**全部**候选
-    （多回合人审里「确认」可能落在倒数第二条），brief 只贴末条，免得把已被处置的旧话
-    重新当成新意见。
-    """
-    out: list[str] = []
+def _human_text(messages: list[BaseMessage]) -> str:
+    """本轮人审原话 = 最后一条非空 HumanMessage。批准只认这一条：更早的话在它那一轮就处置完了。"""
     for m in reversed(messages):
-        if isinstance(m, HumanMessage):
-            text = str(m.content or "").strip()
-            if text:
-                out.append(text)
-            if len(out) >= limit:
-                break
-    return list(reversed(out))
+        if isinstance(m, HumanMessage) and str(m.content or "").strip():
+            return str(m.content).strip()
+    return ""
 
 
-def _explicit_approval(texts: list[str]) -> bool:
-    """人话里是否出现明示批准措辞（剥掉空白与标点后做闭合集子串匹配）。"""
-    return any(word in _PUNCT_RE.sub("", text) for text in texts for word in _APPROVAL_WORDS)
+def _explicit_approval(text: str) -> bool:
+    """本轮人话是否是明示批准：出现批准措辞，且全句没有否定/延后标记。"""
+    if any(mark in text for mark in _NEGATION_MARKS):
+        return False
+    return any(word in text for word in _APPROVAL_WORDS)
 
 
 def _target_layer(ops: list) -> str:
@@ -1221,8 +1215,7 @@ def h_gate_interpret(ctx: Ctx) -> Any:
     led, gate = ctx.led, ctx.led.data["gate"]
     k = int(gate.get("int_round") or 0) + 1
     gate["int_round"] = k
-    human_texts = _human_texts(ctx.state_messages)
-    human_text = human_texts[-1] if human_texts else ""
+    human_text = _human_text(ctx.state_messages)
     brief = "\n".join([
         "【人审解读·大纲门】人审是最权威的评审。把人审原话转成结构化意见（纯批准或没有要改的内容 → opinions 留空）：",
         "人审原文：",
@@ -1238,7 +1231,7 @@ def h_gate_interpret(ctx: Ctx) -> Any:
     _archive_review(ctx, call_id, raw)
     if out.opinions:
         gate["unclear"] = 0                        # 人给了意见：待决计数清零
-    elif _explicit_approval(human_texts):
+    elif _explicit_approval(human_text):
         gate["approved_at"] = _now()
         gate["unclear"] = 0
         _go(ctx, "writeback")

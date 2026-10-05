@@ -776,6 +776,43 @@ def test_human_gate_requires_explicit_approval(tmp_path):
     assert len(kb.upserts) == 5 and kb.deletes == []         # 明示批准才回写
 
 
+def test_human_gate_negated_words_are_not_approval(tmp_path):
+    """I-5 裁定补刀：批准措辞落在否定/延后句里不是授权——「不通过」里也含着「通过」。
+
+    失败方向只能偏保守（待决：零写、状态不动），因为另一侧的代价是一次不可逆的回写。
+    """
+    for i, text in enumerate(("不通过", "先别回写", "暂不批准", "没确认")):
+        kb = StubKb()
+        env = _env(tmp_path / f"neg-{i}", kb)
+        drain(env, kb, ScriptTask())
+        frames: list[dict] = []
+        turn = _drive(env, {"messages": [HumanMessage(text)], "case": {}},
+                      ScriptTask(), writer=frames.append)
+        assert turn["case"]["route"] == "agent", text
+        assert frames == [], text                             # 待决不冒充终帧
+        led = Ledger.load(env.design)
+        assert led.status == "awaiting_review", text
+        assert led.data["gate"]["unclear"] == 1, text
+        assert kb.upserts == [] and kb.deletes == [], text
+
+
+def test_human_gate_approves_only_this_turn_message(tmp_path):
+    """I-5 裁定补刀：批准只认本轮那条人话——上一轮已被处置过的措辞不授权本轮的不可逆写。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask())
+    frames: list[dict] = []
+    turn = _drive(env, {"messages": [HumanMessage("通过"),
+                                     AIMessage(content="大纲已生成，等待人工评审。"),
+                                     HumanMessage("稍等")],
+                        "case": {}}, ScriptTask(), writer=frames.append)
+    assert turn["case"]["route"] == "agent"
+    assert frames == []
+    led = Ledger.load(env.design)
+    assert led.status == "awaiting_review" and led.data["gate"]["unclear"] == 1
+    assert kb.upserts == [] and kb.deletes == []
+
+
 def test_human_gate_undecided_beyond_nudge_cap_halts(tmp_path):
     """I-5 失败模式收口：连续待决问到 NUDGE_CAP 之上即 halted，绝不猜批准。"""
     kb = StubKb()
