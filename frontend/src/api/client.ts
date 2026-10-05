@@ -71,6 +71,8 @@ export interface AgentInfo {
 export interface CapabilityResponse {
   tools: ToolInfo[];
   agents: AgentInfo[];
+  /** 子智能体（被派发用）：与 agents 同形状，不进聊天页直选面（结构锁）。 */
+  subagents: AgentInfo[];
 }
 
 /** 带 HTTP 状态码与解析后响应体的 API 错误（Error 子类，旧 catch 路径兼容）。 */
@@ -297,16 +299,25 @@ export interface ChatStep {
 export type PermMode = "free" | "boundary" | "strict";
 export type AuthDecision = "approve" | "reject";
 
+/** 一次子智能体派发的三元组：call_id 对齐子卡与授权来源行，name/title 均为中文展示名。 */
+export interface SubagentRef {
+  call_id: string;
+  name: string;
+  title: string;
+}
+
 /** 一条 SSE 帧的落地形态：`event:` 名进 type，`data:` 的单行 JSON 摊平进来（与 router `_frame` 一一对应）。 */
 type Frame<T extends string, P> = { type: T } & P;
 export type StreamEvent =
   | Frame<"start", { run_id: string; session_id: string }>
   | Frame<"delta", { round: number; text: string }>
-  | Frame<"call", { tool: string; round: number; detail: string }>
-  | Frame<"step", { tool: string; ok: boolean; round: number; detail: string }>
+  | Frame<"call", { tool: string; round: number; detail: string; subagent?: SubagentRef }>
+  | Frame<"step", { tool: string; ok: boolean; round: number; detail: string; subagent?: SubagentRef }>
   | Frame<"draft", { draft: KbDraft }>
   | Frame<"wait", { call_id: string; tool: string; action: string; target: string;
-                    command: string; cwd: string; run_id: string }>
+                    command: string; cwd: string; run_id: string; subagent: SubagentRef | null }>
+  | Frame<"sub", { phase: "start" | "done" | "fail"; call_id: string; name: string; title: string;
+                   ok?: boolean; elapsed_ms?: number; tools?: number }>
   | Frame<"done", { reply: string; steps: ChatStep[]; session_id: string; title: string; stopped: boolean }>
   | Frame<"error", { detail: string }>;
 
@@ -319,7 +330,7 @@ export interface StreamBody {
   perm_mode?: PermMode;
 }
 
-const STREAM_EVENTS = new Set(["start", "delta", "call", "step", "draft", "wait", "done", "error"]);
+const STREAM_EVENTS = new Set(["start", "delta", "call", "step", "draft", "wait", "sub", "done", "error"]);
 
 /** POST + 流解析：EventSource 不能带 JSON body，WebSocket 又是多余的语义，故 fetch + getReader 手解。
  *  守门未过时后端回普通 JSON（400/404/502），照 apiFetch 口径抛 ApiError；守门过后才有事件。
@@ -349,7 +360,7 @@ async function postSse(url: string, body: object, onEvent: (ev: StreamEvent) => 
       if (line.startsWith("event:")) name = line.slice(6).trim();
       else if (line.startsWith("data:")) data = line.slice(5).trim();
     }
-    if (!STREAM_EVENTS.has(name)) return;   // 未知事件静默忽略（spec 事件表：前端只认这 8 类）
+    if (!STREAM_EVENTS.has(name)) return;   // 未知事件静默忽略（spec 事件表：前端只认这 9 类）
     let payload: object;
     try {
       payload = JSON.parse(data) as object;
@@ -408,6 +419,8 @@ export interface PendingCallInfo {
   target: string;      // 写盘目标路径 / 命令的工作目录，读类调用为空串
   command: string;     // 命令全文，非命令类为空串
   cwd: string;
+  /** 来自哪次子智能体派发（R3）；父层自己的调用为 null。 */
+  subagent: SubagentRef | null;
 }
 
 export interface PendingDecidedCall extends PendingCallInfo {

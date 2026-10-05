@@ -38,6 +38,8 @@ export default function AuthCard(p: Props) {
       {p.ask.command
         ? <pre className="d-diff">{p.ask.command}{p.ask.cwd ? `\n工作目录：${p.ask.cwd}` : ""}</pre>
         : <div className="d-sum">批准后立即执行，拒绝则跳过这一步并让模型继续作答。</div>}
+      {/* 派发来源（R3）：子智能体发起的授权在这里点名，用户知道批的是谁的调用 */}
+      {p.ask.subagent ? <div className="d-sum">来自子智能体「{p.ask.subagent.title}」</div> : null}
       <div className="d-acts">
         {p.decided === null && !p.queued && (
           <>

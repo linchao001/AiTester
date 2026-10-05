@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { AuthDecision, ChatMessage, ChatStep, PendingRunInfo } from "../../api/client";
-import { isWaiting, liveText, type PendingCall, type StreamingState } from "./streamState";
+import { isWaiting, liveText, type PendingCall, type StreamingState, type SubAgentRun } from "./streamState";
 import { fmtTime } from "./utils";
 import AuthCard from "./AuthCard";
 import { mdRender } from "../kb/utils";
@@ -27,14 +27,10 @@ interface Props {
   onChip: (text: string) => void;   // 原型 :1322-1324：chip 只填输入框，绝不自动发送
 }
 
-function Steps({ steps, pending }: { steps: ChatStep[]; pending?: PendingCall[] }) {
+function StepRows({ steps, pending }: { steps: ChatStep[]; pending?: PendingCall[] }) {
   const rows = pending ?? [];
-  if (!steps.length && !rows.length) return null;  // 无工具调用时整个过程块不渲染（spec 裁定 4）
   return (
-    // 有 ⏳ 行时强制展开：真机行为定义写着「工具轮次期间过程块可见且逐条增长」；
-    // pending 清空后 prop 变 undefined，用户此前的开合状态不再被受控属性抢走
-    <details className="thinking" open={rows.length ? true : undefined}>
-      <summary>🔧 执行过程</summary>
+    <>
       {steps.map((s, i) => (
         <div className="t-step" key={`${s.round}-${s.tool}-${i}`}>
           <span className="n">{i + 1}.</span>
@@ -49,7 +45,42 @@ function Steps({ steps, pending }: { steps: ChatStep[]; pending?: PendingCall[] 
           <span className="args">{p.detail}</span>
         </div>
       ))}
+    </>
+  );
+}
+
+function Steps({ steps, pending }: { steps: ChatStep[]; pending?: PendingCall[] }) {
+  const rows = pending ?? [];
+  if (!steps.length && !rows.length) return null;  // 无工具调用时整个过程块不渲染（spec 裁定 4）
+  return (
+    // 有 ⏳ 行时强制展开：真机行为定义写着「工具轮次期间过程块可见且逐条增长」；
+    // pending 清空后 prop 变 undefined，用户此前的开合状态不再被受控属性抢走
+    <details className="thinking" open={rows.length ? true : undefined}>
+      <summary>🔧 执行过程</summary>
+      <StepRows steps={steps} pending={pending} />
     </details>
+  );
+}
+
+/** 子卡状态短语（R9）：运行中转圈、收口报数、失败不粉饰。 */
+function subStatus(s: SubAgentRun): string {
+  if (s.status === "running") return "进行中…";
+  const seconds = ((s.elapsedMs ?? 0) / 1000).toFixed(1);
+  return s.status === "done" ? `✓ 完成 · ${s.tools} 次工具调用 · ${seconds}s` : "✕ 未完成";
+}
+
+function SubCards({ subs }: { subs: SubAgentRun[] }) {
+  if (!subs.length) return null;
+  return (
+    <>
+      {subs.map((s) => (
+        // 恒 open：子卡是「正在被派发」的现场，收合交给用户自己点（details 原生行为）
+        <details className="thinking" open key={s.callId}>
+          <summary>🤖 {s.title} · {subStatus(s)}</summary>
+          <StepRows steps={s.steps} pending={s.pending} />
+        </details>
+      ))}
+    </>
   );
 }
 
@@ -140,6 +171,7 @@ export default function MessageList(p: Props) {
         <div className="msg agent">
           <div className="who"><span className="avatar">Ai</span>AiTester</div>
           <Steps steps={p.live.steps} pending={p.live.pending} />
+          <SubCards subs={p.live.subs} />
           <div className="body md-preview"
             dangerouslySetInnerHTML={{ __html: mdRender(liveText(p.live)) }} />
           {/* 光标独立成行：mdRender 出的是块级元素，塞进同一段落会被浏览器的

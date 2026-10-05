@@ -15,6 +15,19 @@ export interface AuthAsk {
   callId: string; tool: string; action: string; target: string; command: string; cwd: string
 }
 
+/** 一次子智能体派发的 live 轨迹：sub start 建卡，带 subagent 标注的 call/step 归入本卡，sub done/fail 收卡。
+ *  只活在流内（R9）：finalize 后由父过程行接管，卡片不落盘。 */
+export interface SubAgentRun {
+  callId: string;
+  name: string;
+  title: string;
+  status: "running" | "done" | "fail";
+  elapsedMs: number | null;   // done/fail 帧才有
+  tools: number;              // done/fail 帧的工具调用数
+  pending: PendingCall[];     // 子体已宣告未回结果的调用（卡内 ⏳ 行）
+  steps: ChatStep[];          // 子体已回结果的过程行
+}
+
 export interface StreamingState {
   runId: string;
   sessionId: string;
@@ -22,6 +35,7 @@ export interface StreamingState {
   rounds: LiveRound[];
   pending: PendingCall[];
   steps: ChatStep[];
+  subs: SubAgentRun[];    // 子智能体卡片（R9：live-only，不参与 finalize）
   drafts: KbDraft[];
   auths: AuthAsk[];
   stopped: boolean;
@@ -31,8 +45,8 @@ export interface StreamingState {
 }
 
 export function newStreamState(): StreamingState {
-  return { runId: "", sessionId: "", title: "", rounds: [], pending: [], steps: [], drafts: [],
-    auths: [], stopped: false, terminal: false, done: null, fail: "" };
+  return { runId: "", sessionId: "", title: "", rounds: [], pending: [], steps: [], subs: [],
+    drafts: [], auths: [], stopped: false, terminal: false, done: null, fail: "" };
 }
 
 const callKey = (round: number, tool: string) => `${round}::${tool}`;
@@ -52,6 +66,14 @@ export function applyEvent(state: StreamingState, ev: StreamEvent): StreamingSta
       return { ...state, rounds };
     }
     case "call": {
+      const sub = ev.subagent;
+      if (sub) {
+        // 子帧不进父过程（R10）：只归入对应子卡；卡没建（start 帧被丢）时静默丢——父的 step{task} 仍会收口
+        return { ...state, subs: state.subs.map((s) => (s.callId === sub.call_id
+          ? { ...s, pending: [...s.pending,
+              { key: callKey(ev.round, ev.tool), tool: ev.tool, round: ev.round, detail: ev.detail }] }
+          : s)) };
+      }
       const key = callKey(ev.round, ev.tool);
       return {
         ...state,
@@ -60,6 +82,17 @@ export function applyEvent(state: StreamingState, ev: StreamEvent): StreamingSta
       };
     }
     case "step": {
+      const sub = ev.subagent;
+      if (sub) {
+        const key = callKey(ev.round, ev.tool);
+        return { ...state, subs: state.subs.map((s) => {
+          if (s.callId !== sub.call_id) return s;
+          const at = s.pending.findIndex((p) => p.key === key);
+          return { ...s,
+            pending: at < 0 ? s.pending : s.pending.filter((_, i) => i !== at),
+            steps: [...s.steps, { tool: ev.tool, ok: ev.ok, round: ev.round, detail: ev.detail }] };
+        }) };
+      }
       const key = callKey(ev.round, ev.tool);
       const at = state.pending.findIndex((p) => p.key === key);
       return {
@@ -78,6 +111,17 @@ export function applyEvent(state: StreamingState, ev: StreamEvent): StreamingSta
         auths: [...state.auths, { callId: ev.call_id, tool: ev.tool, action: ev.action,
           target: ev.target, command: ev.command, cwd: ev.cwd }],
       };
+    }
+    case "sub": {
+      // 同一 call_id 幂等（与 wait 同款）：重复的 start 不复制卡片
+      const at = state.subs.findIndex((s) => s.callId === ev.call_id);
+      const status = ev.phase === "start" ? "running" : ev.phase === "fail" ? "fail" : "done";
+      if (at < 0) {
+        return { ...state, subs: [...state.subs, { callId: ev.call_id, name: ev.name, title: ev.title,
+          status, elapsedMs: ev.elapsed_ms ?? null, tools: ev.tools ?? 0, pending: [], steps: [] }] };
+      }
+      return { ...state, subs: state.subs.map((s, i) => (i === at ? { ...s, status,
+        elapsedMs: ev.elapsed_ms ?? s.elapsedMs, tools: ev.tools ?? s.tools } : s)) };
     }
     case "done":
       return { ...state, terminal: true, done: ev, stopped: ev.stopped,
@@ -133,7 +177,7 @@ export function liveText(state: StreamingState | null): string {
 export function isWaiting(state: StreamingState | null): boolean {
   if (!state) return true;
   return !state.terminal && state.rounds.length === 0 && state.pending.length === 0
-    && state.steps.length === 0 && state.auths.length === 0;
+    && state.steps.length === 0 && state.subs.length === 0 && state.auths.length === 0;
 }
 
 /** 挂起判据：流断了、没有终态、但投过授权卡——这是「等你批准」，不是「连接坏了」。
