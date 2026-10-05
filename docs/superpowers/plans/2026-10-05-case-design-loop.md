@@ -3787,7 +3787,11 @@ def _register(ctx: Ctx, layer: str, entries: list[dict], *, source: str,
 
 
 def _apply_resolutions(ctx: Ctx, resolutions: list) -> None:
-    """复审回执销账：ref 全局唯一，跨层查；resolved=False 只更新 note 不销账。"""
+    """复审回执销账：ref 全局唯一，跨层查；resolved=False 只更新 note 不销账。
+
+    裁定 25（双文保留）：处置说明是「意见落点对照表」里人要看的东西，复审回执不得
+    无条件顶掉它——两处都有时处置说明在前、回执说明以「复审：」缀在后。
+    """
     for r in resolutions:
         for st in ctx.led.data["layers"].values():
             for op in st["opinions"]:
@@ -3904,7 +3908,12 @@ def h_opt(ctx: Ctx) -> Any:
         op = all_ops[str(row["ref"])]
         status, note = str(row["status"]), str(row.get("note") or "")
         op["disposition"] = status
-        op["note"] = note or op["note"]
+        # 裁定 28（与裁定 25 对称）：处置侧也不得整体顶掉既有轨迹——唯一人审门要看得懂整条处置过程，
+        # 新处置说明以「处置：」缀在旧轨迹（含复审回执）之后。
+        if op["note"] and note:
+            op["note"] = f"{op['note']}；处置：{note}"
+        else:
+            op["note"] = note or op["note"]
         if status in ("fixed", "covered"):
             op["resolved"] = True               # 主智能体声称已消化；复审再犯即会重新登记
         else:
@@ -3978,6 +3987,8 @@ def h_attribute(ctx: Ctx) -> Any:
 ```
 
 `裁定 25`：复审回执说明不再覆盖处置说明，双文保留（上文 `_apply_resolutions` 已按此码）。
+
+`裁定 28`：处置侧与回执侧对称保真，轨迹不整体顶掉（上文 `h_opt` 已按此码）。
 
 第三段（层全局审 ①/②/③ + 大纲门 + 人审续步 + 回写）：
 
