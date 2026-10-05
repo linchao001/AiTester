@@ -27,7 +27,9 @@ class KbUnavailableError(RuntimeError):
 def _ensure_node_buckets(cfg: KbConfig) -> None:
     """三层节点桶物理落地：workspace/knowledge 是整根 junction，实体侧建目录即挂载侧可见。
 
-    必须在 Application 构造前调用：实例启动即建立 watch 基线，桶要先存在；
+    调用点保持在 Application 构造前，但这是 reme watch 形态的**漂移保险**、不是既成保证：
+    实测（task-5-report 负向探针）reme 0.4.1.8 的 watch 是 knowledge 整根递归轮询，
+    后建的桶下一轮也必然被捕获——勿从「必须先建桶」推出任何运行期保证（评审 Minor 6）。
     KB 根缺失且允许自建时先走 ensure_kb（补 KB.md 骨架——mount 只在根不存在时建骨架，
     根已存在则直接挂载）。根缺失且不允许自建时无声返回，后续 mount 照旧响亮失败。
     """
@@ -113,7 +115,8 @@ class RemeKbManager:
             from reme import Application
 
             cfg = self._kb_config(project_id, agent_id)
-            # 实例启动即建立 watch 基线——三层节点桶必须先于 Application 构造存在
+            # 先建桶再构造 Application：reme watch 形态的漂移保险，非既成保证
+            # （当前根递归轮询下后建桶同样可被索引，详见 _ensure_node_buckets docstring）
             _ensure_node_buckets(cfg)
             app = Application(**build_reme_config(cfg))
             await app.start()

@@ -1,24 +1,52 @@
-"""T5：三层节点桶 job 通道（list/upsert/delete）+ 插件 entry point + watch_dirs 落地面。"""
+"""T5：三层节点桶 job 通道（list/upsert/delete）+ 插件 entry point + watch_dirs 落地面。
+
+评审修复版（R-16 + Minor 1/3/4/5/6/7/8）：
+- 夹具一律换成**全字段 DraftNode dump**（剥 op/reason 即 T8 回写 payload 形状，priority 保留），
+  chain/story 的 priority 与空列表字段都在夹具里——旧夹具省略跨层共用字段，正好看不见 R-16 缺陷。
+- 字段保真断言**走 job 通道**（run_job_sync upsert → case_nodes_list 读回逐字段等值），
+  三层 list/upsert/delete 全覆盖（Minor 5），不只测纯函数。
+"""
 
 import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+from aitester.case_design.schema import DraftNode
 from aitester.services.kb.config import KbConfig, build_reme_config
 from aitester.services.kb.manager import RemeKbManager, _ensure_node_buckets
-from aitester.services.kb.steps import parse_node_markdown, render_node_markdown
+from aitester.services.kb.steps import (
+    _NODE_FIELDS,
+    _atomic_write,
+    parse_node_markdown,
+    render_node_markdown,
+)
 
-CHAIN_NODE = {"id": "ch-0001", "type": "chain", "name": "下单链路", "level": 1,
-              "parent": "", "business_scope": "下单主流程", "excluded": ""}
-STORY_NODE = {"id": "st-0001", "type": "story", "name": "提交订单", "chains": ["ch-0001"],
-              "actor": "已登录用户", "preconditions": "库存充足", "trigger": "点击提交",
-              "expected": "订单创建成功", "assumptions": ["优惠券可用"]}
-POINT_NODE = {"id": "pt-0001", "type": "point", "name": "库存不足时提交", "story": "st-0001",
-              "scenario": "库存为零时提交订单", "entities": ["订单", "库存"],
-              "directions": ["负向"], "priority": "P1"}
+# 账本/夹具零产品线业务名词（全局约束）：一律用「实体甲/实体乙」这类中性名。
+
+
+def _payload(layer: str, **fields: Any) -> dict:
+    """全字段 DraftNode dump → 回写 payload 形状（剥 op/reason；priority 保留，R-16）。"""
+    payload = DraftNode(type=layer, **fields).model_dump()
+    payload.pop("op")
+    payload.pop("reason")
+    return payload
+
+
+# chain/story 用 P0：R-16 的致祸形态正是「P0 链路回写丢 priority → 下一轮按 P1 兜底 →
+# 其下合法 P0 故事被假报 hard priority_violation 卡死人工审门」。
+CHAIN_NODE = _payload("chain", id="ch-0001", name="实体甲链路", level=1, parent="",
+                      business_scope="实体甲总入口", excluded="", priority="P0")
+STORY_NODE = _payload("story", id="st-0001", name="操作实体甲",
+                      chains=["ch-0001", "ch-0002"], actor="测试账号",
+                      preconditions="实体甲已就绪", trigger="发起操作",
+                      expected="实体甲状态变更", assumptions=["环境已就绪"], priority="P0")
+POINT_NODE = _payload("point", id="pt-0001", name="实体甲缺失时发起", story="st-0001",
+                      scenario="实体甲为空时发起操作", entities=["实体甲"],
+                      directions=["负向"], priority="P1")
 
 
 def _settings(tmp_path, **kw):
@@ -38,22 +66,39 @@ def _seed_kb(tmp_path):
     return kb_root
 
 
+def _expected_front_keys(layer: str) -> list[str]:
+    """frontmatter 键序契约：公共键 id/type/name 在前，层字段按 _NODE_FIELDS 表序，updated_at 最后。"""
+    return ["id", "type", "name", *_NODE_FIELDS[layer], "updated_at"]
+
+
+def test_fixtures_are_full_draft_node_dumps():
+    """夹具钉桩：每份都是全字段 dump（含 chain/story 的 priority 与其它层的空列表字段）。"""
+    expected = set(DraftNode.model_fields) - {"op", "reason"}
+    for node in (CHAIN_NODE, STORY_NODE, POINT_NODE):
+        assert set(node) == expected
+    assert CHAIN_NODE["priority"] == "P0" and CHAIN_NODE["chains"] == []
+    assert STORY_NODE["priority"] == "P0" and STORY_NODE["entities"] == []
+
+
 def test_render_parse_roundtrip_three_layers():
     for layer, node in (("chain", CHAIN_NODE), ("story", STORY_NODE), ("point", POINT_NODE)):
         text = render_node_markdown(layer, node)
         row = parse_node_markdown(text, layer)
         assert row["id"] == node["id"] and row["name"] == node["name"]
         assert "updated_at" in row
+        assert list(row.keys()) == _expected_front_keys(layer)  # 键序=表序，priority 紧跟 name
         for key, value in node.items():
-            if key in ("id", "type", "name"):
-                continue
-            assert row[key] == value, (layer, key)
+            if key in _NODE_FIELDS[layer]:
+                assert row[key] == value, (layer, key)
+            elif key not in ("id", "type", "name"):
+                assert key not in row  # 其它层字段不泄漏进本层 frontmatter
     # chain 顶层空 parent 必须是「键在、值为空串」：P-3 判维护性靠 "parent" in row
     row = parse_node_markdown(render_node_markdown("chain", CHAIN_NODE), "chain")
     assert "parent" in row and row["parent"] == ""
-    # 正文含人读标签与节点内容（reindex 后的检索内容面）
+    # 正文含人读标签与节点内容（reindex 后的检索内容面）；chain/story 正文也带「优先级」（R-16）
     body = render_node_markdown("story", STORY_NODE)
-    assert "提交订单" in body and "主角" in body and "优惠券可用" in body
+    assert "操作实体甲" in body and "主角" in body and "环境已就绪" in body
+    assert "- 优先级：P0" in body
 
 
 def test_parse_rejects_garbage():
@@ -133,6 +178,113 @@ def test_node_roundtrip_via_manager(tmp_path):
         mgr.close_all()
 
 
+def test_field_fidelity_all_layers_via_job_channel(tmp_path):
+    """R-16 + Minor 5：三层全字段 dump 走 job 通道逐字段等值；三层 list/upsert/delete 全覆盖。
+
+    chain/story 的 priority 必须原样读回——④ 的优先级沿树检查直接读宇宙里的 chain/story 行，
+    回写丢字段会让下一轮把 P0 存量当成 P1，合法 P0 故事被假报 hard priority_violation。
+    多父故事 chains=["ch-0001","ch-0002"]（「重复比遗漏好」语义）也走 job 通道验证。
+    """
+    _seed_kb(tmp_path)
+    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        for layer, node in (("chain", CHAIN_NODE), ("story", STORY_NODE), ("point", POINT_NODE)):
+            up = mgr.run_job_sync("case_node_upsert", layer=layer, node=node)
+            assert up.success, up.answer
+            lst = mgr.run_job_sync("case_nodes_list", layer=layer)
+            assert lst.success and lst.metadata["count"] == 1, lst.metadata
+            row = lst.metadata["nodes"][0]
+            assert list(row.keys()) == _expected_front_keys(layer), (layer, list(row.keys()))
+            carried = {"id", "type", "name"} | set(_NODE_FIELDS[layer])
+            for key, value in node.items():
+                if key in carried:
+                    assert row[key] == value, (layer, key, row.get(key), value)
+            # R-16 显式钉桩：三层（含 chain/story）priority 键在且保值
+            assert row["priority"] == node["priority"], layer
+            # 多父故事：chains 列表原样读回（Minor 5，旧版只在纯函数层验过）
+            if layer == "story":
+                assert row["chains"] == ["ch-0001", "ch-0002"]
+            d1 = mgr.run_job_sync("case_node_delete", layer=layer, id=node["id"])
+            assert d1.success and d1.metadata["deleted"] is True
+            d2 = mgr.run_job_sync("case_node_delete", layer=layer, id=node["id"])
+            assert d2.success and d2.metadata["deleted"] is False
+            lst2 = mgr.run_job_sync("case_nodes_list", layer=layer)
+            assert lst2.metadata["count"] == 0 and lst2.metadata["nodes"] == []
+    finally:
+        mgr.close_all()
+
+
+def test_empty_carried_fields_survive_job_channel(tmp_path):
+    """共用字段缺省（priority 未给 → DraftNode 默认 P1）与层内空列表（assumptions=[]）
+    走 job 通道后必须「键在、值原样」回来——宇宙读回不许出现缺键。"""
+    _seed_kb(tmp_path)
+    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        st2 = _payload("story", id="st-0002", name="操作实体乙", chains=["ch-0001"],
+                       actor="测试账号", trigger="再发起", expected="变更留痕")
+        assert st2["priority"] == "P1" and st2["assumptions"] == [] and st2["preconditions"] == ""
+        up = mgr.run_job_sync("case_node_upsert", layer="story", node=st2)
+        assert up.success, up.answer
+        lst = mgr.run_job_sync("case_nodes_list", layer="story")
+        assert lst.success and lst.metadata["count"] == 1
+        row = lst.metadata["nodes"][0]
+        assert list(row.keys()) == _expected_front_keys("story")
+        assert row["assumptions"] == [] and row["priority"] == "P1"
+        assert row["preconditions"] == ""
+    finally:
+        mgr.close_all()
+
+
+def test_step_rejects_id_with_trailing_newline(tmp_path):
+    """Minor 3：`.match`+`^…$` 会放走 "ch-0001\\n" → 文件名 ch-0001\\n.md（POSIX 垃圾）。
+    step 是 FS 边界，_validate_id 必须 fullmatch 响亮拒绝，且失败路径零落盘。"""
+    _seed_kb(tmp_path)
+    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        bad = mgr.run_job_sync("case_node_upsert", layer="chain",
+                               node={**CHAIN_NODE, "id": "ch-0001\n"})
+        assert bad.success is False
+        chain_dir = tmp_path / "knowledge_bases" / "demo" / "business" / "chains"
+        assert list(chain_dir.glob("*")) == []               # 连隐藏垃圾名都不许出现
+    finally:
+        mgr.close_all()
+
+
+def test_list_yields_marker_row_for_corrupt_file(tmp_path):
+    """Minor 4：坏文件 marker 分支原零用例——桶里一个坏节点文件不许炸 list，
+    必须以 {"id":"", "file", "error"} 标记行进列表（P-3 判「未维护」依赖此形状）。"""
+    _seed_kb(tmp_path)
+    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        assert mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE).success
+        corrupt = tmp_path / "knowledge_bases" / "demo" / "business" / "chains" / "bad.md"
+        corrupt.write_text("没有任何 frontmatter 的坏文件", encoding="utf-8")
+        lst = mgr.run_job_sync("case_nodes_list", layer="chain")
+        assert lst.success, lst.answer
+        assert lst.metadata["count"] == 2
+        marker = [r for r in lst.metadata["nodes"] if r.get("file") == "bad.md"]
+        assert len(marker) == 1 and marker[0]["id"] == "" and marker[0]["error"]
+        good = [r for r in lst.metadata["nodes"] if r.get("id") == "ch-0001"]
+        assert len(good) == 1 and good[0]["priority"] == "P0"
+    finally:
+        mgr.close_all()
+
+
+def test_atomic_write_removes_tmp_on_replace_failure(tmp_path):
+    """Minor 1：os.replace 失败时 .tmp 不许永久留在桶里。用真实失败路径（目标是目录，
+    replace 必抛 OSError），不 mock——清理也必须失败时才掩盖原异常，原异常照常冒泡（Minor 2 驳回口径）。"""
+    target = tmp_path / "ch-0001.md"
+    target.mkdir()
+    with pytest.raises(OSError):
+        _atomic_write(target, "节点内容")
+    assert not (tmp_path / "ch-0001.md.tmp").exists()
+    assert [p.name for p in tmp_path.iterdir()] == ["ch-0001.md"]  # 只剩那个目录，零垃圾
+
+
 def test_step_rejects_bad_input(tmp_path):
     _seed_kb(tmp_path)
     mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
@@ -163,12 +315,12 @@ def test_node_bucket_joins_index(tmp_path):
         blob = ""
         deadline = time.time() + 20
         while time.time() < deadline:
-            found = mgr.run_job_sync("knowledge_search", query="下单链路", limit=5)
+            found = mgr.run_job_sync("knowledge_search", query="实体甲链路", limit=5)
             blob = json.dumps(found.metadata, ensure_ascii=False) + str(found.answer)
-            if found.success and "下单链路" in blob:
+            if found.success and "实体甲链路" in blob:
                 break
             time.sleep(1)
-        assert "下单链路" in blob
+        assert "实体甲链路" in blob
     finally:
         mgr.close_all()
 
@@ -179,7 +331,8 @@ def test_node_bucket_joins_index(tmp_path):
 def test_cf1_buckets_exist_and_are_in_watch_dirs_before_application_ctor(tmp_path, monkeypatch):
     """CF-1a+CF-1b 前提实测：新桶不在 reme PUBLISHED_BUCKETS（augment 不会替我们加），
     三桶 junction 路径由 build_reme_config 显式注入；且实体侧桶在
-    Application 构造时刻已存在（watch_changes 只对启动时已存在的路径建监听）。"""
+    Application 构造时刻已存在（结构性约定：桶先于构造落位——这是 watch 形态漂移保险，
+    非运行期硬保证；当前根递归轮询下后建桶也会被兜住，见 test_cf2 备注）。"""
     import reme
     from reme.knowledge.store import knowledge_watch_dirs
     from aitester.case_design.constants import NODE_BUCKETS
@@ -237,11 +390,11 @@ def test_cf2_watch_loop_indexes_new_node_without_reindex(tmp_path):
         blob = ""
         deadline = time.time() + 30
         while time.time() < deadline:
-            found = mgr.run_job_sync("knowledge_search", query="提交订单", limit=5)
+            found = mgr.run_job_sync("knowledge_search", query="操作实体甲", limit=5)
             blob = json.dumps(found.metadata, ensure_ascii=False) + str(found.answer)
-            if found.success and "提交订单" in blob:
+            if found.success and "操作实体甲" in blob:
                 break
             time.sleep(1)
-        assert "提交订单" in blob, f"30 秒内 watch 增量未收敛（CF-1a/CF-1b 被破坏？）：{blob}"
+        assert "操作实体甲" in blob, f"30 秒内 watch 增量未收敛（CF-1a/CF-1b 被破坏？）：{blob}"
     finally:
         mgr.close_all()

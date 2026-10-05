@@ -24,19 +24,26 @@ from aitester.case_design.constants import ID_RE, LAYER_BUCKET, TYPE_PREFIX
 _FRONT_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 
 # 层字段（frontmatter 键序即此序）；链路的 parent 空串也必须落键——P-3 靠 "parent" in row 判维护性
+# priority 是三层共用字段（schema 标 共用），链路/故事也必须落：④ 的优先级沿树检查直接读
+# 宇宙里的 chain/story 行，回写丢字段会让下一轮把 P0 存量当成 P1，从而假报 hard 违例（R-16）。
 _NODE_FIELDS: dict[str, tuple[str, ...]] = {
-    "chain": ("level", "parent", "business_scope", "excluded"),
-    "story": ("chains", "actor", "preconditions", "trigger", "expected", "assumptions"),
+    "chain": ("priority", "level", "parent", "business_scope", "excluded"),
+    "story": ("priority", "chains", "actor", "preconditions", "trigger", "expected", "assumptions"),
     "point": ("story", "scenario", "entities", "directions", "priority"),
 }
 _BODY_LABELS: dict[str, tuple[tuple[str, str], ...]] = {
-    "chain": (("level", "层级"), ("parent", "上级链路"), ("business_scope", "业务范围"),
-              ("excluded", "不含范围")),
-    "story": (("chains", "所属链路"), ("actor", "主角"), ("preconditions", "业务前置"),
-              ("trigger", "触发"), ("expected", "期望结果"), ("assumptions", "假设")),
+    "chain": (("priority", "优先级"), ("level", "层级"), ("parent", "上级链路"),
+              ("business_scope", "业务范围"), ("excluded", "不含范围")),
+    "story": (("priority", "优先级"), ("chains", "所属链路"), ("actor", "主角"),
+              ("preconditions", "业务前置"), ("trigger", "触发"), ("expected", "期望结果"),
+              ("assumptions", "假设")),
     "point": (("story", "所属故事"), ("scenario", "场景"), ("entities", "涉及实体"),
               ("directions", "方向"), ("priority", "优先级")),
 }
+
+# 两张表写死层名——导入期钉死与 constants 的单点定义一致（评审 Minor 8）
+assert set(_NODE_FIELDS) == set(LAYER_BUCKET)
+assert set(_BODY_LABELS) == set(LAYER_BUCKET)
 
 
 def node_filename(node_id: str) -> str:
@@ -77,7 +84,7 @@ def parse_node_markdown(text: str, layer: str) -> dict[str, Any]:
     if not isinstance(front, dict):
         raise ValueError("frontmatter is not a mapping")
     node_id = str(front.get("id") or "")
-    if not ID_RE.match(node_id):
+    if not ID_RE.fullmatch(node_id):
         raise ValueError(f"invalid node id {node_id!r}")
     if front.get("type") != layer:
         raise ValueError(f"node type {front.get('type')!r} != layer {layer!r}")
@@ -87,8 +94,10 @@ def parse_node_markdown(text: str, layer: str) -> dict[str, Any]:
 
 
 def _validate_id(layer: str, node_id: Any) -> str:
+    # step 是文件系统边界：`.match`+`^…$` 会放走 "ch-0001\n"（POSIX 上留下删不掉的垃圾文件名），
+    # 必须 fullmatch 收掉（评审 Minor 3）
     node_id = str(node_id or "")
-    if not ID_RE.match(node_id):
+    if not ID_RE.fullmatch(node_id):
         raise ValueError(f"invalid node id {node_id!r} (expected {TYPE_PREFIX[layer]}-NNNN)")
     if not node_id.startswith(TYPE_PREFIX[layer] + "-"):
         raise ValueError(f"node id {node_id!r} does not belong to layer {layer!r}")
@@ -97,15 +106,27 @@ def _validate_id(layer: str, node_id: Any) -> str:
 
 def _atomic_write(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        # replace 失败不在桶里遗留 .tmp 垃圾（评审 Minor 1）；清理失败不得掩盖原始异常。
+        # 瞬时错误（如 Windows PermissionError）刻意不在 step 就地重试——
+        # 重试预算归驱动（A7 WRITEBACK_FIX_CAP），失败必须响亮冒泡（评审驳回 Minor 2）。
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 class CaseNodesStep(BaseStep):
     """按 op 枚举 / 写入 / 删除三层节点桶（list/upsert/delete）。"""
 
     async def execute(self):
-        assert self.context is not None
+        # 与下方 app_config 守卫同风格的显式 raise：assert 在 -O 下会被剥掉（评审 Minor 7）
+        if self.context is None:
+            raise RuntimeError("job context is unavailable")
         response = self.context.response
         op = str(self.kwargs.get("op") or "")
         layer = str(self.context.get("layer") or "")
