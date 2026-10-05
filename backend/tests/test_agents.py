@@ -10,27 +10,6 @@ from aitester.agents import (
 )
 from aitester.agents.catalog import PROMPTS_DIR, _load_prompt
 
-# 与 capability_config.py 原多行串逐字一致（迁移不许改一个字）
-PROMPT = """你是「用例设计智能体」，服务对象是软件测试工程师。
-
-## 职责
-- 依据需求说明、接口文档与存量用例，设计功能 / 接口 / 回归测试用例
-- 用等价类划分、边界值、状态迁移、异常注入保证覆盖，并标注 P0 / P1 / P2
-- 产出统一用例表：编号、需求号、前置条件、步骤、预期结果、优先级
-
-## 约束
-- 项目文件只读，新增文件一律落在 cases/ 下，不改动生产配置
-- 需求信息不足时先列出待澄清问题，不臆造验收标准
-- 每条用例必须能被测试执行智能体直接跑：步骤可操作、预期结果可判定
-- 全程使用中文与 Markdown 表格，不省略步骤
-
-## 委派（task 工具）
-- 隐式唤起：需要翻大量文件、检索代码或查网页、而你只要结论的活，自己判该派就派，交给「通用子智能体」
-- 显式唤起：用户点名要子智能体来做，或下了「让子智能体去查 ×××」这类指令时，必须真的调用 task，不许自己代劳
-- 并行唤起：用户要求「同时 / 分别查」几件互不相干的调查时，一轮里一次发出多个 task 让它们并行跑；一件事要等另一件事的结论，就分轮串行
-- 简报必须自含：目标、范围、已知线索、要回什么——子智能体看不到本会话历史
-- 写文件或执行命令那一类委派一轮只派一个；title 用一句简短中文概括调查主题，会显示在界面上"""
-
 
 def test_catalog_has_exactly_one_readable_id_agent() -> None:
     assert [s.id for s in AGENT_CATALOG] == ["case_design"]
@@ -38,7 +17,7 @@ def test_catalog_has_exactly_one_readable_id_agent() -> None:
     assert spec.icon == "📋"
     assert spec.name == "用例设计智能体"
     assert spec.desc == (
-        "读需求与接口文档，产出可直接执行的测试用例并同步用例平台，覆盖等价类、边界值与异常路径。"
+        "拆解业务链路、用户故事、测试点三层测试设计，产出增量测试大纲，人工审核通过后维护回知识库。"
     )
     assert spec.graph_builder == "case_design_loop"
     assert isinstance(spec.default_tool_ids, tuple)
@@ -47,8 +26,12 @@ def test_catalog_has_exactly_one_readable_id_agent() -> None:
 def test_prompt_is_loaded_verbatim_from_md_file() -> None:
     spec = find_agent("case_design")
     assert spec is not None
-    assert spec.prompt == PROMPT
-    assert (PROMPTS_DIR / "case_design.md").read_text(encoding="utf-8").strip() == PROMPT
+    text = (PROMPTS_DIR / "case_design.md").read_text(encoding="utf-8").strip()
+    assert spec.prompt == text                       # md 文件是唯一真相，目录条目逐字等于它
+    assert "## 职责" in text and "## 委派" in text
+    for marker in ("业务链路", "用户故事", "测试点"):
+        assert marker in text                        # 三层概念必须在（本次重写的目的）
+    assert "同步用例平台" not in text                 # 2026-10-05 裁定：描述与提示词都不再提平台对接
 
 
 def test_default_agent_state_is_derived_from_catalog() -> None:
@@ -62,6 +45,7 @@ def test_default_agent_state_is_derived_from_catalog() -> None:
                 "grep_search",
                 "glob_search",
                 "web_search",
+                "knowledge_search",
                 "task",
             ],
         },

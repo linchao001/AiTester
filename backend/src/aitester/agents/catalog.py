@@ -24,7 +24,7 @@ AGENT_CATALOG: tuple[AgentSpec, ...] = (
         id="case_design",
         icon="📋",
         name="用例设计智能体",
-        desc="读需求与接口文档，产出可直接执行的测试用例并同步用例平台，覆盖等价类、边界值与异常路径。",
+        desc="拆解业务链路、用户故事、测试点三层测试设计，产出增量测试大纲，人工审核通过后维护回知识库。",
         prompt=_load_prompt("case_design"),
         default_tool_ids=(
             "read",
@@ -33,6 +33,7 @@ AGENT_CATALOG: tuple[AgentSpec, ...] = (
             "grep_search",
             "glob_search",
             "web_search",
+            "knowledge_search",
             "task",
         ),
         graph_builder="case_design_loop",

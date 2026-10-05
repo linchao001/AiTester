@@ -81,7 +81,7 @@ def test_first_start_seeds_and_persists(tmp_path: Path) -> None:
         "case_design": {
             "default_uid": "",
             "tool_ids": ["read", "write", "edit", "grep_search", "glob_search",
-                         "web_search", "task"],
+                         "web_search", "knowledge_search", "task"],
         },
         "general-purpose": {
             "default_uid": "",
@@ -241,6 +241,7 @@ def test_get_view_agent_carries_readonly_prompt(tmp_path: Path) -> None:
         "grep_search",
         "glob_search",
         "web_search",
+        "knowledge_search",
         "task",
     ]
 
@@ -344,6 +345,7 @@ def test_set_agent_tools_rejects_disabled_tool(tmp_path: Path) -> None:
         "grep_search",
         "glob_search",
         "web_search",
+        "knowledge_search",
         "task",
     ]
 
@@ -424,6 +426,7 @@ def test_disable_tool_strips_every_agent(tmp_path: Path) -> None:
         "grep_search",
         "glob_search",
         "web_search",
+        "knowledge_search",
         "task",
     ]
 
@@ -517,13 +520,15 @@ def test_agent_state_returns_copy_and_is_public(tmp_path: Path) -> None:
     state = capability.agent_state("case_design")
     assert state == {
         "default_uid": "",
-        "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search", "task"],
+        "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search",
+                     "knowledge_search", "task"],
     }
     state["tool_ids"].append("pwsh")
     state["default_uid"] = "hacked"
     assert capability.agent_state("case_design") == {
         "default_uid": "",
-        "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search", "task"],
+        "tool_ids": ["read", "write", "edit", "grep_search", "glob_search", "web_search",
+                     "knowledge_search", "task"],
     }
 
 

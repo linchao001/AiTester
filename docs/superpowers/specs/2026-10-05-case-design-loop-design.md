@@ -176,3 +176,13 @@
 - 接力式 handoff、@ 子智能体选择器、大纲版本化 UI。
 - **任何一条产品线存量 KB 内容的对齐与迁移**（本专项不感知内容，历史遗留节点按 P-5 一律视为"该层未维护"）；平台对接（"同步用例平台"已从描述删除）。
 - 覆盖度"客观分母"类方案——已由裁定定性为不可得。
+
+## 实施偏离登记（2026-10-05 拆计划期）
+
+实施计划（`docs/superpowers/plans/2026-10-05-case-design-loop.md`）与本设计不一致处的落点登记；与本文冲突时以本节的计划口径为准。
+
+1. **S1 工具面**：不把 `save_to_knowledge` 补进 `case_design` 出厂工具面（§5 原文「补 knowledge_search、save_to_knowledge、task」的第二项移除）。理由：`save_to_knowledge` 对未知桶静默回落到默认桶、节点 markdown 由模型拼装无法保证字段保真（type/id/parent 是 P-3 的地址面），且每次调用都是模型回合成本。回写改为驱动经 `KbClient` 确定性执行 `case_nodes_list / case_node_upsert / case_node_delete` 三件 job。
+2. **A4 轮次口径**：裁定 14「每层硬上限 5 轮」落为：**每块**评审-优化环 ≤5 轮；**每层**全局审环（意见优化-复审）独立计数 ≤5；层内总轮 = 各块之和。
+3. **A8 失效传播**：裁定 11 的「后代标失效待重算、下次任务重跑」落为最小诚实实现——人审回溯改动某层时，其**下游层全部**标 `stale_pending`（大纲展示、回写跳过）；**下次任务按 update 模式全块重跑**，不做增量子树推断。
+4. **A10 激活判据**：`kb` 未注入或未启用（`getattr(kb, "is_enabled", False)`，**缺省 False**，与注册表闸门缺省 True 刻意不同）→ `case_env=None` → 驱动直通（等价 react）；`task_kind=case_only` 且无失效 → 空增量：明示边界后直接完成，不回写。
+5. **A2 补充**：盲枚举的「结构强制」实现 = 驱动白名单清单（`design/manifests/sources.json` 只含 KB 业务桶与用户指定项目文件）+ 枚举简报不含树 + 工具面仅 read。
