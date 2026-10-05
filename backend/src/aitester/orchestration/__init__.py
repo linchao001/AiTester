@@ -15,12 +15,22 @@ from aitester.orchestration.gate import (
 from aitester.orchestration.graph import EchoState, build_echo_graph, run_echo
 from aitester.orchestration.graph_registry import GRAPH_BUILDERS, GraphBuilder, get_graph_builder
 from aitester.orchestration.run_control import RUN_CONTROL_KEY, RunControl
+from aitester.orchestration.subagent import (
+    DETAIL_MAX,
+    SUBAGENT_KEY,
+    ChildRuntime,
+    detail_of,
+    drive_child,
+)
 
 __all__ = [
+    "DETAIL_MAX",
     "GATE_KEY",
     "GRAPH_BUILDERS",
     "RUN_CONTROL_KEY",
+    "SUBAGENT_KEY",
     "AgentState",
+    "ChildRuntime",
     "EchoState",
     "GateAuthError",
     "GateContext",
@@ -30,6 +40,8 @@ __all__ = [
     "build_echo_graph",
     "build_gate_context",
     "decision_from",
+    "detail_of",
+    "drive_child",
     "drop_thread",
     "get_checkpointer",
     "get_graph_builder",

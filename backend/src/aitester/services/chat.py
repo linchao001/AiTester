@@ -46,8 +46,9 @@ logger = logging.getLogger(__name__)
 # done/step 事件里喂给 UI 与磁盘的过程块字段：严格取键，缺字段即 KeyError（不兜默认防假绿）
 _STEP_KEYS = ("tool", "ok", "round", "detail")
 
-# wait 事件喂给 pending 队列的字段：严格取键，缺字段即 KeyError（与 _STEP_KEYS 同口径）
-_WAIT_KEYS = ("call_id", "tool", "action", "target", "command", "cwd")
+# wait 事件喂给 pending 队列的字段：严格取键，缺字段即 KeyError（与 _STEP_KEYS 同口径）。
+# subagent 是 R3 的来源标注：父层 None、子层为卡片出处；pending 表原样透给 /chat/pending。
+_WAIT_KEYS = ("call_id", "tool", "action", "target", "command", "cwd", "subagent")
 
 
 @dataclass(frozen=True)
@@ -284,7 +285,7 @@ class ChatService:
                     continue
                 if kind == "wait":
                     waiting.append({k: event[k] for k in _WAIT_KEYS})
-                elif kind == "step":
+                elif kind == "step" and event.get("subagent") is None:
                     steps.append({k: event[k] for k in _STEP_KEYS})
                 elif kind == "delta":
                     r = int(event["round"])
@@ -319,7 +320,7 @@ class ChatService:
             control.cancel()
             try:
                 for event in events:      # 无人消费也要跑到停笔点，只为拿到 finish
-                    if event["type"] == "step":
+                    if event["type"] == "step" and event.get("subagent") is None:
                         steps.append({k: event[k] for k in _STEP_KEYS})
                     elif event["type"] == "finish":
                         outcome = event
@@ -432,7 +433,7 @@ class ChatService:
         drafts: list[dict[str, Any]] = []
         for event in self.stream_turn(prepared):
             kind = event["type"]
-            if kind == "step":
+            if kind == "step" and event.get("subagent") is None:
                 steps.append({k: event[k] for k in _STEP_KEYS})
             elif kind == "draft":
                 drafts.append(event["draft"])

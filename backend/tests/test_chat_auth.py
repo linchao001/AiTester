@@ -476,8 +476,9 @@ def test_wait_event_strict_keys_and_pending_finish(tmp_path: Path) -> None:
                                [HumanMessage(content="跑命令")], thread_id="w2", gate=ctx))
     wait = [e for e in events if e["type"] == "wait"][0]
     assert sorted(wait) == sorted(["type", "call_id", "tool", "action", "target",
-                                   "command", "cwd"])
+                                   "command", "cwd", "subagent"])
     assert wait["call_id"] == "c1" and wait["tool"] == "pwsh"
+    assert wait["subagent"] is None                        # 父层挂起：来源键在场但为空（R3）
     assert wait["command"] == "pytest -q"                  # 批准前必须看全
     assert wait["cwd"] == "D:/elsewhere"
     assert events[-1]["pending"] is True

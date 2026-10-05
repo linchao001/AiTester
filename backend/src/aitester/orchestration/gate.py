@@ -14,6 +14,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from aitester.orchestration.auth_rules import AuthTarget, needs_approval, plan_target
+from aitester.orchestration.subagent import SUBAGENT_KEY
 
 # 进 config.configurable 的键：与 RUN_CONTROL_KEY 同一条注入通道（GraphBuilder 签名不许多带参数）
 GATE_KEY = "aitester_gate"
@@ -113,10 +114,12 @@ def make_gate_node(lookup: Callable[[RunnableConfig | None], GateContext | None]
         items = plan_items(list(last.tool_calls), ctx)
         if not items:
             return {"messages": []}
+        # R3：wait 载荷恒带来源标注——父层 None；子层是 drive 写进 configurable 的 dict
+        sub = (config.get("configurable") or {}).get(SUBAGENT_KEY)
         rejected_ids: set[str] = set()
         remembered_keys: list[str] = []
         for item in items:
-            decision = decision_from(interrupt(item.payload))
+            decision = decision_from(interrupt({**item.payload, "subagent": sub}))
             if decision["decision"] == APPROVE:
                 if decision["remember"]:
                     remembered_keys.append(item.plan.remember_key)

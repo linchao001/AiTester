@@ -78,7 +78,7 @@ class _Prepared:                 # 本测试不吃 PreparedRun 的真实字段�
 
 def _item(call_id: str) -> dict:
     return {"call_id": call_id, "tool": "write", "action": "写入项目目录外的文件",
-            "target": "../out.md", "command": "", "cwd": ""}
+            "target": "../out.md", "command": "", "cwd": "", "subagent": None}
 
 
 def _entry(run_id: str, call_ids: tuple[str, ...], session_id: str = "sess_1",

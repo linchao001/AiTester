@@ -65,8 +65,16 @@ class ResumeRequest(BaseModel):
     run_id: str
 
 
+class SubagentRef(BaseModel):
+    """wait 载荷里的子智能体来源标注（R3）：父层为 None，子层给卡片出处的快照。"""
+
+    call_id: str
+    name: str
+    title: str = ""
+
+
 class PendingCallInfo(BaseModel):
-    """一张授权卡：与后端 wait 事件六键逐字对齐（R11）。"""
+    """一张授权卡：与后端 wait 事件七键逐字对齐（六键 + subagent 来源标注，R3/R11）。"""
 
     call_id: str
     tool: str
@@ -74,6 +82,7 @@ class PendingCallInfo(BaseModel):
     target: str
     command: str
     cwd: str
+    subagent: SubagentRef | None
 
 
 class PendingDecidedCall(PendingCallInfo):

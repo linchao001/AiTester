@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Annotated, Any, Callable, Iterator
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
@@ -20,6 +19,7 @@ from aitester.adapters.tools.base import AiTooler
 from aitester.orchestration.checkpoint import get_checkpointer, new_thread_id
 from aitester.orchestration.gate import GATE_KEY, GateContext, make_gate_node
 from aitester.orchestration.run_control import RUN_CONTROL_KEY, RunControl
+from aitester.orchestration.subagent import detail_of
 
 
 class AgentState(TypedDict):
@@ -27,9 +27,6 @@ class AgentState(TypedDict):
 
 
 GraphBuilder = Callable[[LlmProvider, list[AiTooler]], CompiledStateGraph]
-
-# 过程块参数摘要的截断上限（spec 接口块登记值，实现此前漂移成裸 80）
-DETAIL_MAX = 80
 
 
 def _run_control(config: RunnableConfig | None):
@@ -174,14 +171,6 @@ def build_agent_graph(provider: LlmProvider, tools: list[AiTooler]) -> CompiledS
     return graph.compile(checkpointer=get_checkpointer())
 
 
-def _detail_of(call: dict[str, Any]) -> str:
-    """过程块的参数摘要：与迁移前逐字同口径（JSON 序列化后截 DETAIL_MAX）。"""
-    try:
-        return json.dumps(call.get("args") or {}, ensure_ascii=False)[:DETAIL_MAX]
-    except (TypeError, ValueError):
-        return str(call.get("args"))[:DETAIL_MAX]  # 非常规 args（非 JSON 可序列化）不退化成报错，UI 只截一行
-
-
 def stream_graph(
     build: GraphBuilder,
     provider: LlmProvider,
@@ -235,11 +224,15 @@ def stream_graph(
                             "type": "call",
                             "tool": call["name"],
                             "round": payload["round"],
-                            "detail": _detail_of(call),
+                            "detail": detail_of(call),
                         }
                 elif payload.get("text"):
                     # 与迁移前同口径：后写的非工具轮 content 覆盖前面的（中间轮文本因此不落盘）
                     reply = str(payload["text"])
+            elif kind == "sub":
+                yield dict(payload)          # 子阶段帧（start/done/fail）：drive 已按契约备齐
+            elif kind in ("call", "step") and payload.get("subagent") is not None:
+                yield dict(payload)          # 子过程帧：带来源标注；父层折叠不碰它（R3/R10）
             continue
 
         hits = payload.get("__interrupt__")
@@ -250,7 +243,8 @@ def stream_graph(
                 value = hit.value
                 yield {"type": "wait", "call_id": value["call_id"], "tool": value["tool"],
                        "action": value["action"], "target": value["target"],
-                       "command": value["command"], "cwd": value["cwd"]}
+                       "command": value["command"], "cwd": value["cwd"],
+                       "subagent": value["subagent"]}
             pending = True
             continue
 
@@ -258,7 +252,7 @@ def stream_graph(
         for msg in produced.get("messages") or []:
             if not isinstance(msg, ToolMessage):
                 continue
-            detail = _detail_of(calls_by_id.get(str(msg.tool_call_id), {}))
+            detail = detail_of(calls_by_id.get(str(msg.tool_call_id), {}))
             trace = {
                 "tool": msg.name or "",
                 "result": str(msg.content),
