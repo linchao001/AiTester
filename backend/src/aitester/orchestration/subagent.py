@@ -25,6 +25,8 @@ from langchain_core.tools import ToolException
 from langgraph.config import get_stream_writer
 from langgraph.errors import GraphBubbleUp, GraphInterrupt
 
+from aitester.adapters.tools.subagent_tools import DEFAULT_SUBAGENT_TYPE, TASK_TOOL_ID
+
 SUBAGENT_KEY = "aitester_subagent"
 
 # 过程块参数摘要的截断上限（spec 接口块登记值，实现此前漂移成裸 80；从 agent_graph 迁居于此）
@@ -37,6 +39,44 @@ def detail_of(call: dict[str, Any]) -> str:
         return json.dumps(call.get("args") or {}, ensure_ascii=False)[:DETAIL_MAX]
     except (TypeError, ValueError):
         return str(call.get("args"))[:DETAIL_MAX]  # 非常规 args（非 JSON 可序列化）不退化成报错，UI 只截一行
+
+
+_DEFER_REASON = (
+    "Not executed in this round: a round that delegates runs only its 'task' calls, "
+    "and it runs several of them in parallel only when every subagent you named has a "
+    "read-only tool face. Re-issue this call in your next round."
+)
+
+
+def _parallel_of(call: dict[str, Any], parallel: dict[str, bool]) -> bool:
+    """这一路 task 点名的子智能体能不能并行（表里没有按不能办）——与 TaskTool 同一个缺省。"""
+    args = call.get("args") or {}
+    return bool(parallel.get(str(args.get("subagent_type") or DEFAULT_SUBAGENT_TYPE), False))
+
+
+def shape_task_batch(
+    calls: list[dict[str, Any]], parallel: dict[str, bool]
+) -> tuple[list[dict[str, Any]], list[ToolMessage]]:
+    """R4 扇出条件：整批 task 都可并行才全跑，否则只跑批内第一个；非 task 兄弟一律延后。
+
+    并行子各占派生 checkpoint ns（R14），互不踩踏；可挂起子仍走父 ns——它的续跑值按
+    位置配对，只在父 ns 上被 T1 s1 实测过，两个这样的子同批就会把 resume 值分错家。
+    非 task 兄弟与 task 挤同一个 superstep：子一旦挂起、父重入会把兄弟全部重跑（探针实测），
+    所以「委派轮只办委派」这条与档位无关（R8）。
+    错误结果与拒绝分支同一条通路：声明过的每个 tool_call_id 都有对应 tool 消息，
+    provider 的配对约束不破；「不执行」由 tools 节点按已有结果过滤（_unanswered，既有机制）。
+    """
+    tasks = [c for c in calls if c["name"] == TASK_TOOL_ID]
+    if not tasks:
+        return list(calls), []
+    keep = tasks if all(_parallel_of(c, parallel) for c in tasks) else [tasks[0]]
+    kept = {id(c) for c in keep}
+    deferred = [
+        ToolMessage(content=_DEFER_REASON, tool_call_id=str(c["id"]), name=str(c["name"]),
+                    status="error")
+        for c in calls if id(c) not in kept
+    ]
+    return keep, deferred
 
 
 @dataclass(frozen=True)

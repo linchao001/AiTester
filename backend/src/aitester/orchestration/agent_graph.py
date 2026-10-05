@@ -43,6 +43,17 @@ def _gate_context(config: RunnableConfig | None) -> GateContext | None:
     return (config.get("configurable") or {}).get(GATE_KEY)
 
 
+def _subagent_parallel(tools: list[AiTooler]) -> dict[str, bool]:
+    """塑形要用的并行表就从在册 task 工具上取：同一份对象，判定与执行不可能分家（R14）。
+    没有 task 的图返回 {}——gate 按全串行办，行为与迁移前逐字相同。
+    """
+    for tool in tools:
+        flags = getattr(tool, "parallel", None)
+        if isinstance(flags, dict):
+            return flags
+    return {}
+
+
 def _unanswered(messages: list[BaseMessage]) -> tuple[int, list[Any]]:
     """(最后一条带 tool_calls 的 AIMessage 下标, 它里面还没有结果可配对的调用)。
 
@@ -162,7 +173,7 @@ def build_agent_graph(provider: LlmProvider, tools: list[AiTooler]) -> CompiledS
 
     graph = StateGraph(AgentState)
     graph.add_node("agent", agent_node)
-    graph.add_node("gate", make_gate_node(_gate_context))
+    graph.add_node("gate", make_gate_node(_gate_context, _subagent_parallel(tools)))
     graph.add_node("tools", tools_node)
     graph.add_edge(START, "agent")
     graph.add_conditional_edges("agent", should_continue, {"gate": "gate", END: END})

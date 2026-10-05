@@ -1,7 +1,12 @@
 """编排 loop 层：LangGraph 状态图。"""
 
 from aitester.orchestration.agent_graph import AgentState, build_agent_graph, run_agent, run_graph, stream_graph
-from aitester.orchestration.auth_rules import needs_approval, plan_target, validate_perm_mode
+from aitester.orchestration.auth_rules import (
+    face_can_suspend,
+    needs_approval,
+    plan_target,
+    validate_perm_mode,
+)
 from aitester.orchestration.checkpoint import drop_thread, get_checkpointer, new_thread_id
 from aitester.orchestration.gate import (
     GATE_KEY,
@@ -21,6 +26,7 @@ from aitester.orchestration.subagent import (
     ChildRuntime,
     detail_of,
     drive_child,
+    shape_task_batch,
 )
 
 __all__ = [
@@ -43,6 +49,7 @@ __all__ = [
     "detail_of",
     "drive_child",
     "drop_thread",
+    "face_can_suspend",
     "get_checkpointer",
     "get_graph_builder",
     "make_gate_node",
@@ -53,6 +60,7 @@ __all__ = [
     "run_agent",
     "run_echo",
     "run_graph",
+    "shape_task_batch",
     "stream_graph",
     "validate_perm_mode",
 ]

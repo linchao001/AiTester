@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,15 @@ SHELL_IDS: tuple[str, ...] = ("pwsh", "bash")
 KB_WRITE_IDS: tuple[str, ...] = ("save_to_knowledge",)
 READ_ONLY_IDS: tuple[str, ...] = ("read", "grep_search", "glob_search", "web_search",
                                   "knowledge_search", "prepare_kb_write")
+
+# 会过闸门的工具全集：并行扇出的安全判据只看这个集合，不看档位——档位是运行期的，
+# 而「这一路子会不会挂起」必须在塑形时就定（R4/R14）
+SUSPENDABLE_IDS: frozenset[str] = frozenset(WRITE_IDS + SHELL_IDS + KB_WRITE_IDS)
+
+
+def face_can_suspend(tool_ids: Iterable[str]) -> bool:
+    """这副工具面里有没有会挂起的工具（写 / 命令 / 知识库写）——有就不能并行派发。"""
+    return not SUSPENDABLE_IDS.isdisjoint(tool_ids)
 
 
 def tool_ids_for(perm_mode: str) -> tuple[str, ...]:

@@ -15,8 +15,9 @@ from aitester.adapters.tools import build_default_registry
 from aitester.adapters.tools.file_tools.observation import FileObservationStore
 from aitester.adapters.tools.subagent_tools import build_task_tool
 from aitester.orchestration import build_agent_graph, stream_graph
+from aitester.orchestration.auth_rules import face_can_suspend
 from aitester.orchestration.gate import GateContext
-from aitester.orchestration.subagent import ChildRuntime, drive_child
+from aitester.orchestration.subagent import ChildRuntime, drive_child, shape_task_batch
 from streaming_fakes import CancelAfterProvider, ScriptedProvider
 
 SUB_NAME = "通用子智能体"
@@ -176,3 +177,111 @@ def test_drive_guard_reuses_finished_child_without_streaming() -> None:
                            tools=[], build_graph=lambda _p, _t: _FinishedGraph())
     assert drive_child(runtime, "brief", call_id="c1", name="n", title="t",
                        config=None) == "旧摘要"
+
+
+def test_face_can_suspend_reads_the_three_tier_sets() -> None:
+    """并行判据与三档表同源：写 / 命令 / 知识库写算可挂起，只读六件与 task 不算。"""
+    assert face_can_suspend(["read", "grep_search", "glob_search", "web_search"]) is False
+    assert face_can_suspend(["read", "knowledge_search", "prepare_kb_write"]) is False
+    assert face_can_suspend(["read", "task"]) is False
+    assert face_can_suspend(["read", "write"]) is True
+    assert face_can_suspend(["edit"]) is True
+    assert face_can_suspend(["pwsh"]) is True
+    assert face_can_suspend(["save_to_knowledge"]) is True
+    assert face_can_suspend([]) is False
+
+
+def test_shape_task_batch_fans_out_when_every_child_is_read_only() -> None:
+    """R4 扇出：整批 task 都可并行 → 全部保留（原对象、原顺序），只延后非 task 兄弟。"""
+    calls = [{"id": "c1", "name": "task", "args": {"description": "甲"}},
+             {"id": "w1", "name": "read", "args": {"file_path": "a"}},
+             {"id": "c2", "name": "task",
+              "args": {"description": "乙", "subagent_type": "general-purpose"}}]
+    keep, deferred = shape_task_batch(calls, {"general-purpose": True})
+    assert len(keep) == 2 and keep[0] is calls[0] and keep[1] is calls[2]
+    assert [m.tool_call_id for m in deferred] == ["w1"]
+    assert [m.status for m in deferred] == ["error"]
+    assert "Re-issue this call in your next round." in str(deferred[0].content)
+
+
+def test_shape_task_batch_keeps_first_task_when_a_child_can_suspend() -> None:
+    """R4 串行回退：表里说这个子面会挂起（开了 write）→ 一轮只跑第一个 task，第二个延后。"""
+    calls = [{"id": "c1", "name": "task", "args": {"description": "甲"}},
+             {"id": "c2", "name": "task", "args": {"description": "乙"}}]
+    keep, deferred = shape_task_batch(calls, {"general-purpose": False})
+    assert len(keep) == 1 and keep[0] is calls[0]
+    assert [m.tool_call_id for m in deferred] == ["c2"]
+    assert [m.name for m in deferred] == ["task"]
+
+
+def test_shape_task_batch_mixed_batch_falls_back_to_serial() -> None:
+    """混合批按串行：只要有一个 task 点名的子不可并行，整批就只留第一个。"""
+    calls = [{"id": "c1", "name": "task", "args": {"subagent_type": "general-purpose"}},
+             {"id": "c2", "name": "task", "args": {"subagent_type": "runner"}}]
+    keep, deferred = shape_task_batch(calls, {"general-purpose": True})   # runner 不在表 = False
+    assert [c["id"] for c in keep] == ["c1"]
+    assert [m.tool_call_id for m in deferred] == ["c2"]
+
+
+def test_shape_task_batch_passthrough_without_task() -> None:
+    """无 task 的批原样放行：普通多工具轮零行为变化（R4 的边界）。"""
+    calls = [{"id": "c1", "name": "read", "args": {"file_path": "a"}},
+             {"id": "c2", "name": "grep_search", "args": {"pattern": "x"}}]
+    keep, deferred = shape_task_batch(calls, {"general-purpose": True})
+    assert keep == calls and deferred == []
+
+
+def test_two_read_only_children_fan_out_in_one_batch(tmp_path: Path) -> None:
+    """R4/R14 图级锁：两个只读子同批都跑——两条摘要各归各的 call_id（同 ns 会顶替成同一条），
+    子卡一 call 一张，父步骤两行 task。"""
+    providers = [ScriptedProvider([AIMessage(content="甲摘要")]),
+                 ScriptedProvider([AIMessage(content="乙摘要")])]
+    taken: list[int] = []
+
+    def build_child(_aid: str) -> ChildRuntime:
+        taken.append(1)
+        return _child_runtime(providers[len(taken) - 1], [])
+
+    tool = build_task_tool({"general-purpose": {"name": SUB_NAME, "desc": "Read-only."}},
+                           build_child, drive_child, parallel={"general-purpose": True})
+    registry = build_default_registry(cwd=str(tmp_path), session_id="s1",
+                                      observed=FileObservationStore(), task=tool)
+    parent = ScriptedProvider([
+        _calls(("c1", "task", {"description": "查甲"}),
+               ("c2", "task", {"description": "查乙"})),
+        AIMessage(content="主答")])
+    events = list(stream_graph(build_agent_graph, parent, registry.get_many(["task"]),
+                               [HumanMessage(content="同时查甲和乙")], thread_id="sg7"))
+    subs = {(e["phase"], e["call_id"]) for e in events if e["type"] == "sub"}
+    assert subs == {("start", "c1"), ("done", "c1"), ("start", "c2"), ("done", "c2")}
+    notes = {m.tool_call_id: str(m.content) for m in parent.calls[1]
+             if isinstance(m, ToolMessage)}
+    assert sorted(notes.values()) == ["乙摘要", "甲摘要"]        # 两条各归各的：同 ns 会顶替成同一条
+    assert len(taken) == 2 and sum(len(p.calls) for p in providers) == 2
+    finish = events[-1]
+    assert finish["reply"] == "主答" and finish["pending"] is False
+    assert [t["tool"] for t in finish["tool_traces"]] == ["task", "task"]
+
+
+def test_parallel_sibling_is_deferred_until_after_task(tmp_path: Path) -> None:
+    """R4/R8 图级锁：子面按串行（parallel 缺省）时 free 档（无 gate）同批 [task, write]
+    也只跑 task——write 零执行、tool_traces 只有 task、模型经错误结果看到延后理由。"""
+    parent = ScriptedProvider([
+        _calls(("c1", "task", {"description": "先派子"}),
+               ("c2", "write", {"file_path": "probe.md", "content": "x"})),
+        AIMessage(content="完成")])
+    child = ScriptedProvider([AIMessage(content="子摘要")])
+    tool = build_task_tool({"general-purpose": {"name": SUB_NAME, "desc": "Read-only."}},
+                           build_child=lambda _aid: _child_runtime(child, []), drive=drive_child)
+    registry = build_default_registry(cwd=str(tmp_path), session_id="s1",
+                                      observed=FileObservationStore(), task=tool)
+    tools = registry.get_many(["task", "write"])   # write 真在册：延后一旦失效就会落盘
+    events = list(stream_graph(build_agent_graph, parent, tools,
+                               [HumanMessage(content="派子并写")], thread_id="sg6"))
+    assert not (tmp_path / "probe.md").exists()    # 同批 write 未执行：零副作用
+    finish = events[-1]
+    assert [t["tool"] for t in finish["tool_traces"]] == ["task"]
+    notes = [m for m in parent.calls[1]
+             if isinstance(m, ToolMessage) and m.tool_call_id == "c2"]
+    assert len(notes) == 1                          # 模型看得见延后理由，可下一轮重发
+    assert "Re-issue this call in your next round." in str(notes[0].content)

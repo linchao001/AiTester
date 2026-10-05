@@ -14,7 +14,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 
 from aitester.orchestration.auth_rules import AuthTarget, needs_approval, plan_target
-from aitester.orchestration.subagent import SUBAGENT_KEY
+from aitester.orchestration.subagent import SUBAGENT_KEY, shape_task_batch, shape_task_batch
 
 # 进 config.configurable 的键：与 RUN_CONTROL_KEY 同一条注入通道（GraphBuilder 签名不许多带参数）
 GATE_KEY = "aitester_gate"
@@ -99,21 +99,29 @@ def plan_items(calls: list[dict[str, Any]], ctx: GateContext) -> list[AuthItem]:
     return out
 
 
-def make_gate_node(lookup: Callable[[RunnableConfig | None], GateContext | None]):
+def make_gate_node(lookup: Callable[[RunnableConfig | None], GateContext | None],
+                   parallel: dict[str, bool] | None = None):
     """返回 gate 节点体。spec「架构与拦截点」的三件事一气呵成，不拆函数：
-    逐条判定 → 逐条 interrupt → 给被拒的调用合成结果。
+    塑形 → 逐条判定 → 逐条 interrupt → 给被拒与被延后的调用合成结果。
+
+    `parallel` 是 task 工具上那份并行表（R14 同一份对象，见 agent_graph 接线）：缺省 None
+    按全串行办——不传它的老调用点（无 task 的图）行为逐字不变。
     """
+    flags = parallel or {}
 
     def gate_node(state: dict, config: RunnableConfig) -> dict[str, list]:
-        ctx = lookup(config)
-        if ctx is None:
-            return {"messages": []}                       # R3：空 list，绝不返回 {}
         last = state["messages"][-1]
         if not isinstance(last, AIMessage) or not last.tool_calls:
             return {"messages": []}
-        items = plan_items(list(last.tool_calls), ctx)
+        # R4/R8：委派轮的批形先定——整批只读子则全部并行，否则只留第一个 task；同批兄弟转
+        # 错误结果等下一轮重发。先于 ctx 判定，free 档（ctx=None）同防（重放与档位无关）。
+        keep, deferred = shape_task_batch(list(last.tool_calls), flags)
+        ctx = lookup(config)
+        if ctx is None:
+            return {"messages": deferred}                 # R3：空 list，绝不返回 {}
+        items = plan_items(keep, ctx)
         if not items:
-            return {"messages": []}
+            return {"messages": deferred}
         # R3：wait 载荷恒带来源标注——父层 None；子层是 drive 写进 configurable 的 dict
         sub = (config.get("configurable") or {}).get(SUBAGENT_KEY)
         rejected_ids: set[str] = set()
@@ -132,7 +140,7 @@ def make_gate_node(lookup: Callable[[RunnableConfig | None], GateContext | None]
         # 原样保留那条 AIMessage 的 tool_calls，只补被拒调用的结果：provider 的硬约束是
         # 「声明了的每个 tool_call_id 都要有对应 tool 消息」，把被拒的剔出清单反而失衡
         # （真机 400，见 test_chat_auth.check_tool_protocol）。不执行由 tools 节点负责。
-        return {"messages": [i.rejected_message()
-                             for i in items if i.call_id in rejected_ids]}
+        return {"messages": [*deferred, *[i.rejected_message()
+                                          for i in items if i.call_id in rejected_ids]]}
 
     return gate_node
