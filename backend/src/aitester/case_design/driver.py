@@ -31,6 +31,7 @@ def make_driver_node(task_tool: Any):
     # （本模块有 `from __future__ import annotations`，注解以字符串比对白名单，
     # 只认 "RunnableConfig"——Any 或 "RunnableConfig | None" 都会被静默跳过，
     # T9 接线时实测缺参 TypeError）
+    # 上述白名单细节按 langgraph==1.2.12 核实（T9 M-2）：升级 langgraph 时须重新核实。
     def driver_node(state: dict, config: RunnableConfig) -> dict:
         try:
             writer = get_stream_writer()
