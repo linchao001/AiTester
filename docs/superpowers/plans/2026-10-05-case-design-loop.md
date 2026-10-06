@@ -31,7 +31,7 @@
 | S1 | **不新增面向模型的 KB 写工具**（spec §5「`default_tool_ids` 补 `save_to_knowledge`」的偏离，仅补 `knowledge_search`）；回写 = 驱动经 `KbClient` 确定性执行 `case_nodes_list / case_node_upsert / case_node_delete` 三件 job | 实证 `save_to_knowledge` 对未知 bucket 静默回落到默认桶 + 节点 markdown 由模型拼装无法保证字段保真（type/id/parent 是 P-3 的地址面）+ 每次调用都是模型回合成本。回写是大纲过审后的确定性动作，属驱动职责（与「评审在子、优化在主」同构的分工：机械动作不下放模型） |
 | A1 | **人审门 = 运行正常结束 + `status=awaiting_review` + 下一条用户消息触发**（`h_gate_interpret`）；不用 interrupt/resume | 与状态机裁定一致；不占现有 pending 队列（那是工具审批的）；断线/重启后门仍在（状态在账本文件里） |
 | A2 | 评审子智能体两员进 `SUBAGENT_CATALOG`：`case_review`（read/grep_search/glob_search/web_search/knowledge_search）、`case_review_blind`（仅 read）。**盲枚举的结构实现** = 驱动白名单清单（`design/manifests/sources.json` 只含 KB 业务桶 + 用户指定项目文件，构造性排除 design/ 与三层桶）+ 简报不含树 + 面仅 read（无 glob/grep 无法自行发现树） | 面是设置页可配的，「盲」靠简报+清单结构而不是提示词叮嘱；两个角色（枚举/对照）拆开保住审计性（独立制品、人可追问） |
-| A3 | 状态机 = `active / awaiting_review / interrupted / done / halted / writeback_failed`（**无 `awaiting_info`**：信息缺口以未消化归因与大纲「待澄清」呈现）。驱动内任何异常收敛为 `halted`（`GraphBubbleUp` 除外，原样上抛保停止语义） | 少一个状态少一条分支；「业务信息不足」已有裁定 17 四选一归因出口 |
+| A3 | 状态机 = `active / awaiting_review / interrupted / done / halted / writeback_failed`（**无 `awaiting_info`**：信息缺口以未消化归因与大纲「待澄清」呈现）。驱动内任何异常收敛为 `halted`（`GraphBubbleUp` 除外，原样上抛保停止语义）。**终评 B-F2/R-31 勘误**：`interrupted` 自落盘实现起就从未成为过磁盘状态——`_boot` 里它赋值后被无条件 `active` 覆盖且中间无 save；现收口为「瞬时推断态，不作 status 落盘，改往账本 `history` 追加 `resumed-from-interrupted@<ts>` 痕迹」，`STATUSES` 仍含该词以免状态校验漂移。「六态可观测」据此降为「五态可作 status + 中断痕迹可查」 | 少一个状态少一条分支；「业务信息不足」已有裁定 17 四选一归因出口 |
 | A4 | 轮次口径：**每块**评审-优化环 ≤ `ROUND_CAP=5`；**每层**全局审环（审计意见的优化-复审）独立计数 ≤5；层内总轮 = 各块之和 | 「每层 5 轮」按字面会把 10 块的层压成每块 0.5 轮，与「复审仍出意见即进下一轮」的逐块环冲突；块是生成最小单位，环挂在块上 |
 | A5 | 轮次用尽的**不收敛归因**由主智能体在专用 `attribute` 阶段产出（四选一 + 一句说明，驱动校验枚举值），随未消化项存账本并进大纲 | 归因需要业务上下文，评审子只出判决不背归因；驱动只做形状校验 |
 | A6 | 回写用**原子替换**（临时文件 + `os.replace`），不调 reme 写锁（`knowledge_write_lock` 形态未进探针，避免误用） | 单写者（驱动）+ 原子替换已消除半文件被索引的风险 |
@@ -3551,10 +3551,22 @@ def _boot(ctx: Ctx, fresh: bool) -> None:
         elif led.status == "awaiting_review":
             _go(ctx, "gate_interpret")         # 人审续步：审 gate-int → 回写或优化环
         elif led.status == "writeback_failed":
-            _go(ctx, "writeback")
-        elif led.status == "active":
-            led.status = "interrupted"         # 上一回合没跑完（取消/崩溃）；从游标续跑
-    led.status = "active"
+            # 终评 B-F1：续跑按本轮人话分流。只有**裸授权**（剥标点与批准/重试措辞后不剩
+            # 任何内容）才直回写；「同意，把 st-0002 拆成两条」这类混写一律先过 gate_interpret
+            # ——否则肯定语气的未处理意见会被当成纯授权，回写按旧大纲落库且意见静默丢弃。
+            human_now = _human_text(ctx.state_messages)
+            if _writeback_authorized(human_now) and _is_bare_authorization(human_now):
+                _go(ctx, "writeback")
+            else:
+                _go(ctx, "gate_interpret")
+        elif led.status == "active" and loaded:
+            # 终评 B-F2/R-31：上一回合没跑完（取消/崩溃）的续跑留痕。旧写法先赋 "interrupted"
+            # 再无条件覆盖回 "active"、中间没有 save ⇒ 磁盘永远看不到，契约 §9「六态可观测」
+            # 是假闭环。清偿最小形态：往账本既有 history 追加带时间戳痕迹，不新增状态词。
+            led.data["history"].append(f"resumed-from-interrupted@{_now()}")
+        # 「重入驾驶=active」只在**新回合**成立：非 fresh 的图内重入（待决转述轮等）必须
+        # 原样保留 awaiting_review，否则 h_gate 的 B-F4 守卫（待决轮不二次呈递终帧）拿不到事实。
+        led.status = "active"
     led.save()
 
 
@@ -4393,16 +4405,25 @@ def h_gate(ctx: Ctx) -> Any:
         unresolved={layer: led.layer(layer)["unresolved"] for layer in LAYERS})
     kept, exempted = _drop_out_of_window_hards(ctx, report["hard"], scope)
     report = {**report, "hard": kept, "exempted": exempted}
+    if not report["hard"] and led.status == "awaiting_review":
+        # 终评 B-F4：待决转述轮里主智能体若无工具调用，图路由回 driver 时游标仍是 gate——
+        # 再跑一遍会重写大纲并二次呈递「大纲已生成」终帧。静默交回等待态：零重写、零终帧、
+        # 零写入。（守卫不许改成回 gate_interpret：那会重复解读、重复烧评审子调用。）
+        # 正常回溯重做轮不受它误伤：`_boot` 的 active 赋值只在**新回合**成立。
+        return ctx.turn([], "end")
     if report["hard"]:
         if int(gate["round"]) >= ctx.round_cap():     # 预算从账本 plan.budget 读（预算单点）
             raise _Halt("大纲门结构检查连续未清零（修复环用尽）")
         gate["round"] = int(gate["round"]) + 1
         issues_path = ctx.env.reviews_dir / f"gate-issues-r{gate['round']}.json"
         _write_json(issues_path, {"round": gate["round"], "hard": report["hard"]})
-        # 修复环计数只用 gate["round"]：ctx.ask 的 nudge 是「同一条指令重问」的预算，
-        # 每轮都是新指令、永不累计到上限，给它传 cap 是一条死预算（评审 M-7）
+        # 终评 B-F3 勘误（原注释反向断言「传 cap 是死预算」）：这条环的预算就是
+        # gate["round"]/round_cap，ask 必须显式传 cap=ctx.round_cap()。旧写法吃默认
+        # NUDGE_CAP=3 ⇒ 「重试超限」抢在 round_cap 分支前收口，有效修复指令只下发 4 次；
+        # 现在第 round_cap+1 次进门必由上面那句 raise 以「修复环用尽」人话终结。
         return ctx.ask(gate_fix_instruction(issues_path=ctx.rel(issues_path),
-                                            round_no=gate["round"]))
+                                            round_no=gate["round"]),
+                       cap=ctx.round_cap())
     nodes = _outline_nodes(ctx)
     (ctx.env.design / OUTLINE_NAME).write_text(
         compose_outline(led.data, nodes, report, _outline_extras(ctx, nodes)),
@@ -6170,7 +6191,7 @@ grep -c '^event: call' D:/tmp/walkthrough_case/ss1.log D:/tmp/walkthrough_case/s
                        D:/tmp/walkthrough_case/ss2.log D:/tmp/walkthrough_case/ss2-approve.log
 ```
 
-对照口径（spec §验收）：预估只随规模变动——L2 枝 10~20 次、L1 整枝上百次；走查一约 3 条一级链路量级 ≈ 300~600 次。**实测超 3 倍（>1800 次）→ 停下报数 + 菜单，不砍能力**。token 若平台未回传则如实标注「未回传，以调用数对照」。走查二（增量）同口径记录，应显著小于首建。
+对照口径（spec §验收）：预估只随规模变动——L2 枝 10~20 次、L1 整枝上百次；走查一约 3 条一级链路量级 ≈ 300~600 次。**成本红线按用户 2026-10-06 裁定撤除（「先不设置红线，功能跑顺再说」）**：原「实测超 3 倍（>1800 次）→ 停下报数 + 菜单，不砍能力」作废，改为**只报数不设线**，线待功能跑顺后另立；实测数见 spec 走查记录（走查一 1648 / 走查二 2830 / 本专项累计 6988 次 call，对照口径超出数倍且**增量 > 首建**）。token 若平台未回传则如实标注「未回传，以调用数对照」。走查二（增量）同口径记录。
 
 - [x] **Step 8: 收尾清场与走查记录**
 
