@@ -214,9 +214,11 @@ def _boot(ctx: Ctx, fresh: bool) -> None:
             # B-F2/R-31：上一回合没跑完（取消/崩溃）的续跑留痕。旧写法先赋 "interrupted"
             # 再无条件覆盖回 "active"、中间没有 save——磁盘账本永远看不到 interrupted，
             # 契约 §9「六态可观测」是假闭环。裁定清偿最小形态：删死赋值，往账本既有
-            # history 追加带时间戳痕迹，仍由下面既有 led.save() 单点落盘；不新增状态词。
+            # history 追加带时间戳痕迹，仍由下面 led.save() 单点落盘；不新增状态词。
             led.data["history"].append(f"resumed-from-interrupted@{_now()}")
-    led.status = "active"
+        # 「重入驾驶=active」只在**新回合**成立：非 fresh 的图内重入（待决转述轮等）
+        # 必须原样保留 awaiting_review，否则 h_gate 的 B-F4 守卫拿不到等待态事实。
+        led.status = "active"
     led.save()
 
 
@@ -1166,6 +1168,12 @@ def h_gate(ctx: Ctx) -> Any:
     kept, exempted = _drop_out_of_window_hards(ctx, report["hard"], scope)
     # exempted 只用于大纲渲染豁免计数（R-18(a)）：④ 每次进门都确定性重算，不必落账本。
     report = {**report, "hard": kept, "exempted": exempted}
+    if not report["hard"] and led.status == "awaiting_review":
+        # B-F4：待决转述轮里主智能体若无工具调用，图路由回 driver 时游标仍是 gate——
+        # 再跑一遍会重写大纲并二次呈递「大纲已生成」终帧（人本轮的话没被答复却收到第二条
+        # 呈递）。静默交回等待态：零重写、零终帧、零写入。守卫不许改成回 gate_interpret
+        # （重复解读、重复烧评审子调用、可能重复登记意见）。
+        return ctx.turn([], "end")
     if report["hard"]:
         if int(gate["round"]) >= ctx.round_cap():
             raise _Halt("大纲门结构检查连续未清零（修复环用尽）")

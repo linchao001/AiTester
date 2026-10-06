@@ -1062,3 +1062,33 @@ def test_interrupted_resume_appends_history_trace(tmp_path):
     assert raw["history"][0].startswith("resumed-from-interrupted@")
     assert re.match(r"^resumed-from-interrupted@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$",
                     raw["history"][0])
+
+
+# ---- B-F4（待决转述轮不得二次呈递「大纲已生成」终帧）----
+
+def test_gate_undecided_relay_turn_does_not_reannounce(tmp_path):
+    """人审待决转述后智能体无工具调用回到 driver：游标仍是 gate，h_gate 再跑会重写
+    大纲并再发一条「大纲已生成」终帧——人本轮的话没被答复却收到第二条呈递。
+
+    守卫在 h_gate 入口（awaiting_review 且本轮重算 hard 为空 ⇒ 静默交回等待态）；
+    不许改成回 gate_interpret——那会重复解读、重复烧评审子调用并可能重复登记意见。
+    """
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    task = ScriptTask()
+    drain(env, kb, task)                                       # 呈递一次 → awaiting_review
+    relay = {"messages": [HumanMessage("我再想想")], "case": {}}
+    frames_a: list[dict] = []
+    turn = _drive(env, relay, task, writer=frames_a.append)    # 待决轮：下发转述指令
+    assert turn["case"]["route"] == "agent" and frames_a == []
+    _append(relay, turn)
+    relay["messages"].append(AIMessage(content="已向人转述：等待明确批准或意见"))
+    frames_b: list[dict] = []
+    turn2 = _drive(env, relay, task, writer=frames_b.append)   # 无工具调用重入 driver
+    assert turn2["case"]["route"] == "end"
+    assert frames_b == []                                      # 零终帧：不再呈递「大纲已生成」
+    led = Ledger.load(env.design)
+    assert led.status == "awaiting_review"
+    assert led.data["gate"]["int_round"] == 1                  # 解读轮不被二次推进
+    assert [c for c in task.call_ids() if c.startswith("gate-int")] == ["gate-int-r1"]
+    assert kb.upserts == [] and kb.deletes == []
