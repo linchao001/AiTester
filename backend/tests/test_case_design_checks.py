@@ -224,6 +224,68 @@ def test_in_scope_branch_under_a_clean_parent_is_not_reported_as_cycled():
     assert out["hard"] == []
 
 
+# ---------------------------------------------------------------- I-2 链路自状态 / 引用边状态
+
+def test_stale_chain_is_caught_by_self_state_and_downstream_reference():
+    # I-2（控制方复现）：范围内链路 state=stale_pending、其下故事/点 approved ⇒ 旧实现零信号
+    # （只有 story/point 循环查自身 state，链路无自状态检查；引用边从不比较被引用方状态）。
+    # 而 instructions 承诺「unapproved_ref：被引用的节点必须已过审；失效层节点不得被引用」。
+    kb = {
+        "chain": [{"id": "ch-0001", "type": "chain", "level": 1, "parent": "",
+                   "priority": "P1", "state": "stale_pending"}],
+        "story": [{"id": "st-0001", "type": "story", "chains": ["ch-0001"],
+                   "priority": "P1", "state": "approved"}],
+        "point": [{"id": "pt-0001", "type": "point", "story": "st-0001", "priority": "P1",
+                   "directions": ["正向"], "entities": ["实体甲"], "state": "approved"}],
+    }
+    out = run_checks(build_universe({}, kb, {}), claims=[], matrix_cells=[], unresolved={})
+    got = {(f["code"], f["layer"], f["where"]) for f in out["hard"]}
+    assert ("unapproved_ref", "chain", "ch-0001") in got       # 链路自身失效
+    assert ("unapproved_ref", "story", "st-0001") in got        # 故事引用了未过审链路（引用边）
+
+
+def test_child_chain_referencing_stale_parent_reports_edge_on_child():
+    # 子链路↔父链路引用边：父链失效 ⇒ 自状态报在父（ch-0001）、引用边报在可修方子链（ch-0002）。
+    nodes = _nodes()
+    nodes["chain"][0]["state"] = "stale_pending"
+    out = run_checks(build_universe(nodes, {"chain": [], "story": [], "point": []},
+                                    {"chains": {"ch-0001", "ch-0002"}, "stories": {"st-0001"}}),
+                     claims=[], matrix_cells=[], unresolved={})
+    got = {(f["code"], f["layer"], f["where"]) for f in out["hard"]}
+    assert ("unapproved_ref", "chain", "ch-0001") in got        # 父链自状态
+    assert ("unapproved_ref", "chain", "ch-0002") in got        # 子链引用未过审父
+
+
+def test_point_edge_reports_referencer_not_double_counting_the_referenced_story():
+    # 「与自状态检查不重复计数」：失效故事由自状态负责（where=故事），点侧引用边只另报
+    # 「引用了未过审的上游」（where=点）——两条 where 不同，各司其职。
+    nodes = {
+        "chain": [{"id": "ch-0001", "type": "chain", "level": 1, "parent": "",
+                   "priority": "P1", "state": "approved"}],
+        "story": [{"id": "st-0001", "type": "story", "chains": ["ch-0001"],
+                   "priority": "P1", "state": "active"}],
+        "point": [{"id": "pt-0001", "type": "point", "story": "st-0001", "priority": "P1",
+                   "directions": ["正向"], "entities": ["实体甲"], "state": "approved"}],
+    }
+    out = run_checks(build_universe(nodes, {"chain": [], "story": [], "point": []},
+                                    {"chains": {"ch-0001"}, "stories": {"st-0001"}}),
+                     claims=[], matrix_cells=[], unresolved={})
+    got = [(f["code"], f["layer"], f["where"]) for f in out["hard"]]
+    assert ("unapproved_ref", "story", "st-0001") in got         # 自状态（故事本身失效）
+    assert ("unapproved_ref", "point", "pt-0001") in got          # 引用边（点引用失效故事）
+    # 点自身过审，不得因引用边被「重复」计成点的自状态违例——两条恰为上述两条，不多不少。
+    assert {g for g in got if g[0] == "unapproved_ref"} == {
+        ("unapproved_ref", "story", "st-0001"), ("unapproved_ref", "point", "pt-0001")}
+
+
+def test_approved_edges_produce_no_reference_violations():
+    # 护栏：三层全 approved（含 KB「kb」态）⇒ 自状态与引用边都不响，零 unapproved_ref。
+    out = run_checks(build_universe(_nodes(), {"chain": [], "story": [], "point": []},
+                                    {"chains": {"ch-0001", "ch-0002"}, "stories": {"st-0001"}}),
+                     claims=[], matrix_cells=[], unresolved={})
+    assert not any(f["code"] == "unapproved_ref" for f in out["hard"])
+
+
 # ---------------------------------------------------------------- R-13 范围门控
 
 _KB_OUT_OF_SCOPE = {
@@ -531,6 +593,7 @@ _EXPECTED_ORDER = [("cross_level", "chain", "ch-0002"),
                    ("broken_parent", "story", "st-0001"),
                    ("unapproved_ref", "story", "st-0002"),
                    ("priority_violation", "point", "pt-0001"),
+                   ("unapproved_ref", "point", "pt-0002"),
                    ("empty_chain", "story", "ch-0003")]
 
 

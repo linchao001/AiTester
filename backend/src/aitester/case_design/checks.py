@@ -164,6 +164,14 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
                     add("priority_violation", CHAIN, cid,
                         f"优先级 {_priority(c.get('priority'))} 高于其父 {parent} 的"
                         f" {_priority(p.get('priority'))}")
+                # I-2 引用边状态：子链引用了未过审的父链 ⇒ 报在可修方（子链）。「父自身违例」
+                # 由下面父链的自状态检查负责，此处只表达「引用了失效上游」，两条 where 不同。
+                if str(p.get("state")) not in _APPROVED:
+                    add("unapproved_ref", CHAIN, cid,
+                        f"父链「{parent}」状态 {p.get('state')} 未过审，不得被引用")
+        # I-2 链路自状态：与 story/point 同款——失效链路此前零检查，却被下游引用。
+        if str(c.get("state")) not in _APPROVED:
+            add("unapproved_ref", CHAIN, cid, f"节点状态 {c.get('state')} 未过审")
     for sid in sorted(stories):
         s = stories[sid]
         parents = sorted(str(x) for x in (s.get("chains") or []))
@@ -173,10 +181,15 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
             p = chains.get(cid)
             if p is None:
                 add("broken_parent", STORY, sid, f"chains「{cid}」不在引用宇宙内")
-            elif rank(s.get("priority")) < rank(p.get("priority")):
-                add("priority_violation", STORY, sid,
-                    f"优先级 {_priority(s.get('priority'))} 高于其父 {cid} 的"
-                    f" {_priority(p.get('priority'))}")
+            else:
+                if rank(s.get("priority")) < rank(p.get("priority")):
+                    add("priority_violation", STORY, sid,
+                        f"优先级 {_priority(s.get('priority'))} 高于其父 {cid} 的"
+                        f" {_priority(p.get('priority'))}")
+                # I-2 引用边状态：故事引用了未过审的所属链路 ⇒ 报在可修方（故事）。
+                if str(p.get("state")) not in _APPROVED:
+                    add("unapproved_ref", STORY, sid,
+                        f"所属链路「{cid}」状态 {p.get('state')} 未过审，不得被引用")
         if str(s.get("state")) not in _APPROVED:
             add("unapproved_ref", STORY, sid, f"节点状态 {s.get('state')} 未过审")
     for pid in sorted(points):
@@ -190,6 +203,10 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
                 add("priority_violation", POINT, pid,
                     f"优先级 {_priority(p.get('priority'))} 高于其父 {sid} 的"
                     f" {_priority(parent.get('priority'))}")
+            # I-2 引用边状态：点引用了未过审的所属故事 ⇒ 报在可修方（点）。
+            if str(parent.get("state")) not in _APPROVED:
+                add("unapproved_ref", POINT, pid,
+                    f"所属故事「{sid}」状态 {parent.get('state')} 未过审，不得被引用")
         if str(p.get("state")) not in _APPROVED:
             add("unapproved_ref", POINT, pid, f"节点状态 {p.get('state')} 未过审")
 
