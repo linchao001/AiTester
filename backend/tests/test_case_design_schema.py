@@ -118,6 +118,45 @@ def test_priority_check_lives_in_common_upsert_branch_not_point_only():
         assert any("priority" in e for e in errors), layer
 
 
+def test_duplicate_id_within_one_draft_file_is_rejected():
+    # A-M4：同一 chain 文件两条 id="ch-0001" 的不同 upsert 旧实现 errors==[]、返回 2 节点；
+    # 而宇宙侧 checks.py 后者覆盖、大纲侧首条呈递——同一破数据两种静默读法。本文件内重复必须拒。
+    raw = {"layer": "chain", "block": "ALL", "nodes": [
+        {"op": "upsert", "type": "chain", "id": "ch-0001", "name": "甲",
+         "level": 1, "parent": "", "business_scope": "范围"},
+        {"op": "upsert", "type": "chain", "id": "ch-0001", "name": "乙",
+         "level": 1, "parent": "", "business_scope": "范围"}]}
+    nodes, errors = validate_drafts("chain", raw)
+    assert nodes == []                                   # 有错 ⇒ 不返回节点表
+    assert any("重复" in e and "ch-0001" in e for e in errors)
+
+
+def test_duplicate_id_across_upsert_and_delete_is_rejected():
+    # delete 与 upsert 同表：本文件内 upsert 与 delete 撞同一 id 也拒。
+    raw = {"layer": "story", "block": "ch-0001", "nodes": [
+        {"op": "upsert", "type": "story", "id": "st-0001", "name": "甲", "chains": ["ch-0001"],
+         "actor": "角色", "trigger": "触发", "expected": "成功"},
+        {"op": "delete", "type": "story", "id": "st-0001", "reason": "下线"}]}
+    _, errors = validate_drafts("story", raw)
+    assert any("重复" in e for e in errors)
+
+
+def test_blank_and_distinct_ids_within_file_still_pass():
+    # 护栏：新增节点 id 留空（驱动后分配）不得被当重复；同文件互不相同 id 合法。
+    blank = {"layer": "chain", "block": "ALL", "nodes": [
+        {"op": "upsert", "type": "chain", "name": "甲", "level": 1, "parent": "", "business_scope": "范围"},
+        {"op": "upsert", "type": "chain", "name": "乙", "level": 1, "parent": "", "business_scope": "范围"}]}
+    nodes, errors = validate_drafts("chain", blank)
+    assert errors == [] and len(nodes) == 2
+    distinct = {"layer": "chain", "block": "ALL", "nodes": [
+        {"op": "upsert", "type": "chain", "id": "ch-0001", "name": "甲",
+         "level": 1, "parent": "", "business_scope": "范围"},
+        {"op": "upsert", "type": "chain", "id": "ch-0002", "name": "乙",
+         "level": 1, "parent": "", "business_scope": "范围"}]}
+    nodes, errors = validate_drafts("chain", distinct)
+    assert errors == [] and len(nodes) == 2
+
+
 def test_review_and_matrix_models():
     out = ReviewOut.model_validate({
         "opinions": [{"target": {"type": "seam", "value": "st-0001,st-0002"},

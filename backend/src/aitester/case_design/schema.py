@@ -114,7 +114,7 @@ class MatrixOut(BaseModel):
     cells: list[dict[str, str]] = Field(default_factory=list)   # {"entity","story","verdict","reason"}
 
 
-def _check_common(node: DraftNode, errors: list[str], where: str) -> None:
+def _check_common(node: DraftNode, errors: list[str], where: str, seen_ids: set[str]) -> None:
     if node.op == "upsert":
         if not node.name.strip():
             errors.append(f"{where}: name 不能为空")
@@ -132,6 +132,14 @@ def _check_common(node: DraftNode, errors: list[str], where: str) -> None:
             errors.append(f"{where}: id「{node.id}」形状非法")
         if not node.reason.strip():
             errors.append(f"{where}: delete 必须带 reason")
+    # A-M4：同一草稿文件内 id 不得重复（delete 与 upsert 同表）——否则宇宙侧后者覆盖、
+    # 大纲侧首条呈递，同一破数据两种静默读法。新增节点 id 留空（驱动后分配）不计入。
+    # 跨文件同 id 属 R-29，不在本处处理。
+    if node.id:
+        if node.id in seen_ids:
+            errors.append(f"{where}: id「{node.id}」在本文件内重复（同一草稿文件不得有同名 id）")
+        else:
+            seen_ids.add(node.id)
 
 
 def _check_chain(node: DraftNode, errors: list[str], where: str) -> None:
@@ -187,6 +195,7 @@ def validate_drafts(layer: str, raw: Any) -> tuple[list[DraftNode], list[str]]:
     if not isinstance(raws, list) or not raws:
         return [], [*errors, "nodes 必须是非空数组"]
     nodes: list[DraftNode] = []
+    seen_ids: set[str] = set()
     for i, item in enumerate(raws):
         where = f"nodes[{i}]"
         try:
@@ -198,7 +207,7 @@ def validate_drafts(layer: str, raw: Any) -> tuple[list[DraftNode], list[str]]:
             errors.append(f"{where}: type「{node.type}」与本层「{layer}」不符")
             continue
         nodes.append(node)
-        _check_common(node, errors, where)
+        _check_common(node, errors, where, seen_ids)
         _CHECKS[layer](node, errors, where)
     return (nodes if not errors else []), errors
 
