@@ -157,6 +157,35 @@ def test_blank_and_distinct_ids_within_file_still_pass():
     assert errors == [] and len(nodes) == 2
 
 
+def test_ledger_status_rejects_illegal_value_with_valueerror(tmp_path: Path):
+    # A-M6：状态枚举校验此前用 `assert`（`-O` 下静默失效）。改 ValueError 后必须响亮失败且不受 -O 影响。
+    led = Ledger.fresh(tmp_path)
+    with pytest.raises(ValueError):
+        led.status = "not_a_real_status"
+    led.status = "awaiting_review"                     # 合法值照常写入
+    assert led.data["status"] == "awaiting_review"
+
+
+def test_next_seq_fails_loudly_at_four_digit_ceiling(tmp_path: Path):
+    # A-M7：计数过 9999 会产 ch-10000，而 ID_RE 只认四位 ⇒ 模型回填必被判非法、nudge 烧尽后 halted
+    # 且无法合法修复。改为到上限即抛错说明需扩位/清账本，不静默产畸形 id。
+    led = Ledger.fresh(tmp_path)
+    led.data["counters"][CHAIN] = 9998
+    assert led.next_seq(CHAIN) == "ch-9999"             # 最后一个合法四位 id
+    with pytest.raises(ValueError):
+        led.next_seq(CHAIN)                              # 越界必须响亮失败
+    assert led.data["counters"][CHAIN] == 9999           # 失败不推进计数，不留脏状态
+
+
+def test_env_ensure_dirs_uses_layers_single_source(tmp_path: Path, monkeypatch):
+    # §9-3：env.py:36 硬编码 ("chain","story","point") ⇒ 违反 constants 单点纪律，改读 LAYERS。
+    # 改前模块内无 LAYERS 名，setattr 直接失败（红）；改后 ensure_dirs 随该单点增长。
+    from aitester.case_design import env as env_mod
+    monkeypatch.setattr(env_mod, "LAYERS", ("chain", "story", "point", "extra_layer"))
+    env_mod.CaseDesignEnv(project_dir=str(tmp_path), kb=None).ensure_dirs()
+    assert (tmp_path / "design" / "drafts" / "extra_layer").is_dir()
+
+
 def test_review_and_matrix_models():
     out = ReviewOut.model_validate({
         "opinions": [{"target": {"type": "seam", "value": "st-0001,st-0002"},

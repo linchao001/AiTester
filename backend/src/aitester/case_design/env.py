@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aitester.case_design.constants import LAYERS
+
 
 @dataclass(frozen=True)
 class CaseDesignEnv:
@@ -33,5 +35,5 @@ class CaseDesignEnv:
 
     def ensure_dirs(self) -> None:
         for path in (self.design, self.reviews_dir, self.manifests_dir, self.attribution_dir,
-                     *(self.drafts_dir(layer) for layer in ("chain", "story", "point"))):
+                     *(self.drafts_dir(layer) for layer in LAYERS)):
             path.mkdir(parents=True, exist_ok=True)

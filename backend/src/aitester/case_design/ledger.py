@@ -61,7 +61,9 @@ class Ledger:
 
     @status.setter
     def status(self, value: str) -> None:
-        assert value in STATUSES
+        # 状态枚举校验必须响亮失败：`assert` 在 `-O` 下会被剥离、非法状态静默落盘。
+        if value not in STATUSES:
+            raise ValueError(f"非法账本状态「{value}」，允许 {STATUSES}")
         self.data["status"] = value
 
     @property
@@ -73,5 +75,11 @@ class Ledger:
 
     def next_seq(self, layer: str) -> str:
         seq = int(self.data["counters"][layer]) + 1
+        # 四位 id 上限（ID_RE 只认 ch-/st-/pt- + 四位）：越界若静默产 ch-10000，模型原样回填必被判非法、
+        # nudge 烧尽后 halted 且无法合法修复。到上限即响亮失败，不推进计数、不留脏状态。
+        if seq > 9999:
+            raise ValueError(
+                f"{layer} 层序号已达四位 id 上限 9999：下一个 {TYPE_PREFIX[layer]}-{seq} 超出 ID_RE 允许的四位，"
+                "需要扩位（改 ID_RE）或清账本后重试")
         self.data["counters"][layer] = seq
         return f"{TYPE_PREFIX[layer]}-{seq:04d}"
