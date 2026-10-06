@@ -120,6 +120,26 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
         parent = str(chains[cid].get("parent") or "")
         add("broken_parent", CHAIN, cid, f"parent「{parent}」与祖先闭合成环，该分支在大纲中无法呈递")
 
+    # I-1：环检测的呈报面不得被 R-13 静音掉「范围内受害方」。若一条**范围内**链路的祖先指针
+    # 走入了闭合环（命中 cycle_members 的环体），该分支在大纲里既起不了根也作不了孤儿，会整枝
+    # 静默丢失——即便环体本身全在范围外。报在**可修方**（草稿侧改挂合法父），与 R-13「只报在能修
+    # 的一方」同源；环体自身若全在范围外仍由上面的循环 + add() 守卫保持不报。
+    for cid in sorted(chains):
+        if cid in cycle_members or not chains[cid].get("in_scope", True):
+            continue
+        seen: set[str] = {cid}
+        cur = str(chains[cid].get("parent") or "")
+        hit = ""
+        while cur in chains and cur not in seen:
+            if cur in cycle_members:
+                hit = cur
+                break
+            seen.add(cur)
+            cur = str(chains[cur].get("parent") or "")
+        if hit:
+            add("broken_parent", CHAIN, cid,
+                f"祖先「{hit}」与更上层闭合成环，本分支在大纲中无法呈递")
+
     for cid in sorted(chains):
         c = chains[cid]
         parent = str(c.get("parent") or "")

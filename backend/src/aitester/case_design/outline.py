@@ -63,6 +63,12 @@ def _tree_lines(nodes_by_layer: dict, layers: dict) -> list[str]:
                and str(c.get("parent") or "") not in chain_ids]
     for root in by_parent.get("", []) + orphans:
         walk_chain(root, 0)
+    # I-1 终兜底：起完根与孤儿后，凡 `chains` 里仍未被 walked 覆盖的链路（其祖先不可达且父引用
+    # 落在别处，如一段范围外的闭合父环），一律按根补走一遍——「祖先不可达且非孤儿」的分支因此
+    # 不可能静默丢失。此兜底只在原本会丢分支时触发：正常根树里所有链路都已 walked，故零影响。
+    for c in chains:
+        if str(c["id"]) not in walked:
+            walk_chain(c, 0)
     for layer in LAYERS:
         st = layers.get(layer, {}).get("state", "")
         if st in ("stale_pending", "skipped"):

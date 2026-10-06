@@ -282,6 +282,50 @@ def test_outline_renders_orphan_branch():
     assert "- （本次无增量节点）" not in "\n".join(tree)
 
 
+def test_outline_final_fallback_renders_branch_whose_parent_sits_in_out_of_scope_cycle():
+    """I-1 大纲侧双保险：驱动把「影响闭包内 KB 存量 ∪ 本 run 草稿」一起交给大纲。当范围内草稿链
+    的父引用落进一段全在范围外的闭合父环（ch-9001↔ch-9002）时，它既非根也非孤儿（父在 chain_ids
+    里），旧 `_tree_lines` 无根可起 ⇒ 整条分支静默丢失、呈「- （本次无增量节点）」假完整大纲。
+    修法在起树后加终兜底：凡未被 walked 覆盖的链路一律按根补走，杜绝丢分支。"""
+    nodes_by_layer = {
+        "chain": [{"id": "ch-9001", "name": "存量甲", "op": "upsert", "parent": "ch-9002",
+                   "state": "存量", "priority": "P1"},
+                  {"id": "ch-9002", "name": "存量乙", "op": "upsert", "parent": "ch-9001",
+                   "state": "存量", "priority": "P1"},
+                  {"id": "ch-0001", "name": "草稿链", "op": "upsert", "parent": "ch-9001",
+                   "state": "更新", "priority": "P1"}],
+        "story": [{"id": "st-0001", "name": "草稿故事", "op": "upsert", "chains": ["ch-0001"],
+                   "state": "更新"}],
+        "point": [{"id": "pt-0001", "name": "草稿点", "op": "upsert", "story": "st-0001",
+                   "directions": ["正向"], "entities": ["实体甲"], "state": "更新"}],
+    }
+    md = _outline(nodes_by_layer, {"hard": [], "report": {}},
+                  {"claims": [], "matrix_notes": [], "unresolved": [], "duplicates": []})
+    tree = _section(md, "增量树")
+    for nid in ("ch-0001", "st-0001", "pt-0001"):
+        assert any(nid in line for line in tree), nid           # 三个草稿 id 全部在场
+    assert "- （本次无增量节点）" not in "\n".join(tree)
+
+
+def test_outline_fallback_is_noop_when_all_chains_already_walked():
+    """§1 终兜底对既有呈递零影响：正常根树不新增任何行（只在原本会丢分支时触发）。"""
+    nodes_by_layer = {
+        "chain": [{"id": "ch-0001", "name": "示例链路甲", "op": "upsert", "parent": "",
+                   "state": "新增", "priority": "P0"},
+                  {"id": "ch-0002", "name": "示例链路乙", "op": "upsert", "parent": "ch-0001",
+                   "state": "新增", "priority": "P0"}],
+        "story": [], "point": [],
+    }
+    tree = _section(_outline(nodes_by_layer, {"hard": [], "report": {}},
+                             {"claims": [], "matrix_notes": [], "unresolved": [], "duplicates": []}),
+                    "增量树")
+    assert tree == [
+        "- ch-0001 示例链路甲（新增，P0）",
+        "  - ch-0002 示例链路乙（新增，P0）",
+        "- [用户故事层] 失效待重算（下次任务重跑）",
+    ]
+
+
 def test_outline_terminates_on_duplicated_chain_id():
     """F2 递归的自保：父子引用成环或重复 id 的异常草稿，同一链路只呈递一次、不递归失控。"""
     nodes_by_layer = {

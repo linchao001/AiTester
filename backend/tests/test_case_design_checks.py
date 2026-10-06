@@ -180,6 +180,50 @@ def test_report_counters():
     assert out["report"] == {"empty_seam": 1, "matrix_unreasoned": 1, "unresolved": 1}
 
 
+def test_out_of_scope_parent_cycle_does_not_swallow_in_scope_branch():
+    # I-1（控制方复现 verify_final_A.py）：KB 存量 ch-9001↔ch-9002 互指成闭合环且都判为范围外；
+    # 草稿 ch-0001(parent=ch-9001) 与其下故事/点全部合法、在范围内。旧行为：环体全在范围外 ⇒
+    # add() 的 R-13 守卫把 broken_parent 静音掉「范围内受害方」ch-0001，hard==[]，唯一人审门拿到
+    # 假完整大纲。修法：对范围内链路沿 parent 走祖先、命中闭合环 ⇒ 报在可修方（草稿链）。
+    kb = {
+        "chain": [
+            {"id": "ch-9001", "type": "chain", "level": 1, "parent": "ch-9002",
+             "priority": "P1", "state": "kb"},
+            {"id": "ch-9002", "type": "chain", "level": 1, "parent": "ch-9001",
+             "priority": "P1", "state": "kb"},
+        ],
+        "story": [], "point": [],
+    }
+    draft = {
+        "chain": [{"id": "ch-0001", "type": "chain", "level": 2, "parent": "ch-9001",
+                   "priority": "P1", "state": "approved", "op": "upsert"}],
+        "story": [{"id": "st-0001", "type": "story", "chains": ["ch-0001"],
+                   "priority": "P1", "state": "approved"}],
+        "point": [{"id": "pt-0001", "type": "point", "story": "st-0001", "priority": "P1",
+                   "directions": ["正向"], "entities": ["实体甲"], "state": "approved"}],
+    }
+    scope = {"chains": {"ch-0001"}, "stories": {"st-0001"}}
+    uni = build_universe(draft, kb, scope)
+    assert uni["chains"]["ch-9001"]["in_scope"] is False           # 环体确在范围外
+    assert uni["chains"]["ch-0001"]["in_scope"] is True             # 受害方确在范围内
+    out = run_checks(uni, claims=[], matrix_cells=[], unresolved={})
+    # 范围内草稿链 ch-0001 因祖先闭合成环而报 broken_parent；环体自身（全在范围外）不报。
+    hits = {(f["code"], f["layer"], f["where"]) for f in out["hard"]}
+    assert ("broken_parent", "chain", "ch-0001") in hits
+    assert not any(f["where"] in ("ch-9001", "ch-9002") for f in out["hard"])
+    detail = next(f["detail"] for f in out["hard"] if f["where"] == "ch-0001")
+    assert "闭合成环" in detail and "无法呈递" in detail
+
+
+def test_in_scope_branch_under_a_clean_parent_is_not_reported_as_cycled():
+    # §1 修法的边界：只有祖先链「真的进入闭合环」才报，正常挂到范围内合法父下不得误报。
+    nodes = _nodes()                                        # ch-0001(root)←ch-0002←story←point
+    out = run_checks(build_universe(nodes, {"chain": [], "story": [], "point": []},
+                                    {"chains": {"ch-0001", "ch-0002"}, "stories": {"st-0001"}}),
+                     claims=[], matrix_cells=[], unresolved={})
+    assert out["hard"] == []
+
+
 # ---------------------------------------------------------------- R-13 范围门控
 
 _KB_OUT_OF_SCOPE = {
