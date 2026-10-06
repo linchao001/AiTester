@@ -381,6 +381,12 @@ def test_gate_hard_issue_fixed_in_repair_loop(tmp_path):
 
 
 def test_gate_hard_unfixed_halts_at_cap(tmp_path):
+    """B-F3：修复环预算单点是 round_cap——终帧必须是「修复环用尽」，下发次数 = ROUND_CAP。
+
+    旧实现里 ROUND_CAP 分支是死码：ask() 的默认 NUDGE_CAP=3 先在「gate」游标上抛
+    「gate/-/- 重试超限」，有效修复指令只下发 4 次（< spec 的 5），而旧断言只钉
+    round==5 + halted——两种 halt 都满足，没拦住预算被 NUDGE 代管的漂移。
+    """
     kb = StubKb()
     env = _env(tmp_path, kb)
 
@@ -391,10 +397,14 @@ def test_gate_hard_unfixed_halts_at_cap(tmp_path):
                                "trigger": "t", "expected": "e", "priority": "P0"}]}
         return None
 
-    drain(env, kb, ScriptTask(), gen_nodes=broken_story, gate_fix=lambda envx: None)
+    state = drain(env, kb, ScriptTask(), gen_nodes=broken_story, gate_fix=lambda envx: None)
     led = Ledger.load(env.design)
     assert led.status == "halted"
     assert led.data["gate"]["round"] == 5                        # 修复环用尽
+    assert "大纲门结构检查连续未清零（修复环用尽）" in _end_text(state["frames"])
+    assert "重试超限" not in _end_text(state["frames"])          # NUDGE 不得再代管收口
+    fixes = [m for m in state["messages"] if "大纲门修复" in str(m.content)]
+    assert len(fixes) == 5                                       # 有效修复指令下发 = ROUND_CAP
 
 
 def test_writeback_success_strips_internal_fields(tmp_path):

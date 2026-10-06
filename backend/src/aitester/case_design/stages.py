@@ -1172,10 +1172,13 @@ def h_gate(ctx: Ctx) -> Any:
         gate["round"] = int(gate["round"]) + 1
         issues_path = ctx.env.reviews_dir / f"gate-issues-r{gate['round']}.json"
         _write_json(issues_path, {"round": gate["round"], "hard": report["hard"]})
-        # 修复环的计数器是 gate["round"]（每轮 +1，与 round_cap 同源）：ask 游标的 nudge 在
-        # 同一「gate」游标里最多走到 4，拿它当预算永远不触发，所以这里只吃 Ctx.ask 的默认上限。
+        # B-F3 预算单点：这条环的预算就是 gate["round"]/round_cap（与 A7/契约 §9 同源），
+        # ask 的 cap 显式传 round_cap——旧写法吃默认 NUDGE_CAP=3，「重试超限」会抢在
+        # ROUND_CAP 分支前收口，有效修复指令只下发 4 次；如今第 round_cap+1 次进门
+        # 必由上面那句 raise 以「修复环用尽」人话终结。
         return ctx.ask(gate_fix_instruction(issues_path=ctx.rel(issues_path),
-                                            round_no=gate["round"]))
+                                            round_no=gate["round"]),
+                       cap=ctx.round_cap())
     nodes = _outline_nodes(ctx)
     (ctx.env.design / OUTLINE_NAME).write_text(
         compose_outline(led.data, nodes, report, _outline_extras(ctx, nodes)),
