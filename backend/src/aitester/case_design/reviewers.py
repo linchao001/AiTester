@@ -30,7 +30,7 @@ class ReviewerError(RuntimeError):
 
 def run_reviewer(task_tool: Any, agent_id: str, brief: str, *, model_cls: type[ModelT],
                  call_id: str, title: str, config: Any = None,
-                 name: str = "") -> tuple[ModelT, str]:
+                 name: str = "", archive: Any = None) -> tuple[ModelT, str]:
     """驱动评审子并解析判决；返回（判决模型, 原始文本）。
 
     `task_tool` 吃 TaskTool 的注入面（build_child/drive/parallel/roster）；`config` 直接透传
@@ -39,8 +39,13 @@ def run_reviewer(task_tool: Any, agent_id: str, brief: str, *, model_cls: type[M
     `TaskTool._run` 同一表达式（读 parallel 表的同一份源，R14）：只读面 → 派生 ns（多个
     评审子在父任务里串行驱动、按 call_id 各自成家，互不串守卫）；用户把面配宽（含可挂起
     工具）→ 自动退回父 ns 的挂起续跑通路。
+
+    `archive`（B-F7）：双败时以 (call_id, 逐次原文+解析错误) 落盘证据链的回调——
+    面向人的 ReviewerError 消息只留一行中文摘要，pydantic 原文嵌进消息等于让人在
+    唯一人审门外读一大段英文 ValidationError。
     """
     last_error: Exception | None = None
+    attempts: list[str] = []
     meta = (getattr(task_tool, "roster", {}) or {}).get(agent_id) or {}
     for attempt in range(1, MAX_ATTEMPTS + 1):
         child = task_tool.build_child(agent_id)
@@ -57,4 +62,8 @@ def run_reviewer(task_tool: Any, agent_id: str, brief: str, *, model_cls: type[M
             return model_cls.model_validate(parse_json_fence(text)), text
         except Exception as exc:                  # 只重试「解析不了」，不重试「跑不成」
             last_error = exc
-    raise ReviewerError(f"评审子 {agent_id} 两次输出都无法按围栏解析：{last_error}")
+            attempts.append(f"第 {attempt} 次输出（{len(text or '')} 字符）：\n{text}\n"
+                            f"解析错误：{exc!r}")
+    if archive is not None:
+        archive(call_id, "\n\n".join(attempts) + f"\n\n最终解析错误：{last_error!r}")
+    raise ReviewerError(f"评审子 {agent_id} 两次输出都无法按围栏 JSON 约定解析（原文已归档）")

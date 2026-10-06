@@ -564,6 +564,23 @@ def test_reviewer_failure_converges_to_halted(tmp_path):
     assert led.status == "halted"
 
 
+def test_unparseable_reviewer_output_halts_one_line_with_evidence(tmp_path):
+    """B-F7 驱动面：围栏解析双败的终帧只有一行中文摘要，原文进 design/reviews 归档证据链。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    task = ScriptTask({"blk-chain-ALL-r0": "这不是围栏",
+                       "blk-chain-ALL-r0-r2": "还不是围栏"})
+    state = drain(env, kb, task)
+    assert Ledger.load(env.design).status == "halted"
+    end = _end_text(state["frames"])
+    assert "评审子 case_review 两次输出都无法按围栏 JSON 约定解析" in end
+    assert "内部错误" in end                                   # 汇入既有 A3 人话收口格式
+    assert "validation" not in end.lower() and "Input should be" not in end
+    archived = (env.reviews_dir / "blk-chain-ALL-r0.review.md").read_text(encoding="utf-8")
+    assert "这不是围栏" in archived and "还不是围栏" in archived
+    assert "解析错误" in archived
+
+
 # ---- 评审修复轮（fix round 1）新增用例 ----
 
 _SIX_HARDS = [

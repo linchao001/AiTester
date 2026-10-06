@@ -92,6 +92,47 @@ def test_reviewer_raises_after_two_bad_outputs():
     assert len(tool.drives) == 2
 
 
+def test_reviewer_error_message_is_one_line_human_summary():
+    """B-F7：面向人的终帧消息一行中文收口——pydantic 原文（字段名/行长噪声）不得嵌进 str(exc)。
+
+    驱动层把未处理异常汇进「测试设计任务中止（内部错误：{exc}）」，嵌原文等于让人
+    在唯一人审门外读一大段英文 ValidationError。
+    """
+    tool = _StubTaskTool(["这不是围栏", '```json\n{"opinions": "不是数组"}\n```'])
+    with pytest.raises(ReviewerError) as ei:
+        run_reviewer(tool, "case_review", "简报", model_cls=ReviewOut,
+                     call_id="rev-6", title="块审")
+    msg = str(ei.value)
+    assert "\n" not in msg                                     # 一行
+    assert "评审子 case_review" in msg and "围栏" in msg and "已归档" in msg
+    for noise in ("validation error", "ValidationError", "Input should be",
+                  "不是数组"):
+        assert noise not in msg, noise                         # 机读噪声零入消息
+
+
+def test_reviewer_archives_raw_evidence_on_failure():
+    """B-F7 另一半：pydantic 原文只进归档落盘证据——两次坏输出与解析错误都必须在场。"""
+    kept: list = []
+    tool = _StubTaskTool(["坏的", "还是坏的"])
+    with pytest.raises(ReviewerError):
+        run_reviewer(tool, "case_review", "简报", model_cls=ReviewOut, call_id="rev-7",
+                     title="块审", archive=lambda cid, text: kept.append((cid, text)))
+    assert len(kept) == 1
+    cid, text = kept[0]
+    assert cid == "rev-7"
+    assert "坏的" in text and "还是坏的" in text                # 原文逐次留证
+    assert "解析错误" in text
+
+
+def test_reviewer_success_does_not_archive_via_failure_hook():
+    """archive 只在失败路径触发；成功路径仍由调用方拿 raw 自行归档（既有语义不扰）。"""
+    kept: list = []
+    tool = _StubTaskTool([REVIEW_JSON])
+    run_reviewer(tool, "case_review", "简报", model_cls=ReviewOut, call_id="rev-8",
+                 title="块审", archive=lambda cid, text: kept.append(cid))
+    assert kept == []
+
+
 def test_reviewer_does_not_retry_drive_failure():
     tool = _StubTaskTool([ToolException("Subagent 'case_review' failed: boom")])
     with pytest.raises(ToolException):

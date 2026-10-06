@@ -640,7 +640,8 @@ def _run_block_review(ctx: Ctx, layer: str, block: str) -> None:
     out, raw = run_reviewer(
         ctx.task_tool, CASE_REVIEW_AGENT_ID, _block_review_brief(ctx, layer, block, round_no),
         model_cls=ReviewOut, call_id=call_id,
-        title=f"块评审·{LAYER_CN[layer]}·{block}·r{round_no}", config=ctx.config)
+        title=f"块评审·{LAYER_CN[layer]}·{block}·r{round_no}", config=ctx.config,
+        archive=lambda cid, text: _archive_review(ctx, cid, text))
     _archive_review(ctx, call_id, raw)
     _apply_resolutions(ctx, out.resolutions)
     _register(ctx, layer,
@@ -805,7 +806,8 @@ def _enum_chain(ctx: Ctx) -> None:
     call_id = f"enum-chain-{_draft_fingerprint(ctx, CHAIN)}"
     out, raw = run_reviewer(ctx.task_tool, CASE_REVIEW_BLIND_AGENT_ID, brief,
                             model_cls=EnumeratorOut, call_id=call_id,
-                            title="盲枚举·业务对象", config=ctx.config)
+                            title="盲枚举·业务对象", config=ctx.config,
+                            archive=lambda cid, text: _archive_review(ctx, cid, text))
     _archive_review(ctx, call_id, raw)
     _write_json(ctx.env.manifests_dir / "enum-chain.json",
                 {"items": [dict(i) for i in out.items]})
@@ -824,7 +826,8 @@ def _cmp_chain(ctx: Ctx, round_no: int) -> None:
     call_id = f"cmp-chain-r{round_no}"
     out, raw = run_reviewer(ctx.task_tool, CASE_REVIEW_AGENT_ID, brief, model_cls=CompareOut,
                             call_id=call_id, title=f"对照·落点·r{round_no}",
-                            config=ctx.config)
+                            config=ctx.config,
+                            archive=lambda cid, text: _archive_review(ctx, cid, text))
     _archive_review(ctx, call_id, raw)
     items = [dict(i) for i in out.items]
     ctx.led.layer(CHAIN)["enumeration"] = items
@@ -879,7 +882,8 @@ def _claims_story(ctx: Ctx, round_no: int) -> None:
         out, raw = run_reviewer(ctx.task_tool, CASE_REVIEW_AGENT_ID,
                                 _claims_brief(ctx, block, rows), model_cls=ClaimsOut,
                                 call_id=call_id,
-                                title=f"声称核对·{block}·r{round_no}", config=ctx.config)
+                                title=f"声称核对·{block}·r{round_no}", config=ctx.config,
+                                archive=lambda cid, text: _archive_review(ctx, cid, text))
         _archive_review(ctx, call_id, raw)
         by_ref = {str(r.get("ref") or ""): r for r in out.claims if isinstance(r, dict)}
         enriched = [{**row,
@@ -937,7 +941,8 @@ def _matrix_point(ctx: Ctx, round_no: int) -> None:
         out, raw = run_reviewer(ctx.task_tool, CASE_REVIEW_AGENT_ID,
                                 _matrix_brief(ctx, cid, shards[cid], entities),
                                 model_cls=MatrixOut, call_id=call_id,
-                                title=f"矩阵复核·{cid}·r{round_no}", config=ctx.config)
+                                title=f"矩阵复核·{cid}·r{round_no}", config=ctx.config,
+                                archive=lambda cid2, text: _archive_review(ctx, cid2, text))
         _archive_review(ctx, call_id, raw)
         cells = [dict(c) for c in out.cells if isinstance(c, dict)]
         round_cells += cells
@@ -1305,7 +1310,8 @@ def h_gate_interpret(ctx: Ctx) -> Any:
     ])
     call_id = f"gate-int-r{k}"
     out, raw = run_reviewer(ctx.task_tool, CASE_REVIEW_AGENT_ID, brief, model_cls=ReviewOut,
-                            call_id=call_id, title=f"人审解读·r{k}", config=ctx.config)
+                            call_id=call_id, title=f"人审解读·r{k}", config=ctx.config,
+                            archive=lambda cid, text: _archive_review(ctx, cid, text))
     _archive_review(ctx, call_id, raw)
     if out.opinions:
         gate["unclear"] = 0                        # 人给了意见：待决计数清零
