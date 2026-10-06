@@ -17,7 +17,9 @@ from langchain_core.tools import ToolException
 from aitester.case_design.driver import case_env_of
 from aitester.case_design.env import CaseDesignEnv
 from aitester.case_design.ledger import Ledger
-from aitester.case_design.stages import Ctx, _drop_out_of_window_hards, _patch_ids, drive_turn
+from aitester.case_design.stages import (
+    Ctx, _drop_out_of_window_hards, _patch_ids, drive_turn, h_writeback,
+)
 
 REV_CLEAN = '```json\n{"opinions": [], "resolutions": []}\n```'
 
@@ -904,9 +906,12 @@ def test_disposition_note_keeps_re_review_trail_in_order(tmp_path):
         encoding="utf-8")                                         # 轨迹整条落在人读的那张表里
 
 
-# ---- 裁定 27（回写续跑的再入授权：否定句绝不写库）----
+# ---- 裁定 27 + B-F1（回写续跑：先解读本轮人话，再决定回写还是退回大纲门） ----
 
-_RETRY_REFUSAL = "回写未执行：本轮消息里没有重试授权（回复「重试」再写；回复意见则回到大纲门）。"
+# 纵深防御闸门的拒答文案（B-F1 收口）：承诺的转场如今真实存在——_boot 会把未授权
+# 消息分流进 gate_interpret，「把意见写在消息里」确实会退回大纲门重做。
+_RETRY_REFUSAL = ("回写未执行：本轮没有重试授权——回复「重试」继续回写；"
+                  "把意见写在消息里即可退回大纲门重做。")
 
 
 def _to_writeback_failed(tmp_path: Path):
@@ -921,22 +926,81 @@ def _to_writeback_failed(tmp_path: Path):
     return env, kb
 
 
-def test_writeback_resume_requires_retry_authorization(tmp_path):
-    """R-27：writeback_failed 的续跑入口也要过授权判据——拒绝句绝不是重试授权。
+def test_writeback_resume_mixed_approval_and_opinion_goes_through_interpret(tmp_path):
+    """B-F1 窄钉①：批准+意见混写绝不许被当成纯授权直接不可逆回写。
 
-    _boot 只按账本状态直接 _go("writeback")，本轮人话没经过任何解读；不在真正下笔前
-    再看一次，「别写了，先停下」就会被当成授权把 5 个节点写进知识库（裁定 19 要拦的那类）。
+    「同意，把 st-0002 拆成两条」旧实现下 _boot 从不解读本轮人话，h_writeback 的闸门
+    只认「同意」措辞 ⇒ 仿真实测：status done、写库 0→5 次、human-* 制品 0 个、意见静默
+    丢弃。修复后必须走 gate_interpret：意见登记、目标层及下游失效、零 KB 写。
+    """
+    env, kb = _to_writeback_failed(tmp_path)
+    # int_round 已在「通过」那次解读用掉 r1：本轮人审解读的 call_id 是 gate-int-r2。
+    task = ScriptTask({"gate-int-r2": _j({"opinions": [{
+        "target": {"type": "node", "value": "st-0002"}, "kind": "颗粒度",
+        "ask": "拆成两条", "evidence": "同意，把 st-0002 拆成两条"}],
+        "resolutions": []})})
+    turn = _drive(env, {"messages": [HumanMessage("同意，把 st-0002 拆成两条")],
+                         "case": {}}, task)
+    assert turn["case"]["route"] == "agent"
+    assert "human-story-in-r2.json" in turn["messages"][0].content
+    assert any("把 st-0002 拆成两条" in c["brief"] for c in task.calls)  # 本轮人话被解读
+    assert "gate-int-r2" in task.call_ids()
+    assert kb.upserts == [] and kb.deletes == []               # 不可逆写零次
+    assert list(env.reviews_dir.glob("human-*"))              # 意见登记制品 ≥1
+    led = Ledger.load(env.design)
+    assert led.status != "done"
+    assert led.layer("point")["state"] == "stale_pending"      # 目标层下游失效
+
+
+def test_writeback_resume_bare_retry_skips_interpret(tmp_path):
+    """B-F1 窄钉②：裸「重试」直回写、gate_interpret 零调用——不白烧一次评审子调用。"""
+    env, kb = _to_writeback_failed(tmp_path)
+    task = ScriptTask()
+    turn = _drive(env, {"messages": [HumanMessage("重试")], "case": {}}, task)
+    led = Ledger.load(env.design)
+    assert turn["case"]["route"] == "end" and led.status == "done"
+    assert len(kb.upserts) == 5 and kb.deletes == []
+    assert [c for c in task.call_ids() if c.startswith("gate-int")] == []
+
+
+def test_writeback_resume_negation_never_writes_and_goes_to_interpret(tmp_path):
+    """B-F1 窄钉③（承接 R-27）：否定句零写入的底线不许动；去向改为 gate_interpret。
+
+    old：route end + 「回写未执行…回复意见则回到大纲门」——但旧 _boot 根本不存在
+    writeback_failed→gate 的转场，那句承诺是假的（人反复回意见就反复撞同一句话）。
+    new：未授权消息分流进 gate_interpret；本轮无意见也无明示批准 ⇒ 待决转述
+    （route agent、零终帧、零写入），承诺由转场事实背书。
     """
     env, kb = _to_writeback_failed(tmp_path)
     frames: list[dict] = []
     turn = _drive(env, {"messages": [HumanMessage("别写了，先停下")], "case": {}},
                   ScriptTask(), writer=frames.append)
-    assert turn["case"]["route"] == "end"
-    assert _end_text(frames) == _RETRY_REFUSAL                 # 措辞钉死：只重述重试承诺
+    assert turn["case"]["route"] == "agent"
+    assert frames == []                                       # 待决不冒充终帧
     led = Ledger.load(env.design)
-    assert led.status == "writeback_failed"                    # 不推进，也不退回 active
+    assert led.status == "awaiting_review"                     # 不再钉死在 writeback_failed
+    assert kb.upserts == [] and kb.deletes == []               # R-27 底线：绝不写库
     assert [led.layer(x)["state"] for x in ("chain", "story", "point")] == ["audited"] * 3
+
+
+def test_h_writeback_entry_gate_refuses_without_authorization(tmp_path):
+    """纵深防御：绕过 _boot 直接把游标按在 writeback 上，入口闸门依旧零写入、原样退回。
+
+    h_writeback 的闸门是回写不可逆写的最后防线（唯一真正下笔处），R-27 原样保留——
+    _boot 分流只是不再让未授权消息走到这里，不是拆掉这道闸。
+    """
+    env, kb = _to_writeback_failed(tmp_path)
+    led = Ledger.load(env.design)
+    led.cursor.update({"stage": "writeback"})
+    frames: list[dict] = []
+    ctx = Ctx(env=env, task_tool=ScriptTask(), writer=frames.append, config={},
+              state_messages=[HumanMessage("先别写")], led=led)
+    result = h_writeback(ctx)
+    assert result["case"]["route"] == "end"
+    assert _end_text(frames) == _RETRY_REFUSAL
     assert kb.upserts == [] and kb.deletes == []
+    assert Ledger.load(env.design).status == "writeback_failed"
+    assert [led.layer(x)["state"] for x in ("chain", "story", "point")] == ["audited"] * 3
 
 
 def test_writeback_resume_accepts_retry_word(tmp_path):
@@ -950,13 +1014,16 @@ def test_writeback_resume_accepts_retry_word(tmp_path):
 
 
 def test_writeback_resume_negated_words_are_not_authorization(tmp_path):
-    """R-27 补刀：否定/延后标记先判——「先不用重试」里含着「重试」也不是授权。"""
+    """R-27 补刀：否定/延后标记先判——「先不用重试」里含着「重试」也不是授权（零写入）。
+
+    old：route end + 拒答终帧（writeback_failed 原地不动）；new：_boot 分流后未授权
+    消息进 gate_interpret，待决转述（route agent）——零写入底线不变。
+    """
     for i, text in enumerate(("先不用重试", "别重试", "不重试", "暂不回写")):
         env, kb = _to_writeback_failed(tmp_path / f"wb-neg-{i}")
         frames: list[dict] = []
         turn = _drive(env, {"messages": [HumanMessage(text)], "case": {}},
                       ScriptTask(), writer=frames.append)
-        assert turn["case"]["route"] == "end", text
-        assert _end_text(frames) == _RETRY_REFUSAL, text
+        assert turn["case"]["route"] == "agent", text          # 未授权 → gate_interpret 待决
+        assert frames == [], text
         assert kb.upserts == [] and kb.deletes == [], text
-        assert Ledger.load(env.design).status == "writeback_failed", text

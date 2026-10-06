@@ -200,7 +200,15 @@ def _boot(ctx: Ctx, fresh: bool) -> None:
         elif led.status == "awaiting_review":
             _go(ctx, "gate_interpret")         # 人审续步：审 gate-int → 回写或优化环
         elif led.status == "writeback_failed":
-            _go(ctx, "writeback")
+            # B-F1：续跑按本轮人话分流——批准+意见混写（「同意，把 st-0002 拆成两条」）
+            # 绝不许被当成纯授权直接不可逆回写、意见静默丢弃。只有**裸授权**（重试/批准
+            # 词之外零内容）才直回写（不白烧一次评审子调用）；其余一律先过 gate_interpret，
+            # 复用现成的意见登记 + 目标层及下游失效 + 优化环 + 回门链路。
+            human_now = _human_text(ctx.state_messages)
+            if _writeback_authorized(human_now) and _is_bare_authorization(human_now):
+                _go(ctx, "writeback")
+            else:
+                _go(ctx, "gate_interpret")
         elif led.status == "active":
             led.status = "interrupted"         # 上一回合没跑完（取消/崩溃）；从游标续跑
     led.status = "active"
@@ -1216,6 +1224,25 @@ def _writeback_authorized(text: str) -> bool:
     return any(word in text for word in _APPROVAL_WORDS + _RETRY_WORDS)
 
 
+# 授权词之外的「杂质」剥离面：标点/空白（B-F1 判裸授权用）。
+_AUTH_STRIP_RE = re.compile(r"[\s，。、！!？?；;：:,.~〜「」『』\"'`（）()]+")
+
+
+def _is_bare_authorization(text: str) -> bool:
+    """本轮人话是否是**裸授权**：剥掉标点与批准/重试措辞后不剩任何内容。
+
+    B-F1：writeback_failed 续跑只有裸授权（「重试」「同意。」这类）才允许跳过解读
+    直回写——「同意，把 st-0002 拆成两条」剥完措辞还剩「拆成两条」，意见必须先去
+    gate_interpret 登记，绝不许被当成纯授权消费掉再按旧大纲做不可逆回写。
+    """
+    if not text:
+        return False
+    rest = _AUTH_STRIP_RE.sub("", text)
+    for word in _APPROVAL_WORDS + _RETRY_WORDS:
+        rest = rest.replace(word, "")
+    return not rest
+
+
 def _target_layer(ops: list) -> str:
     """人审意见的最浅（离链路最近）目标层：反馈落在哪层就从哪层重做成，下游全失效。"""
     idx = len(LAYERS) - 1
@@ -1361,14 +1388,15 @@ def _collect_writeback_items(ctx: Ctx) -> list[tuple[str, str, dict | None]]:
 def h_writeback(ctx: Ctx) -> Any:
     """回写：只写 state=="audited" 层（stale/skipped 一律不写）；失败自动重试 1+2 次。
 
-    再入授权闸门（R-27）：这条路有两个入口——大纲门明示批准（h_gate_interpret）与
-    writeback_failed 的续跑（_boot 只按账本状态 _go，本轮人话没被任何地方审过）。闸门
-    放在唯一真正下笔的地方，两个入口一次覆盖：续跑时没有本轮授权就零写入、状态原样退回。
+    再入授权闸门（R-27 纵深防御）：这条路有两个入口——大纲门明示批准（h_gate_interpret）与
+    writeback_failed 的续跑（_boot 已按本轮人话分流：无授权的消息根本走不到这里，B-F1）。
+    闸门仍放在唯一真正下笔的地方原样保留：任何漂移把未授权消息送进来，依旧零写入、状态原样退回。
     """
     led, wb = ctx.led, ctx.led.data["writeback"]
     if not _writeback_authorized(_human_text(ctx.state_messages)):
         led.status = "writeback_failed"                        # _boot 已置 active：原样退回
-        return ctx.end("回写未执行：本轮消息里没有重试授权（回复「重试」再写；回复意见则回到大纲门）。")
+        return ctx.end("回写未执行：本轮没有重试授权——回复「重试」继续回写；"
+                       "把意见写在消息里即可退回大纲门重做。")
     for layer in LAYERS:
         if led.layer(layer)["state"] == "audited":
             _patch_ids(ctx, layer, "")             # 兜底：任何空 id 在写库前补齐
