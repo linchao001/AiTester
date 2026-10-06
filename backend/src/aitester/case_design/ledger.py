@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +45,18 @@ class Ledger:
         path = Path(design_dir) / LEDGER_NAME
         if not path.is_file():
             return None
-        return cls(path=path, data=json.loads(path.read_text(encoding="utf-8")))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            # B-F6 损坏自愈：旧写法裸 loads 把语法错抛穿 _boot，每一轮都收口成
+            # 「测试设计任务中止（内部错误：Expecting …）」死循环，坏文件原地不动、
+            # 唯一出路是手工删——而 _ARCHIVE_ITEMS 不含 ledger.json，删即全丢。
+            # 改名为 ledger.corrupt-<ts>.json 留证（原字节一字不改、不删），按无账本走。
+            corrupt = path.with_name(
+                f"ledger.corrupt-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.json")
+            os.replace(path, corrupt)
+            return None
+        return cls(path=path, data=data)
 
     @classmethod
     def fresh(cls, design_dir: Path) -> "Ledger":

@@ -1103,6 +1103,30 @@ def test_interrupted_resume_appends_history_trace(tmp_path):
                     raw["history"][0])
 
 
+# ---- B-F6（ledger.json 损坏自愈）----
+
+def test_corrupt_ledger_self_heals_with_evidence(tmp_path):
+    """损坏账本不再把每一轮都掀成「内部错误」死循环：改名留证 + 按无账本走 + 新账本可用。
+
+    留证是硬要求——_ARCHIVE_ITEMS 不含 ledger.json，坏文件若被删或被改写就等于连
+    现场都没了；原字节必须一字不改地躺在 design/ledger.corrupt-<ts>.json 里。
+    """
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    (env.design / "ledger.json").write_text("{corrupt", encoding="utf-8")
+    frames: list[dict] = []
+    turn = _drive(env, {"messages": [HumanMessage("生成测试设计")], "case": {}},
+                  ScriptTask(), writer=frames.append)
+    assert turn["case"]["route"] == "agent"                    # 一轮内即恢复：下发 plan 指令
+    assert "design/plan.json" in str(turn["messages"][0].content)
+    assert "内部错误" not in str(frames)                        # 不再抛 JSON 语法错收口
+    corrupts = sorted(env.design.glob("ledger.corrupt-*.json"))
+    assert len(corrupts) == 1
+    assert corrupts[0].read_text(encoding="utf-8") == "{corrupt"  # 原字节留证、不删
+    led = Ledger.load(env.design)
+    assert led is not None and led.status == "active"          # 新账本可用
+
+
 # ---- B-F4（待决转述轮不得二次呈递「大纲已生成」终帧）----
 
 def test_gate_undecided_relay_turn_does_not_reannounce(tmp_path):
