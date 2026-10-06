@@ -234,5 +234,9 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
         "matrix_unreasoned": sum(1 for c in matrix_cells
                                  if c.get("verdict") == "not_needed" and not str(c.get("reason") or "").strip()),
         "unresolved": sum(len(v) for v in unresolved.values()),
+        # A-M1：spec 验收数字线「断言方向缺失数（④）」——范围内点 directions 空即计。归 report（呈递项），
+        # 不得进 hard：方向非空此前只靠点层草稿 schema，KB 存量点 directions:[] 时门会零信号；进 hard 会改 T12 口径。
+        "point_missing_directions": sum(1 for p in points.values()
+                                        if p.get("in_scope") and not (p.get("directions") or [])),
     }
     return {"hard": hard, "report": report}

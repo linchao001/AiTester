@@ -117,7 +117,7 @@ def compose_outline(ledger_data: dict, nodes_by_layer: dict, report: dict, extra
         lines.append(f"  - [{f.get('code')}] {f.get('layer')}/{f.get('where')}：{f.get('detail')}")
     rep = report.get("report") or {}
     lines.append(f"- report：剩余空归属 {rep.get('empty_seam', 0)}；矩阵无理由空格 {rep.get('matrix_unreasoned', 0)}；"
-                 f"未消化项 {rep.get('unresolved', 0)}")
+                 f"未消化项 {rep.get('unresolved', 0)}；断言方向缺失 {rep.get('point_missing_directions', 0)}")
     lines += ["", "## 未消化项（含不收敛归因）"]
     unresolved = extras.get("unresolved") or []
     if not unresolved:

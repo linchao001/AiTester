@@ -177,7 +177,50 @@ def test_report_counters():
                      matrix_cells=[{"entity": "实体甲", "story": "st-0002", "verdict": "not_needed", "reason": ""},
                                    {"entity": "实体乙", "story": "st-0002", "verdict": "not_needed", "reason": "不涉及"}],
                      unresolved={"chain": [{"ref": "op-01"}]})
-    assert out["report"] == {"empty_seam": 1, "matrix_unreasoned": 1, "unresolved": 1}
+    assert out["report"] == {"empty_seam": 1, "matrix_unreasoned": 1, "unresolved": 1,
+                             "point_missing_directions": 0}   # 范围内点均带方向 ⇒ 0
+
+
+# ---------------------------------------------------------------- A-M1 report 断言方向缺失数
+
+def test_report_counts_in_scope_points_missing_directions():
+    # A-M1：spec 验收数字线列「断言方向缺失数（④）」，但旧 report 只 3 项；方向非空此前只靠点层
+    # schema，KB 存量点 directions:[] 时门零信号。加确定性计数：范围内点 directions 空即计，且只进 report 不进 hard。
+    nodes = {
+        "chain": [{"id": "ch-0001", "type": "chain", "level": 1, "parent": "",
+                   "priority": "P0", "state": "approved"}],
+        "story": [{"id": "st-0001", "type": "story", "chains": ["ch-0001"],
+                   "priority": "P1", "state": "approved"}],
+        "point": [
+            {"id": "pt-0001", "type": "point", "story": "st-0001", "priority": "P1",
+             "directions": [], "entities": ["实体甲"], "state": "approved"},        # 缺方向，范围内
+            {"id": "pt-0002", "type": "point", "story": "st-0001", "priority": "P1",
+             "directions": ["正向"], "entities": ["实体乙"], "state": "approved"},
+        ],
+    }
+    out = run_checks(build_universe(nodes, {"chain": [], "story": [], "point": []},
+                                    {"chains": {"ch-0001"}, "stories": {"st-0001"}}),
+                     claims=[], matrix_cells=[], unresolved={})
+    assert out["report"]["point_missing_directions"] == 1
+    # 归 report，绝不进 hard（否则 T12 数字线口径被改）
+    assert not any(f["code"] == "point_missing_directions" for f in out["hard"])
+    assert not any("direction" in str(f["code"]) for f in out["hard"])
+
+
+def test_report_direction_gap_ignores_out_of_scope_points():
+    # 范围守卫同源：范围外 KB 存量点缺方向不得计入（本次任务没动过、修复指令也改不到）。
+    kb = {
+        "chain": [{"id": "ch-9001", "type": "chain", "level": 1, "parent": "",
+                   "priority": "P1", "state": "kb"}],
+        "story": [{"id": "st-9001", "type": "story", "chains": ["ch-9001"],
+                   "priority": "P1", "state": "kb"}],
+        "point": [{"id": "pt-9001", "type": "point", "story": "st-9001", "priority": "P1",
+                   "directions": [], "entities": ["实体丙"], "state": "kb"}],
+    }
+    uni = build_universe({"chain": [], "story": [], "point": []}, kb,
+                         {"chains": set(), "stories": set()})
+    out = run_checks(uni, claims=[], matrix_cells=[], unresolved={})
+    assert out["report"]["point_missing_directions"] == 0
 
 
 def test_out_of_scope_parent_cycle_does_not_swallow_in_scope_branch():

@@ -210,6 +210,16 @@ def _section(md: str, title: str) -> list[str]:
     return body
 
 
+def test_outline_renders_point_missing_directions():
+    """A-M1：report 行同步渲染「断言方向缺失数」，呈递给人审门（归 report，不进 hard）。"""
+    nodes = {"chain": [{"id": "ch-0001", "name": "示例链路甲", "op": "upsert", "parent": "",
+                        "state": "新增", "priority": "P0"}], "story": [], "point": []}
+    report = {"hard": [], "report": {"empty_seam": 0, "matrix_unreasoned": 0, "unresolved": 0,
+                                     "point_missing_directions": 3}}
+    md = _outline(nodes, report, {"claims": [], "matrix_notes": [], "unresolved": [], "duplicates": []})
+    assert "断言方向缺失 3" in md
+
+
 def test_compose_outline_sections():
     ledger_data = _LEDGER_DATA
     nodes_by_layer = {"chain": [{"id": "ch-0001", "name": "示例链路甲", "op": "upsert",
