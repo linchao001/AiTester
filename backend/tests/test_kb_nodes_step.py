@@ -247,6 +247,10 @@ def test_step_rejects_id_with_trailing_newline(tmp_path):
         bad = mgr.run_job_sync("case_node_upsert", layer="chain",
                                node={**CHAIN_NODE, "id": "ch-0001\n"})
         assert bad.success is False
+        # 只断言 success 在 Windows 上会被冒充：`match` 放行后 `_atomic_write` 写
+        # "ch-0001\n.md" 由 OS 拒绝（Errno 22），照样 success is False、目录照样空。
+        # 钉住校验路径的专属文案，任何平台都必须走 _validate_id 才收敛。
+        assert "invalid node id" in bad.answer, bad.answer
         chain_dir = tmp_path / "knowledge_bases" / "demo" / "business" / "chains"
         assert list(chain_dir.glob("*")) == []               # 连隐藏垃圾名都不许出现
     finally:
@@ -396,5 +400,28 @@ def test_cf2_watch_loop_indexes_new_node_without_reindex(tmp_path):
                 break
             time.sleep(1)
         assert "操作实体甲" in blob, f"30 秒内 watch 增量未收敛（CF-1a/CF-1b 被破坏？）：{blob}"
+    finally:
+        mgr.close_all()
+
+
+def test_upsert_creates_missing_bucket_without_ensure_step(tmp_path, monkeypatch):
+    """评审 C Minor-2：`_ensure_node_buckets` 自称「漂移保险、非既成保证」，真正兜住
+    「桶缺失仍能写」的是 upsert 里 step 自己的 `bucket_dir.mkdir`。把前者置成 no-op，
+    断言仍建桶、落文件、list 读回——删掉 steps.py 那行 mkdir 本用例必须变红。"""
+    import aitester.services.kb.manager as kb_manager
+
+    kb_root = _seed_kb(tmp_path)
+    chains_dir = kb_root / "business" / "chains"
+    monkeypatch.setattr(kb_manager, "_ensure_node_buckets", lambda cfg: None)
+    assert not chains_dir.exists()
+    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        up = mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE)
+        assert up.success, up.answer
+        assert (chains_dir / "ch-0001.md").is_file()
+        lst = mgr.run_job_sync("case_nodes_list", layer="chain")
+        assert lst.success and lst.metadata["count"] == 1
+        assert lst.metadata["nodes"][0]["id"] == "ch-0001"
     finally:
         mgr.close_all()
