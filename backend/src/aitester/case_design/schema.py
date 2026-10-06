@@ -120,6 +120,11 @@ def _check_common(node: DraftNode, errors: list[str], where: str) -> None:
             errors.append(f"{where}: name 不能为空")
         if node.id and not ID_RE.match(node.id):
             errors.append(f"{where}: id「{node.id}」形状非法（应为 {TYPE_PREFIX[node.type]}-四位数字）")
+        # I-3：priority 合法性三层同源校验（此前只点层有，chain/story 非法值静默通过，
+        # 进门后被 `PRIORITY_RANK.get(..., 1)` 当 P1 参与 hard 判据）。DraftNode.priority 缺省
+        # "P1"，故「不写」仍合法。
+        if node.priority not in PRIORITY_RANK:
+            errors.append(f"{where}: priority「{node.priority}」非法（P0/P1/P2）")
     else:
         if not node.id:
             errors.append(f"{where}: delete 必须带 id")
@@ -164,8 +169,6 @@ def _check_point(node: DraftNode, errors: list[str], where: str) -> None:
     bad = [d for d in node.directions if d not in DIRECTIONS]
     if bad:
         errors.append(f"{where}: directions 含非法值 {bad}（只许 {list(DIRECTIONS)}）")
-    if node.priority not in PRIORITY_RANK:
-        errors.append(f"{where}: priority「{node.priority}」非法（P0/P1/P2）")
 
 
 _CHECKS = {"chain": _check_chain, "story": _check_story, "point": _check_point}

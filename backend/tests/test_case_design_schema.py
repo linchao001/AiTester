@@ -76,6 +76,48 @@ def test_validate_drafts_delete_and_id_shape():
     assert any("id" in e for e in errors)
 
 
+def _valid_story(**over):
+    node = {"op": "upsert", "type": "story", "id": "st-0001", "name": "示例故事",
+            "chains": ["ch-0001"], "actor": "角色", "trigger": "触发", "expected": "成功"}
+    node.update(over)
+    return node
+
+
+def _valid_chain(**over):
+    node = {"op": "upsert", "type": "chain", "id": "ch-0001", "name": "示例链路",
+            "level": 1, "parent": "", "business_scope": "范围"}
+    node.update(over)
+    return node
+
+
+def test_priority_validation_covers_chain_and_story():
+    # I-3：priority 合法性此前只在点层校验，chain/story 任意非法值静默通过；
+    # 进门后 `PRIORITY_RANK.get(_priority(v), 1)` 把非法值当 P1 参与 hard 判据。
+    _, errors = validate_drafts("story", {"layer": "story", "block": "b",
+                                          "nodes": [_valid_story(priority="P9")]})
+    assert any("priority" in e for e in errors)
+    _, errors = validate_drafts("chain", {"layer": "chain", "block": "ALL",
+                                          "nodes": [_valid_chain(priority="高")]})
+    assert any("priority" in e for e in errors)
+
+
+def test_priority_default_and_valid_values_pass_all_layers():
+    # DraftNode.priority 缺省 "P1" ⇒「不写」仍合法；P0/P1/P2 三层同源合法。
+    _, errors = validate_drafts("story", {"layer": "story", "block": "b", "nodes": [_valid_story()]})
+    assert errors == []
+    nodes, errors = validate_drafts("chain", {"layer": "chain", "block": "ALL",
+                                              "nodes": [_valid_chain(priority="P0")]})
+    assert errors == [] and nodes[0].priority == "P0"
+
+
+def test_priority_check_lives_in_common_upsert_branch_not_point_only():
+    # 上移到 _check_common 的 upsert 分支后，三层同一条非法值都拒；delete 无 priority 语义不受影响。
+    for layer, factory in (("chain", _valid_chain), ("story", _valid_story)):
+        _, errors = validate_drafts(layer, {"layer": layer, "block": "b",
+                                            "nodes": [factory(priority="P3")]})
+        assert any("priority" in e for e in errors), layer
+
+
 def test_review_and_matrix_models():
     out = ReviewOut.model_validate({
         "opinions": [{"target": {"type": "seam", "value": "st-0001,st-0002"},
