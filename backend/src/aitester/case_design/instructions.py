@@ -22,8 +22,9 @@ def plan_instruction() -> str:
         "也不要列知识库里的文件（知识库业务资料由编排层另行装载）。\n"
         "2) 范围归一化：把指令拆成「入口层 / 目标子树 / 终止层」——task_kind 取 "
         "design（测试设计）/ mixed（设计+用例混杂，本期只做设计侧）/ case_only（纯用例任务，本期只做设计部分）；"
-        "entry_layer 与 terminal_layer 取 chain|story|point；「只针对某条链路/某棵子树」这类窄指令把 "
-        "target_subtree 填成对应节点 id，全量任务留空串。\n"
+        "entry_layer 与 terminal_layer 取 chain|story|point；target_subtree 只接受链路（ch-）id——"
+        "「只针对某条链路」这类窄指令填该链路 id，指向用户故事或测试点时"
+        "填其所属链路 id，全量任务留空串。\n"
         'JSON 形状：{"task_kind": "design", "entry_layer": "chain", "terminal_layer": "point", '
         '"target_subtree": "", "source_files": ["docs/xx.md"], "note": "一句话"}\n'
         "只输出这个文件，不要改动其他任何文件。写完即停。"

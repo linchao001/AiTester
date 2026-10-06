@@ -649,11 +649,50 @@ def test_phantom_target_subtree_halts_before_any_work(tmp_path):
                         "target_subtree": "st-9999", "source_files": [], "note": "窄范围"})
     turn = _drive(env, state, task, writer=frames.append)
     assert turn["case"]["route"] == "end"
-    assert "目标子树「st-9999」在链路树里不存在" in _end_text(frames)
+    assert "目标子树「st-9999」必须是链路（ch-）id" in _end_text(frames)   # B-F5 新口径
     assert Ledger.load(env.design).status == "halted"
     assert task.calls == []                                    # 零评审/LLM 调用
     for layer in ("chain", "story", "point"):                  # 零草稿制品
         assert list(env.drafts_dir(layer).glob("*.json")) == []
+
+
+def test_plan_instruction_limits_target_subtree_to_chain_ids(tmp_path):
+    """B-F5：提示词侧要与预检侧同一口径——target_subtree 只收链路 id，指故事/点要改填所属链。"""
+    env = _env(tmp_path, StubKb())
+    turn = _drive(env, {"messages": [HumanMessage("按业务信息生成测试设计")], "case": {}},
+                  ScriptTask())
+    text = str(turn["messages"][0].content)
+    assert "target_subtree 只接受链路（ch-）id" in text
+    assert "填其所属链路 id" in text
+
+
+def test_phantom_subtree_halt_text_distinguishes_two_cases(tmp_path):
+    """B-F5：预检终帧分两种情形——非链路形状 id 给改填指引（对真实存在的故事 id 说
+    「链路树里不存在」是误导）；链路形状且真查无此节点才保持现文。时机与零烧钱性质不动。
+    """
+    cases = (("st-0002", "目标子树「st-0002」必须是链路（ch-）id"),
+             ("ch-9999", "目标子树「ch-9999」在链路树里不存在"))
+    for sub, expect in cases:
+        kb = StubKb(layers={
+            "chain": [{"id": "ch-0001", "type": "chain", "name": "根链", "parent": "",
+                       "level": 1, "priority": "P0"}],
+            "story": [{"id": "st-0002", "type": "story", "name": "老故事",
+                       "chains": ["ch-0001"], "priority": "P0"}],
+            "point": []})
+        env = _env(tmp_path / f"phantom-{sub}", kb)
+        task = ScriptTask()
+        frames: list[dict] = []
+        state = {"messages": [HumanMessage("针对某节点生成测试设计")], "case": {}}
+        turn = _drive(env, state, task)
+        _append(state, turn)
+        simulate(env, plan={"task_kind": "design", "entry_layer": "chain",
+                            "terminal_layer": "point", "target_subtree": sub,
+                            "source_files": [], "note": "窄范围"})
+        turn = _drive(env, state, task, writer=frames.append)
+        assert turn["case"]["route"] == "end", sub
+        assert expect in _end_text(frames), sub
+        assert Ledger.load(env.design).status == "halted", sub
+        assert task.calls == [], sub                           # 零烧钱不变
 
 
 def test_narrow_subtree_closure_keeps_sibling_chain_but_not_its_subtree(tmp_path):

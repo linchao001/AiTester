@@ -355,7 +355,14 @@ def _target_chains(ctx: Ctx) -> set[str] | None:
 
 
 def _phantom_subtree_halt(layer: str, subtree: str) -> _Halt:
-    """契约 §7：幻影 target_subtree 显式终止报因，不空转、也不把「0 块」渲染成「已完成」。"""
+    """契约 §7：幻影 target_subtree 显式终止报因，不空转、也不把「0 块」渲染成「已完成」。
+
+    B-F5：非链路形状 id（st-/pt-）单独给改填指引——对**真实存在**的故事/测试点 id 说
+    「在链路树里不存在」是误导；链路形状且查无此节点才保持现文。只改文案，预检时机不动。
+    """
+    if _layer_of_id(str(subtree or "")) not in (None, CHAIN):
+        return _Halt(f"目标子树「{subtree}」必须是链路（ch-）id：指向用户故事或测试点时，"
+                     f"请填其所属链路 id")
     return _Halt(f"目标子树「{subtree or '全量'}」在链路树里不存在："
                  f"范围内没有任何可生成的块（{LAYER_CN[layer]}层）")
 
