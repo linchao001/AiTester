@@ -47,6 +47,25 @@ def test_validate_plan_rejects_absolute_and_escaping_source_files(tmp_path: Path
     assert not any("不存在" in e for e in errors)                    # 拒列先于探测，不做任意路径探针
 
 
+def test_validate_plan_rejects_non_list_and_missing_source_files(tmp_path: Path):
+    """I-4：`source_files` 给非列表（str/None/dict）旧实现静默清空成 [] 且 errors==[]，
+    键缺失同样静默通过——盲枚举的业务信息来源清单缩水到只剩 KB 桶，恰是 ① 要防的「整块业务没进树」，
+    且一次重试机会都没有。修法：非列表与缺键都报错并触发重试；空列表 [] 仍合法（纯存量更新）。"""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "req.md").write_text("需求", encoding="utf-8")
+    base = {"task_kind": "design", "entry_layer": "chain", "terminal_layer": "point",
+            "target_subtree": "", "note": ""}
+    for val in ("req.md", None, {"a": "req.md"}):
+        desc, errors = validate_plan({**base, "source_files": val}, str(tmp_path))
+        assert desc == {} and any("source_files" in e and "数组" in e for e in errors), val
+    # 键缺失也报错（不是静默 [] 通过）
+    desc, errors = validate_plan(base, str(tmp_path))
+    assert desc == {} and any("source_files" in e for e in errors)
+    # 空列表 [] 仍合法：无新文档的纯存量更新任务要走得通
+    desc, errors = validate_plan({**base, "source_files": []}, str(tmp_path))
+    assert errors == [] and desc["source_files"] == []
+
+
 def test_summarize_probe_p3_rule():
     ok = summarize_probe("chain", [{"id": "ch-0001", "type": "chain", "parent": ""}])
     assert ok["maintained"] is True

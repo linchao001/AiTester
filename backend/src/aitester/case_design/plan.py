@@ -40,7 +40,13 @@ def validate_plan(raw: Any, project_dir: str) -> tuple[dict, list[str]]:
     subtree = str(raw.get("target_subtree") or "").strip()
     root = Path(project_dir)
     files = raw.get("source_files")
-    files = files if isinstance(files, list) else []
+    if "source_files" not in raw:
+        # I-4：缺键不得静默成 []（那会把盲枚举的业务信息来源清单缩水到只剩 KB 桶），必须响亮报错走重试。
+        errors.append("plan.json 必须给 source_files 数组（可为空）")
+        files = []
+    elif not isinstance(files, list):
+        errors.append("source_files 必须是数组")
+        files = []
     clean_files: list[str] = []
     for item in files:
         rel = str(item or "").strip().replace("\\", "/")
