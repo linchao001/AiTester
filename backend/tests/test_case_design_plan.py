@@ -268,6 +268,25 @@ def test_outline_deletes_appear_once_per_layer():
     assert "    - pt-0001 示例的点（方向: 正向；实体: 实体甲）" in md
 
 
+def test_outline_dedups_same_id_delete_across_blocks():
+    """A-M3：`_tree_lines` 的跨块同 id delete 去重（seen_deleted）曾被整段删掉而全绿——既有
+    `test_outline_deletes_appear_once_per_layer` 各删除 id 互不相同，永不触发该分支。本夹具让同一
+    链路 id 被两个块各出一条 delete，断言删除清单只出一条（首条），大纲里该 id 只出现一次。"""
+    nodes_by_layer = {
+        "chain": [{"id": "ch-0001", "name": "示例链路甲", "op": "upsert", "parent": "",
+                   "state": "新增", "priority": "P0"},
+                  {"id": "ch-0009", "name": "示例链路乙", "op": "delete", "reason": "块A 判定下线"},
+                  {"id": "ch-0009", "name": "示例链路乙", "op": "delete", "reason": "块B 判定下线"}],
+        "story": [], "point": [],
+    }
+    md = _outline(nodes_by_layer, {"hard": [], "report": {}},
+                  {"claims": [], "matrix_notes": [], "unresolved": [], "duplicates": []})
+    assert md.count("ch-0009") == 1                            # 跨块同 id 只呈递一次
+    deletes = [line for line in _section(md, "增量树") if "删除" in line]
+    assert deletes == ["- ch-0009 示例链路乙（删除：块A 判定下线）"]
+    assert "- ch-0001 示例链路甲（新增，P0）" in md             # 存活节点照常成树
+
+
 def test_outline_renders_orphan_branch():
     """F2：驱动只把「本次涉及的草稿节点」交给大纲（窄子树任务、父节点被删时上游父节点不在
     输入里）。父引用落空的链路按根起树并递归下钻——否则整条分支（含其下 upsert 的故事与测试点）

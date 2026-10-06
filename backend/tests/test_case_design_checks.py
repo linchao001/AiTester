@@ -400,6 +400,42 @@ def test_draft_point_with_dangling_story_still_reports_broken_parent():
         ("broken_parent", "point", "pt-0001")}
 
 
+def test_in_scope_chain_claimed_only_by_out_of_scope_story_is_not_empty():
+    # A-M2：checks 的「认领关系读全宇宙（范围外的故事也算认领）」曾被变异成按 in_scope 过滤后 48 测全绿。
+    # 本用例钉死该语义：范围内链路**仅**被范围外的 KB 存量故事认领 ⇒ 已非空，不报 empty_chain。
+    nodes = {
+        "chain": [{"id": "ch-0001", "type": "chain", "level": 1, "parent": "",
+                   "priority": "P1", "state": "approved", "op": "upsert"}],
+        "story": [], "point": [],
+    }
+    kb = {
+        "chain": [],
+        "story": [{"id": "st-9001", "type": "story", "chains": ["ch-0001"],
+                   "priority": "P1", "state": "kb"}],
+        "point": [],
+    }
+    # ch-0001 是草稿恒在范围；st-9001 是 KB 存量且不在 scope.stories ⇒ 范围外。
+    uni = build_universe(nodes, kb, {"chains": set(), "stories": set()})
+    assert uni["chains"]["ch-0001"]["in_scope"] is True
+    assert uni["stories"]["st-9001"]["in_scope"] is False
+    out = run_checks(uni, claims=[], matrix_cells=[], unresolved={})
+    assert not any(f["code"] == "empty_chain" for f in out["hard"])   # 被范围外故事认领 ⇒ 非空
+    assert out["hard"] == []
+
+
+def test_in_scope_chain_with_no_claim_at_all_still_reports_empty():
+    # 反向护栏，确保上一条不是因为「empty_chain 整个失效」才不报：无人认领的范围内链路照报。
+    nodes = {
+        "chain": [{"id": "ch-0001", "type": "chain", "level": 1, "parent": "",
+                   "priority": "P1", "state": "approved", "op": "upsert"}],
+        "story": [], "point": [],
+    }
+    out = run_checks(build_universe(nodes, {"chain": [], "story": [], "point": []},
+                                    {"chains": set(), "stories": set()}),
+                     claims=[], matrix_cells=[], unresolved={})
+    assert {(f["code"], f["where"]) for f in out["hard"]} == {("empty_chain", "ch-0001")}
+
+
 # ------------------------------------------------------------------ R-14 空范围
 
 def _sparse_nodes():
