@@ -5931,7 +5931,7 @@ git push origin master:main
 - Consumes: T11 全绿并已提交（`git rev-parse HEAD` 记录，走查全程不变）；`backend/data/model_config.json`（真实模型 Key，付费调用来源）；`backend/data/capability_config.json` 现况（case_design 面已含 `task`；`pwsh` 启用、`bash` 禁用——存量不被静默改写是既定语义，见 `test_legacy_config_activates_task_via_settings_path`）；API：`POST /api/projects`、`POST /api/chat/send/stream`（SSE 形如 `event: <kind>` + 单行 `data: {json}`，`ensure_ascii=False`；终帧 `event: done` 带 `reply`）、`DELETE /api/chat/sessions/{sid}`、`DELETE /api/projects/{pid}`、`GET /api/health`、`GET /api/capabilities`
 - Produces: spec §验收五条的运行证据（两次真机走查 / 产品线中立 / 结构数字线 / 环有效性 / 成本实测）+ P4 报数；「走查记录」commit + push（本专项第二次也是最后一次推送；若走查挡出缺陷，修复提交一并推）；缺陷按「未过处置」修复后复验
 
-- [ ] **Step 1: 起隔离实例与前置核对**
+- [x] **Step 1: 起隔离实例与前置核对**
 
 ```bash
 mkdir -p D:/tmp/walkthrough_case/project D:/tmp/walkthrough_case/kb D:/tmp/walkthrough_case/baseline
@@ -5973,7 +5973,7 @@ print("case_design tools:", agents["case_design"]["tool_ids"])
 PY
 ```
 
-- [ ] **Step 2: 备合成业务输入（走查一 v1 就位；v2 走查二时才写）**
+- [x] **Step 2: 备合成业务输入（走查一 v1 就位；v2 走查二时才写）**
 
 `D:\tmp\walkthrough_case\project\requirements.md`（v1，UTF-8；走查一期间项目目录**只放这一份**）：
 
@@ -6025,7 +6025,7 @@ PY
 
 差异设计：新增 1 链 + 改动 1 链 + 保留 1 链不动 → 逼出「块级混合判定（新增 / 更新 / 无变化）」。
 
-- [ ] **Step 3: 走查一（三层首建 + 回写）**
+- [x] **Step 3: 走查一（三层首建 + 回写）**
 
 3.1 建探针项目（中文 body 一律经文件 + `--data-binary`，Git Bash 直写会乱码）：
 
@@ -6116,7 +6116,7 @@ head -8 D:/tmp/walkthrough_case/kb/case_probe/business/chains/*.md              
 
 账本 `status=done`；节点总数=过审节点数（与大纲增量树逐数对照）。随后对三桶 md 全量 `md5sum` 存 `baseline/kb-after-walk1.md5`（走查二零扰动比对用）。
 
-- [ ] **Step 4: 走查二（更新分支 + 增量回写）**
+- [x] **Step 4: 走查二（更新分支 + 增量回写）**
 
 4.1 写入 `requirements-v2.md`（Step 2 的第二块）。4.2 同项目同会话发更新任务：
 
@@ -6150,7 +6150,7 @@ find D:/tmp/walkthrough_case/kb/case_probe/business -name '*.md' | md5sum | sort
 
 **可选（非验收，成本允许才做）**：在 4.4 前先发一条意见消息（如「故事层的拆分太粗，把申请与审核拆成两个故事」）走回溯支路：期望新大纲再次回到 awaiting_review、账本出现 `stale_pending` 标记与 `human-*-in-r{k}` 判决留痕，再发「通过」收口。成本紧张可跳过，跳过不影响验收。
 
-- [ ] **Step 5: 产品线中立证据（验收主项）**
+- [x] **Step 5: 产品线中立证据（验收主项）**
 
 ```bash
 git status --porcelain > D:/tmp/walkthrough_case/baseline/porcelain-after.txt   # 与 before 同为 0 行
@@ -6159,11 +6159,11 @@ git rev-parse HEAD                                                              
 
 记录三件：① 两次走查只用不同的业务信息输入（v1/v2 差异即全部变量）；② 代码/提示词/判据/桶配置零改动（git 证据 + HEAD 不变）；③ KB 起点为空、无任何步骤引用真实产品线既有内容。任一步骤需要引用某条线的既有内容才能通过 → **能力缺口**，按「未过处置」报数。
 
-- [ ] **Step 6: P4 报数（非门禁）**
+- [x] **Step 6: P4 报数（非门禁）**
 
 读 `design/manifests/enum-chain.json`：按 `kind` 分计条数；逐条核对在最终三层树中的承接（对象→参与链路/故事；角色→出现的故事；阶段→链路内阶段），记录「枚举 N 条 / 树中有承接 M 条 / 树外 K 条」。只报数，不下判、不返工。
 
-- [ ] **Step 7: 成本实测**
+- [x] **Step 7: 成本实测**
 
 ```bash
 grep -c '^event: call' D:/tmp/walkthrough_case/ss1.log D:/tmp/walkthrough_case/ss1-approve.log \
@@ -6172,7 +6172,7 @@ grep -c '^event: call' D:/tmp/walkthrough_case/ss1.log D:/tmp/walkthrough_case/s
 
 对照口径（spec §验收）：预估只随规模变动——L2 枝 10~20 次、L1 整枝上百次；走查一约 3 条一级链路量级 ≈ 300~600 次。**实测超 3 倍（>1800 次）→ 停下报数 + 菜单，不砍能力**。token 若平台未回传则如实标注「未回传，以调用数对照」。走查二（增量）同口径记录，应显著小于首建。
 
-- [ ] **Step 8: 收尾清场与走查记录**
+- [x] **Step 8: 收尾清场与走查记录**
 
 8.1 证据先复制再删除（顺序不可反）：
 
@@ -6271,3 +6271,5 @@ git push origin master:main
 - **占位符扫描**：`TBD/TODO/待补/待定/FIXME` 全仓扫描零命中（唯一「待补」字样是运行时文案字符串 `矩阵空格待补点`，非计划占位）；每步含可执行命令或逐字代码；T12 中尖括号（`<pid>/<sid>/<sha>/<读数>`）均为运行期实测值槽位，来源逐步标注。
 - **类型一致性**：`compose_outline(ledger_data, nodes_by_layer, report, extras)`（T3）↔ T8 `h_gate` 调用逐参对齐；`run_checks(universe, claims, matrix_cells, unresolved)`（T4）↔ T8 调用（:4329）逐参对齐；`run_reviewer(task_tool, agent_id, brief, *, model_cls, call_id, title, config, name)`（T6）↔ T8 各审调用；`CASE_REVIEW_AGENT_ID / CASE_REVIEW_BLIND_AGENT_ID`（T2）↔ T7/T8/T11 同串；状态词 `stale_pending / carried_stale / awaiting_review / writeback_failed`（T2）在 T8/T11/T12 同义；人审门与回写逐字文案（「大纲已生成（design/outline.md），等待人工评审。」「回写完成：本次过审节点已写入知识库。」）在 T8/T11/T12 三处同串（`h_gate`/`h_writeback` 定义点 :4349/:4478，T11/T12 断言引用）。
 - **走查段追加自查**：T12 的 API 形状（SSE `event:/data:` 单行、终帧 `event: done.reply`、`SendRequest`/`ProjectCreateRequest` 字段、两处 DELETE 端点）逐项对过现码 `interaction/router.py:102-165`、`schemas.py:16-25,253-258`；隔离环境链（`REME_KNOWLEDGE_BASES_DIR`/`KB_ID` → settings → reme 双侧）与「embedding 关闭纯 BM25」（本机无 `.env` 实测）已核；存量 capability 不静默改写（`test_legacy_config_activates_task_via_settings_path` 语义）与 runtime 面已有 `task` 的实况已核；收尾 junction 安全删除沿用 reme 实测硬知识（先 `rmdir` 摘链再删外围）。
+
+**T12 执行结果（2026-10-07 收口）**：走查一**过**（首建→①②③→大纲门→回写全链逐字闭合，hard 全 0 且独立复算一致）；走查二**部分未过**并按「未过处置」报数——块级「无变化」终态在提示词面缺失、「未涉及节点 md5 不变」的读点在 `updated_at` 语义下永不可能成立、report 空归属 10 为呈递项而非门禁项；成本走查一 1648 / 走查二 2830 / 累计 6988 次 call。全部读数与缺陷归因见 spec 文末「走查记录」节。
