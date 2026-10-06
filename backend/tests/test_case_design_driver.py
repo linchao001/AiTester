@@ -9,6 +9,7 @@ simulate() 承担：按账本 cursor 判定当前该产出哪个制品，写文�
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -1027,3 +1028,27 @@ def test_writeback_resume_negated_words_are_not_authorization(tmp_path):
         assert turn["case"]["route"] == "agent", text          # 未授权 → gate_interpret 待决
         assert frames == [], text
         assert kb.upserts == [] and kb.deletes == [], text
+
+
+# ---- R-31 / B-F2（interrupted 假闭环清偿）----
+
+def test_interrupted_resume_appends_history_trace(tmp_path):
+    """上一回合未跑完的续跑必须在磁盘账本留痕：死赋值「interrupted」从未落盘是假闭环。
+
+    裁定最小形态：删死赋值，改往账本既有 history 追加带时间戳痕迹，仍由既有 save 单点
+    落盘；不新增状态词、不新增字段。全新首启（无既有账本）不是「被打断」，不得留痕。
+    """
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    state = {"messages": [HumanMessage("生成测试设计")], "case": {}}
+    turn = _drive(env, state, ScriptTask())                    # 首启：下发 plan 指令后回合结束
+    assert turn["case"]["route"] == "agent"
+    raw = json.loads((env.design / "ledger.json").read_text(encoding="utf-8"))
+    assert raw["status"] == "active" and raw["history"] == []  # 全新首启：零痕迹
+    _drive(env, {"messages": [HumanMessage("继续")], "case": {}}, ScriptTask())
+    raw = json.loads((env.design / "ledger.json").read_text(encoding="utf-8"))
+    assert raw["status"] == "active"                           # 终态 active（可观测六态不再造假）
+    assert len(raw["history"]) == 1
+    assert raw["history"][0].startswith("resumed-from-interrupted@")
+    assert re.match(r"^resumed-from-interrupted@\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$",
+                    raw["history"][0])

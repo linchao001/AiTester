@@ -185,6 +185,7 @@ def _go(ctx: Ctx, stage: str, *, layer: str = "", block: str = "", round: int = 
 def _boot(ctx: Ctx, fresh: bool) -> None:
     """载入/初始化账本；fresh（新用户回合）时按旧状态决定新任务 / 续拼人审 / 重试回写。"""
     env, led = ctx.env, Ledger.load(ctx.env.design)
+    loaded = led is not None
     if led is None:
         led = Ledger.fresh(ctx.env.design)
         if env.design.exists() and any(env.design.iterdir()):
@@ -209,8 +210,12 @@ def _boot(ctx: Ctx, fresh: bool) -> None:
                 _go(ctx, "writeback")
             else:
                 _go(ctx, "gate_interpret")
-        elif led.status == "active":
-            led.status = "interrupted"         # 上一回合没跑完（取消/崩溃）；从游标续跑
+        elif led.status == "active" and loaded:
+            # B-F2/R-31：上一回合没跑完（取消/崩溃）的续跑留痕。旧写法先赋 "interrupted"
+            # 再无条件覆盖回 "active"、中间没有 save——磁盘账本永远看不到 interrupted，
+            # 契约 §9「六态可观测」是假闭环。裁定清偿最小形态：删死赋值，往账本既有
+            # history 追加带时间戳痕迹，仍由下面既有 led.save() 单点落盘；不新增状态词。
+            led.data["history"].append(f"resumed-from-interrupted@{_now()}")
     led.status = "active"
     led.save()
 
