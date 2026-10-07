@@ -9,7 +9,8 @@ from aitester.case_design.constants import (
 from aitester.case_design.env import CaseDesignEnv
 from aitester.case_design.ledger import Ledger
 from aitester.case_design.schema import (
-    DraftNode, MatrixOut, Opinion, ReviewOut, parse_json_fence, validate_drafts,
+    CaseDraft, DraftNode, MatrixOut, Opinion, ReviewOut, parse_case_file, parse_json_fence,
+    validate_cases, validate_drafts,
 )
 
 
@@ -210,3 +211,74 @@ def test_ledger_roundtrip_and_id_allocation(tmp_path: Path):
     assert led.next_seq(POINT) == "pt-0001"
     led.save()
     assert json.loads((env.design / "ledger.json").read_text(encoding="utf-8"))["counters"]["chain"] == 2
+
+
+# ---- 第四层用例草稿（裁定 35/38）：cc- 形状 + covers 认领纪律 ----
+
+def _case_raw(**over):
+    base = {"chain": "ch-0002", "batch": "ch-0002-b1", "cases": [{
+        "case_id": "cc-0001", "title": "下单用满足门槛的券可抵扣",
+        "covers": ["pt-0003"], "preconditions": "账号内有一张满足门槛的优惠券",
+        "steps": ["登录并进入下单页", "选择该券并提交下单"],
+        "expected": ["订单金额按券面规则抵扣", "该券状态变为已核销"],
+        "priority": "P1", "note": ""}]}
+    base.update(over)
+    return base
+
+
+def test_valid_case_file_parses(tmp_path):
+    path = tmp_path / "ch-0002-b1.json"
+    path.write_text(json.dumps(_case_raw(), ensure_ascii=False), encoding="utf-8")
+    cases, errors = parse_case_file(path)
+    assert errors == []
+    assert cases[0].covers == ["pt-0003"] and cases[0].case_id == "cc-0001"
+
+
+def test_case_without_covers_is_rejected():
+    _, errors = validate_cases(_case_raw(cases=[{
+        "case_id": "cc-0001", "title": "谁都不落实", "covers": [],
+        "preconditions": "x", "steps": ["y"], "expected": ["z"]}]))
+    assert any("covers 不能为空" in e for e in errors)
+
+
+def test_case_covering_non_point_is_rejected():
+    _, errors = validate_cases(_case_raw(cases=[{
+        "case_id": "cc-0001", "title": "认领了故事", "covers": ["st-0001"],
+        "preconditions": "x", "steps": ["y"], "expected": ["z"]}]))
+    assert any("非测试点 id" in e for e in errors)
+
+
+def test_case_bad_case_id_shape_is_rejected():
+    _, errors = validate_cases(_case_raw(cases=[{
+        "case_id": "pt-0001", "title": "借用三层 id", "covers": ["pt-0003"],
+        "preconditions": "x", "steps": ["y"], "expected": ["z"]}]))
+    assert any("cc-四位数字" in e for e in errors)
+
+
+def test_case_id_duplicated_in_same_file_is_rejected():
+    one = {"case_id": "cc-0001", "title": "甲", "covers": ["pt-0003"], "preconditions": "x",
+           "steps": ["y"], "expected": ["z"]}
+    two = dict(one, title="乙", covers=["pt-0004"])
+    _, errors = validate_cases(_case_raw(cases=[one, two]))
+    assert any("本文件内重复" in e for e in errors)
+
+
+def test_empty_cases_array_is_rejected_not_empty_batch():
+    _, errors = validate_cases(_case_raw(cases=[]))
+    assert any("cases 必须是非空数组" in e for e in errors)
+
+
+def test_new_case_with_blank_id_is_accepted_for_driver_patch():
+    one = {"case_id": "", "title": "待分配", "covers": ["pt-0003"], "preconditions": "x",
+           "steps": ["y"], "expected": ["z"]}
+    cases, errors = validate_cases(_case_raw(cases=[one]))
+    assert errors == [] and cases[0].case_id == ""
+
+
+def test_missing_steps_or_expected_or_precondition_is_rejected():
+    for field in ("preconditions", "steps", "expected"):
+        bad = {"case_id": "cc-0001", "title": "缺字段", "covers": ["pt-0003"],
+               "preconditions": "x", "steps": ["y"], "expected": ["z"]}
+        bad[field] = "" if field == "preconditions" else []
+        _, errors = validate_cases(_case_raw(cases=[bad]))
+        assert errors, f"{field} 缺失必须拒收"

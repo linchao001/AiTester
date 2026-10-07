@@ -29,6 +29,19 @@ PRIORITY_RANK: dict[str, int] = {"P0": 0, "P1": 1, "P2": 2}
 DIRECTIONS: tuple[str, ...] = ("正向", "负向", "边界")
 ID_RE = re.compile(r"^(ch|st|pt)-\d{4}$")
 
+# 第四层用例编写环（裁定 35/38）：cc- 只活在项目空间 design/cases/，不进 KB、不进 LAYERS/TYPE_PREFIX。
+# 扩一位 LAYERS 会连带改 build_universe/run_checks/compose_outline 的三层轴口径，本片明确不做。
+CASE_PREFIX = "cc"
+CASE_ID_RE = re.compile(r"^cc-\d{4}$")
+CASE_BATCH_CAP = 10          # 每批**点数**上限（裁定 39 的「≤10/批」按分母切，条数随认领浮动；见 spec 实施澄清）
+CASES_DIR_NAME = "cases"     # design/cases/ —— 用例正文唯一落点
+CASE_DELIVERY_NAME = "case-delivery.md"   # 末门唯一可视交付物
+
+# 规范校验表的启发词（裁定 37：命中只**呈递**，绝不进 hard）。硬断言与「前置不拿环境存量
+# 当条件」是内容判断，机器只能给线索；漏测（未认领点）才是本片唯一可硬判的方向。
+VAGUE_ASSERTION_MARKS: tuple[str, ...] = ("正常", "正确", "符合预期", "没有问题", "成功即可")
+ENV_PRECONDITION_MARKS: tuple[str, ...] = ("已有", "已存在", "存量数据", "库中已有", "环境中已")
+
 CASE_DESIGN_AGENT_ID = "case_design"
 CASE_REVIEW_AGENT_ID = "case_review"
 CASE_REVIEW_BLIND_AGENT_ID = "case_review_blind"

@@ -28,8 +28,11 @@ def _fresh_data() -> dict[str, Any]:
         "layers": {layer: {"state": "pending", "mode": "", "blocks": [],
                            "audit_round": 0, "unresolved": [], "opinions": []}
                    for layer in LAYERS},
-        "counters": {layer: 0 for layer in LAYERS},
+        "counters": {**{layer: 0 for layer in LAYERS}, "case": 0},
         "gate": {"round": 0, "approved_at": ""},
+        "writing": {"status": "", "targets": [], "batches": [], "opinions": [], "unresolved": [],
+                    "gate": {"round": 0, "int_round": 0, "unclear": 0, "approved_at": ""},
+                    "stale_batches": [], "note": ""},
         "writeback": {"done": False, "log": []},
         "history": [],
     }
@@ -95,3 +98,12 @@ class Ledger:
                 "需要扩位（改 ID_RE）或清账本后重试")
         self.data["counters"][layer] = seq
         return f"{TYPE_PREFIX[layer]}-{seq:04d}"
+
+    def next_case_seq(self) -> str:
+        """用例 id：只在项目空间内有意义，故不读 TYPE_PREFIX（裁定 35：cc- 不进 KB、不进三层轴）。
+        四位上限与三层同款响亮失败——静默产 cc-10000 会让模型原样回填再被判非法，无从修复。"""
+        seq = int(self.data["counters"].get("case", 0)) + 1
+        if seq > 9999:
+            raise ValueError("用例序号已达四位 id 上限 9999：下一个 cc-10000 超出 CASE_ID_RE 允许的四位")
+        self.data["counters"]["case"] = seq
+        return f"cc-{seq:04d}"

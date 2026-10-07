@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from aitester.case_design.constants import DIRECTIONS, ID_RE, LAYERS, PRIORITY_RANK, TYPE_PREFIX
+from aitester.case_design.constants import CASE_ID_RE, DIRECTIONS, ID_RE, LAYERS, PRIORITY_RANK, TYPE_PREFIX
 
 _FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
 
@@ -221,3 +221,84 @@ def parse_draft_file(layer: str, path: Path) -> tuple[list[DraftNode], list[str]
     except (json.JSONDecodeError, OSError) as exc:
         return [], [f"草稿文件不可解析：{exc}"]
     return validate_drafts(layer, raw)
+
+
+class CaseDraft(BaseModel):
+    """一条用例正文（第四层；只活在项目空间 design/cases/，不进 KB——裁定 35）。
+
+    裁定 38：点↔用例数量关系灵活（1:1／一点多条／多点合一条都允许），可核对性全靠 covers
+    显式认领：covers 为空 = 这条用例谁都不落实，等于漏测的伪装；认领不存在的点 = 假完整。
+    """
+
+    case_id: str = ""                      # 新增留空串，由驱动 next_case_seq 分配并回写
+    title: str = ""
+    covers: list[str] = Field(default_factory=list)
+    preconditions: str = ""
+    steps: list[str] = Field(default_factory=list)
+    expected: list[str] = Field(default_factory=list)
+    priority: str = "P1"
+    note: str = ""
+
+
+def validate_cases(raw: Any) -> tuple[list[CaseDraft], list[str]]:
+    """校验一个批次用例草稿文件。错误表非空即重问（批内自检，不进末门修复环）。
+
+    必填缺失在此**拒收**（驱动 nudge 环），因此 `run_case_checks` 不必为它增设 hard code——
+    同一条坏输入不该有两个处置出口（裁定 37 的规范侧只留呈递线索）。
+    """
+    errors: list[str] = []
+    if not isinstance(raw, dict):
+        return [], ["用例文件根必须是对象 {chain, batch, cases}"]
+    if not isinstance(raw.get("chain"), str) or not raw.get("chain"):
+        errors.append("chain 字段缺失（本批归属的链路 id）")
+    if not isinstance(raw.get("batch"), str) or not raw.get("batch"):
+        errors.append("batch 字段缺失（本批 id，须与文件名一致）")
+    items = raw.get("cases")
+    if not isinstance(items, list) or not items:
+        return [], [*errors, "cases 必须是非空数组（本批一条都没有 = 没做事，不是空批）"]
+    cases: list[CaseDraft] = []
+    seen_ids: set[str] = set()
+    for i, item in enumerate(items):
+        where = f"cases[{i}]"
+        try:
+            case = CaseDraft.model_validate(item)
+        except Exception as exc:
+            errors.append(f"{where}: {exc}")
+            continue
+        if case.case_id:
+            if not CASE_ID_RE.match(case.case_id):
+                errors.append(f"{where}: case_id「{case.case_id}」形状非法（应为 cc-四位数字）")
+            elif case.case_id in seen_ids:
+                errors.append(f"{where}: case_id「{case.case_id}」在本文件内重复")
+            else:
+                seen_ids.add(case.case_id)
+        if not case.title.strip():
+            errors.append(f"{where}: title 不能为空")
+        if not case.covers:
+            errors.append(f"{where}: covers 不能为空（必须点名这条用例落实哪些测试点 pt-xxxx）")
+        bad = [c for c in case.covers if not re.match(r"^pt-\d{4}$", str(c))]
+        if bad:
+            errors.append(f"{where}: covers 含非测试点 id {bad}（只许 pt-四位数字）")
+        if len(set(map(str, case.covers))) != len(case.covers):
+            errors.append(f"{where}: covers 内有重复 id")
+        if not case.preconditions.strip():
+            errors.append(f"{where}: preconditions 不能为空")
+        if not [s for s in case.steps if str(s).strip()]:
+            errors.append(f"{where}: steps 必须至少一步且非空")
+        if not [e for e in case.expected if str(e).strip()]:
+            errors.append(f"{where}: expected 必须至少一条硬断言且非空")
+        if case.priority not in PRIORITY_RANK:
+            errors.append(f"{where}: priority「{case.priority}」非法（P0/P1/P2）")
+        cases.append(case)
+    return (cases if not errors else []), errors
+
+
+def parse_case_file(path: Path) -> tuple[list[CaseDraft], list[str]]:
+    """读一个批次文件并校验；缺失/坏 JSON 收敛为错误表（不抛，与 parse_draft_file 同形）。"""
+    if not path.is_file():
+        return [], [f"用例文件不存在：{path.name}"]
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return [], [f"用例文件不可解析：{exc}"]
+    return validate_cases(raw)
