@@ -506,3 +506,38 @@ def test_i_1_tree_shows_the_row_writeback_would_write():
     assert [line for line in tree if "st-0001" in line] == [
         "  - st-0001 前块草稿故事（更新，chains: ch-0001）"]
     assert "后块草稿故事" not in md and "存量故事" not in md
+
+
+def test_i_1_dedup_keeps_first_position_across_layers():
+    """I-2（复审残余）：同 id 去重时**位置钉在首次出现处**、内容取会写库的那一份——
+    链路层与测试点层各钉一条。上一轮只有内容面被钉住（把原位替换改成末尾追加时全套 857 仍绿），
+    位置面全绿漂移⇒人看到的树形与库里的归属不再同构，本轮补牙。
+
+    行序刻意做成「ch-0001 存量 → ch-0002 草稿 → ch-0001 草稿」、点层同形：
+    若按最后一行的位置呈递，链路顺序会翻成 ch-0002 在前。
+    """
+    nodes_by_layer = {
+        "chain": [{"id": "ch-0001", "name": "旧名链路", "op": "noop", "parent": "",
+                   "state": "存量", "priority": "P2"},
+                  {"id": "ch-0002", "name": "链路二", "op": "upsert", "parent": "",
+                   "state": "更新", "priority": "P1"},
+                  {"id": "ch-0001", "name": "新名链路", "op": "upsert", "parent": "",
+                   "state": "更新", "priority": "P0"}],
+        "story": [{"id": "st-0001", "name": "故事", "op": "upsert", "chains": ["ch-0001"],
+                   "state": "更新"}],
+        "point": [{"id": "pt-0001", "name": "旧点", "op": "noop", "story": "st-0001",
+                   "state": "存量", "directions": ["正向"], "entities": ["旧实体"]},
+                  {"id": "pt-0002", "name": "另一点", "op": "upsert", "story": "st-0001",
+                   "state": "更新", "directions": ["负向"], "entities": ["实体二"]},
+                  {"id": "pt-0001", "name": "新点", "op": "upsert", "story": "st-0001",
+                   "state": "更新", "directions": ["正向", "负向"], "entities": ["新实体"]}],
+    }
+    md = _outline(nodes_by_layer, {"hard": [], "report": {}},
+                  {"claims": [], "matrix_notes": [], "unresolved": [], "duplicates": []})
+    tree = _section(md, "增量树")
+    ids = [line.split()[1] for line in tree
+           if line.strip().startswith("- ") and not line.split()[1].startswith("[")]
+    assert ids == ["ch-0001", "st-0001", "pt-0001", "pt-0002", "ch-0002"]
+    assert "- ch-0001 新名链路（更新，P0）" in tree               # 内容=写库侧那一份
+    assert "    - pt-0001 新点（方向: 正向/负向；实体: 新实体）" in tree
+    assert "旧名链路" not in md and "旧点" not in md and "旧实体" not in md

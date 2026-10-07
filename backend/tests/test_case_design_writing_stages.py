@@ -1326,3 +1326,23 @@ def test_unmapped_opinion_round_refreshes_delivery(tmp_path):
     assert led.data["writing"]["stale_batches"] == []
     assert led.data["writing"]["gate"]["round"] == 0                            # 不占修复环预算
     assert kb.upserts == [] and kb.deletes == []
+
+
+def test_c_1_contradictory_message_never_approves_case_gate(tmp_path):
+    """C-1（评审实测）的**末门面**：自相矛盾的话在用例末门上同样不是批准。
+
+    上一轮只在设计侧大纲门钉了这条。两道门共用同一个 `_explicit_approval`，但判定各走各的
+    分支：末门是「解读子抽取不到可执行意见 ⇒ elif 批准判定」。去掉 C-1 的第一趟否决后，
+    只有本条会红末门这一面（大纲门那条挡另一面）——所以两条都是必要的，不是重复。
+    「待决」文案是**牙齿**：它只在真的落到待决分支时出现，宽松写法下会变成批准路径而没这句。
+    """
+    kb, env, task, _ = _run_to_gate(tmp_path, n=3)
+    frames: list[dict] = []
+    turn = _drive(env, _new_turn("不通过，同意"), task, writer=frames.append)
+    assert turn["case"]["route"] == "agent"
+    assert "待决" in turn["messages"][-1].content
+    led = _led(env)
+    assert led.status == "awaiting_review"
+    gate = led.data["writing"]["gate"]
+    assert not gate.get("approved_at") and gate["unclear"] == 1        # 计入待决串，连续用尽即 halt
+    assert kb.upserts == [] and kb.deletes == []                       # 裁定 35：末门本来就零 KB 写
