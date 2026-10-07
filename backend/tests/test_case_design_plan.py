@@ -480,3 +480,29 @@ def test_first_build_mode_never_offers_no_change():
     assert "no_change" not in text        # 首建模式给这条通道 = 教模型空手过关
     assert "本块无变化" not in text
     assert '"nodes": [...]' in text       # 首建仍只有「产出节点」这一条出路
+
+
+def test_i_1_tree_shows_the_row_writeback_would_write():
+    """I-1（评审）：同 id 出现在两个草稿块时，增量树必须呈**写库侧会写的那一条**（先出现的草稿）。
+
+    形状取更新态下两条链路各自认领同一故事：story 层三行 = 存量 + 草稿A(前块) + 草稿B(后块)。
+    旧 `_dedup_latest` 呈草稿B，而 `_collect_writeback_items` 的 `seen` 首见即留会写草稿A——
+    红在这里：树里故事行是「后一块的名字」。
+    """
+    nodes_by_layer = {
+        "chain": [{"id": "ch-0001", "name": "链路一", "op": "upsert", "parent": "",
+                   "state": "更新", "priority": "P1"}],
+        "story": [{"id": "st-0001", "name": "存量故事", "op": "noop", "chains": ["ch-0001"],
+                   "state": "存量"},
+                  {"id": "st-0001", "name": "前块草稿故事", "op": "upsert",
+                   "chains": ["ch-0001"], "state": "更新"},
+                  {"id": "st-0001", "name": "后块草稿故事", "op": "upsert",
+                   "chains": ["ch-0001"], "state": "更新"}],
+        "point": [],
+    }
+    md = _outline(nodes_by_layer, {"hard": [], "report": {}},
+                  {"claims": [], "matrix_notes": [], "unresolved": [], "duplicates": []})
+    tree = _section(md, "增量树")
+    assert [line for line in tree if "st-0001" in line] == [
+        "  - st-0001 前块草稿故事（更新，chains: ch-0001）"]
+    assert "后块草稿故事" not in md and "存量故事" not in md

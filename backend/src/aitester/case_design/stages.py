@@ -2090,21 +2090,27 @@ def _human_text(messages: list[BaseMessage]) -> str:
 
 
 def _approval_clause(text: str, words: tuple[str, ...]) -> bool:
-    """是否有一个分句**自己**表了批准：该分句含措辞、且不含任何否定/延后标记。
+    """本轮人话是否构成授权：**任一分句**把批准措辞与否定/延后标记写在一起 ⇒ 整条消息否决。
 
-    W3-2（走查三呈报、R-58 并入本片）：旧写法对全句扫否定标记，「整体看没什么问题，同意通过」
-    里前一句的「没」把后一句的明示批准连坐作废。收窄到批准措辞所在分句后 fail-closed 仍在原地：
-    同一分句里的「不／未／别／暂／没／先」照旧否决（「不通过」「先别回写」都是原句内否定）。
-    残余风险如实登记：末门里「同意通过，但 st-0002 先不合并」这类**批准与保留分句并存**的话，
-    本函数返回 True——它不是漏放行，因为这条路径先走评审子提取意见，`out.opinions` 非空即在
-    优化环里被处置，永不到达 `_explicit_approval`（`gate_interpret` 的 elif 顺序）。
+    W3-2（走查三呈报、R-58 并入本片）要修的是"连坐"：旧写法拿全句扫否定标记，
+    「整体看没什么问题，同意通过」里前一分句的「没」把后一分句的明示批准作废。
+    收窄到分句之后，C-1（评审实测、控制方复现）暴露出另一半：
+    「不通过，同意」旧写法是 False，纯分句写法却是 True——拒绝被读成授权，
+    而这条路径的代价是不可逆的 KB 写入。所以判定分两趟，方向只许偏保守：
+      第一趟**否决**：只要有一个分句**自己**同时出现批准措辞与否定/延后标记
+        （「不通过」「先别回写」「先不批准」），整条消息就不是授权——直接 False。
+      第二趟**采信**：否则只要有分句含批准措辞且该分句无否定/延后标记 ⇒ 授权。
+    残余风险如实登记，不许后来者当成已消除：拒绝/保留**不带批准措辞**成句时
+    （「暂缓，通过」「同意通过，但 st-0002 先不合并」）本函数仍返回 True——
+    纯字符串规则分不开「整体看没什么问题」（表态正常）与「先放一放」（表态保留），
+    再往上加启发词就是在猜人话。这两句形成本片登记为走查四观察项：
+    真机上这类话必须先被评审子提取成 `out.opinions`（`gate_interpret` 的 elif 顺序：
+    有意见就进优化环，永不到达批准判定），若提取不到则按本函数放行、由人复核。
     """
-    for clause in _CLAUSE_SPLIT_RE.split(text or ""):
-        if not clause or not any(word in clause for word in words):
-            continue
-        if not any(mark in clause for mark in _NEGATION_MARKS):
-            return True
-    return False
+    clauses = [c for c in _CLAUSE_SPLIT_RE.split(text or "") if c]
+    if any(any(w in c for w in words) and any(m in c for m in _NEGATION_MARKS) for c in clauses):
+        return False
+    return any(any(w in c for w in words) for c in clauses)
 
 
 def _explicit_approval(text: str) -> bool:

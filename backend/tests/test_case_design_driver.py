@@ -1784,3 +1784,30 @@ def test_w3_2_long_sentence_approval_reaches_writeback(tmp_path):
     led = Ledger.load(env.design)
     assert led.status == "done" and led.data["gate"]["approved_at"]
     assert kb.upserts and kb.deletes == []                 # 长句批准同样授权回写
+
+
+def test_c_1_refusal_clause_never_authorizes_writeback():
+    """C-1（评审实测、控制方复现）：分句收窄**不许**把拒绝读成授权。
+
+    左侧是「拒绝与批准同分句」族——旧写法（全句扫）挡住、纯分句写法会放行，是本轮的靶子；
+    右侧是 W3-2 必须继续放开的连坐族。逐字钉死，谁再改回 `continue` 单边判定就红。
+    """
+    for refusal in ("不通过，同意", "同意，不通过", "不通过", "先别回写", "这条还不够，先不通过"):
+        assert _explicit_approval(refusal) is False, refusal
+    for approval in ("通过", "没问题，批准", "整体看没什么问题，同意通过"):
+        assert _explicit_approval(approval) is True, approval
+    # 回写再入授权同口径：多认一个「重试」，但拒绝照旧一律否决。
+    for refusal in ("不重试，重试", "先别重试"):
+        assert _writeback_authorized(refusal) is False, refusal
+    assert _writeback_authorized("有点小疑问，重试") is True
+
+
+def test_c_1_contradictory_message_stays_awaiting_review(tmp_path):
+    """C-1 门级证据：自相矛盾的话在真门上一行不写、状态退回待决。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask())
+    _drive(env, {"messages": [HumanMessage("不通过，同意")], "case": {}}, ScriptTask())
+    led = Ledger.load(env.design)
+    assert led.status == "awaiting_review" and not led.data["gate"].get("approved_at")
+    assert kb.upserts == [] and kb.deletes == []

@@ -8,24 +8,46 @@ _LAYER_STATE_CN = {"done": "已定稿", "audited": "已过审", "active": "进�
                    "stale_pending": "失效待重算（下次任务重跑）", "skipped": "本次不动"}
 
 
-def _dedup_latest(rows: list[dict]) -> list[dict]:
-    """同 id 只留**最后一行**：`_outline_nodes()` 的行序是「先 KB 存量、后本 run 草稿」，
-    草稿才是将被写库的那一份（W3-3）。与 `writing.denominator_points` 的 last-row-wins 同源——
-    分母与呈递必须认同一个节点，否则履约表按新版算、大纲按旧版呈。
+def _is_draft_row(row: dict) -> bool:
+    """这一行是不是**草稿**（写库侧唯一会写的来源）：生产侧 `_outline_nodes` 给 KB 存量行标
+    `state=存量`、给草稿标 新增／更新／删除；测试夹具与本仓快照另用 `op`（存量 noop／草稿
+    upsert）表达同一区分。两个信号都认——先 `state`，`state` 缺失才落到 `op`。
+    delete 草稿在 `_tree_lines` 已被过滤，不进这里。
+    """
+    state = str(row.get("state") or "")
+    if state == "存量":
+        return False
+    if state:
+        return True
+    return str(row.get("op") or "noop") == "upsert"
 
-    出现位置取该 id 的**首次**位置（树形顺序不因去重而漂移），内容取**最后一行**。
-    无 id 的行（异常草稿残留）不参与去重、原样呈递：呈递侧宁可多一行，不可静默少一行。
+
+def _dedup_written(rows: list[dict]) -> list[dict]:
+    """同 id 只留**将被写库的那一份**，位置仍取该 id 首次出现处（树形顺序不漂）。
+
+    W3-3（走查三呈报、R-58 并入本片）：`_outline_nodes()` 的行序是「先 KB 存量、后本 run 草稿」，
+    旧写法不去重 ⇒ 同一节点在唯一人审门里呈双行（实测 38 行 / 19 唯一 id）。
+    取舍必须和写库侧**同一个口径**，否则人看的是后一块、库里进的是前一块：
+    `_collect_writeback_items`（stages.py:2257-2289）只遍历草稿、且 `seen` 首见即留 ⇒
+    ① 有草稿就不呈存量行（KB 存量永不进写库侧）；
+    ② 草稿之间取**先出现**的那一条（按 sorted 文件名序，与写库侧同序）。
+    无 id 的行不参与去重、原样留在列表里（`_tree_lines` 渲染本来就需要 id，本函数不新增兜底、
+    也不改变它那侧的既有行为：呈递侧宁可多一行，不可静默少一行）。
     """
     out: list[dict] = []
-    index: dict[str, int] = {}
+    slot_of: dict[str, int] = {}          # id → 该 id 首次出现的下标（位置不漂）
     for row in rows:
         key = str(row.get("id") or "")
-        if key and key in index:
-            out[index[key]] = row
+        if not key:
+            out.append(row)               # 无 id 行：不参与去重、原位保留
             continue
-        if key:
-            index[key] = len(out)
-        out.append(row)
+        if key not in slot_of:
+            slot_of[key] = len(out)
+            out.append(row)               # 同 id 只出一行：占在该 id 的首次出现处
+            continue
+        slot = slot_of[key]
+        if not _is_draft_row(out[slot]):
+            out[slot] = row               # 存量让位给草稿；草稿之间先出现者胜
     return out
 
 
@@ -41,9 +63,9 @@ def _tree_lines(nodes_by_layer: dict, layers: dict) -> list[str]:
                 continue
             seen_deleted.add(nid)
             deleted.append(n)
-    chains = _dedup_latest([n for n in nodes_by_layer.get(CHAIN, []) if n.get("op") != "delete"])
-    stories = _dedup_latest([n for n in nodes_by_layer.get(STORY, []) if n.get("op") != "delete"])
-    points = _dedup_latest([n for n in nodes_by_layer.get(POINT, []) if n.get("op") != "delete"])
+    chains = _dedup_written([n for n in nodes_by_layer.get(CHAIN, []) if n.get("op") != "delete"])
+    stories = _dedup_written([n for n in nodes_by_layer.get(STORY, []) if n.get("op") != "delete"])
+    points = _dedup_written([n for n in nodes_by_layer.get(POINT, []) if n.get("op") != "delete"])
     lines: list[str] = []
     by_parent: dict[str, list[dict]] = {}
     for c in chains:
