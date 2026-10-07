@@ -28,9 +28,9 @@ from langgraph.errors import GraphBubbleUp
 
 from aitester.case_design.checks import build_universe, run_checks
 from aitester.case_design.constants import (
-    CASE_BATCH_CAP, CASE_REVIEW_AGENT_ID, CASE_REVIEW_BLIND_AGENT_ID, CHAIN, FIX_CAP, LAYERS,
-    LAYER_CN, MAX_TRANSITIONS, NUDGE_CAP, OUTLINE_NAME, PLAN_NAME, POINT, ROUND_CAP, STORY,
-    TYPE_PREFIX, WRITEBACK_FIX_CAP,
+    CASE_BATCH_CAP, CASE_DELIVERY_NAME, CASE_REVIEW_AGENT_ID, CASE_REVIEW_BLIND_AGENT_ID,
+    CASES_DIR_NAME, CHAIN, FIX_CAP, LAYERS, LAYER_CN, MAX_TRANSITIONS, NUDGE_CAP, OUTLINE_NAME,
+    PLAN_NAME, POINT, ROUND_CAP, STORY, TYPE_PREFIX, WRITEBACK_FIX_CAP,
 )
 from aitester.case_design.instructions import (
     attribute_instruction, case_gen_instruction, gate_fix_instruction, gen_instruction,
@@ -52,7 +52,8 @@ from aitester.case_design.writing import plan_case_targets
 
 logger = logging.getLogger(__name__)
 
-_ARCHIVE_ITEMS = (PLAN_NAME, OUTLINE_NAME, "drafts", "reviews", "attribution", "manifests")
+_ARCHIVE_ITEMS = (PLAN_NAME, OUTLINE_NAME, "drafts", "reviews", "attribution", "manifests",
+                  CASES_DIR_NAME, CASE_DELIVERY_NAME)
 
 
 class _Halt(RuntimeError):
@@ -197,33 +198,13 @@ def _go(ctx: Ctx, stage: str, *, layer: str = "", block: str = "", round: int = 
                 "source": source, "nudge": 0, "asked": False})
 
 
-def _prior_surface_exists(env: Any) -> bool:
-    """design/ 里是否真有上一任务的工作面制品（归档判据）。
-
-    旧判据 `any(design.iterdir())` 在专属 loop 里恒为真：`ensure_dirs()` 先建好空骨架目录，
-    首启必归档——落账本前写入的准备制品（编写环的 plan.json 就是这一形状）会被连锅端走，
-    h_plan 只能重发计划指令，编写环永远开不了账。现在只认真实文件：大纲与各工作点子目录
-    里的落盘制品；光杆 plan.json 不算工作面——它是新任务的入口制品本身。
-    """
-    design = Path(env.design)
-    if not design.exists():
-        return False
-    for name in _ARCHIVE_ITEMS:
-        if name == PLAN_NAME:
-            continue
-        p = design / name
-        if p.is_file() or (p.is_dir() and any(x.is_file() for x in p.rglob("*"))):
-            return True
-    return False
-
-
 def _boot(ctx: Ctx, fresh: bool) -> None:
     """载入/初始化账本；fresh（新用户回合）时按旧状态决定新任务 / 续拼人审 / 重试回写。"""
     env, led = ctx.env, Ledger.load(ctx.env.design)
     loaded = led is not None
     if led is None:
         led = Ledger.fresh(ctx.env.design)
-        if _prior_surface_exists(env):              # 无账本但有旧工作面：先归位再开新账
+        if env.design.exists() and any(env.design.iterdir()):    # 无账本但有旧工作面：先归位再开新账
             _archive(env)
     ctx.led = led
     if fresh:
@@ -483,9 +464,15 @@ def _case_ready_or_block(ctx: Ctx) -> str:
 
     返回空串 = 可开工；非空 = 给人看的拒因。不满足时**明示边界停在设计侧**，不静默重生成三层
     （那会把已过审的制品按旧口径再烧一遍），也不 halted（这是合法的业务状态，不是程序故障）。
+
+    「三层未维护」腿读**活宇宙**（`_rows_of` = KB 存量 ∪ 本 run 草稿），与分母 `_case_targets`
+    同一份口径——而不是 `task["probe"]` 那份冻结于计划时刻的快照。mixed 旗舰路径里，三层在计划时
+    还是空的（快照全 maintained:False），设计环生成/评审/回写把节点写进 KB 后才转到 `case_plan`；
+    若沿用计划时快照，编写环会在同一条任务里永远判为「未开工」，把刚写好的分母挡死。单一事实源
+    优先于兼容，故不留 plan-time probe 作 fallback。
     """
     led = ctx.led.data
-    probe = ((led.get("task") or {}).get("probe") or {})
+    probe = {layer: summarize_probe(layer, _rows_of(ctx, layer)) for layer in LAYERS}
     # 事实源以 carried_stale 为主：layers.*.state 会被 init_task 按 modes 覆写（case_only 全成
     # skipped），只读它就永远看不见上一轮留下的失效层。两处取并集，本 run 内标的失效也认。
     stale = {*(led.get("carried_stale") or [])} | {
@@ -513,7 +500,12 @@ def _materialize_case_batches(ctx: Ctx, targets: list[dict]) -> None:
         for batch in target["batches"] or []:
             items = []
             for pid in batch["points"]:
-                point = dict(point_rows.get(pid) or {"id": pid})
+                row = point_rows.get(pid)
+                if row is None:
+                    # 分母与点行取自同一份活宇宙（_case_targets 与 point_rows 同源 _rows_of(POINT)）：
+                    # 清单里没有这条点行只可能是内部不一致，静默造空名/空场景的行会写假用例。
+                    raise _Halt(f"编写环清单缺少点行：{pid}")
+                point = dict(row)
                 story = story_rows.get(str(point.get("story") or "")) or {}
                 items.append({
                     "id": pid, "name": str(point.get("name") or ""),
@@ -531,7 +523,7 @@ def _materialize_case_batches(ctx: Ctx, targets: list[dict]) -> None:
             _write_json(ctx.env.manifests_dir / f"case-{batch['id']}.json",
                         {"chain": cid,
                          "chain_name": str((chain_rows.get(cid) or {}).get("name") or ""),
-                         "batch": batch["id"], "cases_cap": CASE_BATCH_CAP, "points": items})
+                         "batch": batch["id"], "points_cap": CASE_BATCH_CAP, "points": items})
             batches.append({"id": batch["id"], "chain": cid, "state": "todo", "round": 0})
     ctx.led.data["writing"]["batches"] = batches
 
@@ -549,7 +541,10 @@ def h_case_plan(ctx: Ctx) -> Any:
     reason = _case_ready_or_block(ctx)
     led = ctx.led
     if reason:
-        led.data["writing"]["note"] = reason
+        # 拒因**追加不覆盖**：mixed 回写后接手时 writing["note"] 已有「设计侧回写完成 @…」留痕，
+        # 直接赋值会把这条留痕抹掉，交付物侧就看不见设计侧其实已经回写过了。
+        prev = led.data["writing"].get("note")
+        led.data["writing"]["note"] = f"{prev}；{reason}" if prev else reason
         led.status = "done"
         return ctx.end("用例任务未开工：" + reason + "。本轮不生成用例、不写知识库。")
     targets = _case_targets(ctx)
@@ -563,10 +558,12 @@ def h_case_plan(ctx: Ctx) -> Any:
     _go(ctx, "case_gen", layer=first["chain"], block=first["id"])
     # 首批指令由计划侧下发（一次激活把「准备 + 派活」做完），游标已指向 case_gen，
     # 重入即落批环；后续批次与重试由 h_case_gen 用同一个 case_gen_instruction 发（T21）。
+    # batch_no 由 first 在 batches 里的下标推（计划侧下发时首批恒 index 0 → 1，不写死）。
     return ctx.instr(case_gen_instruction(
         chain=first["chain"], batch=first["id"],
         manifest_path=ctx.rel(ctx.env.manifests_dir / f"case-{first['id']}.json"),
-        points=_case_batch_points(ctx, first["id"]), batch_no=1, batch_total=len(batches)))
+        points=_case_batch_points(ctx, first["id"]),
+        batch_no=batches.index(first) + 1, batch_total=len(batches)))
 
 
 def h_plan(ctx: Ctx) -> Any:
