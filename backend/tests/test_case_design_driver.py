@@ -453,9 +453,9 @@ def test_update_no_change_blocks_flow_and_mark_outline(tmp_path):
     led = Ledger.load(env.design)
     assert led.status == "awaiting_review"
     assert led.layer("chain")["mode"] == "update"
-    assert led.data["no_change"] == [{"layer": "chain", "block": "ALL"},
-                                     {"layer": "story", "block": "ch-0001"},
-                                     {"layer": "point", "block": "st-0001"}]
+    assert led.data["no_change"] == [{"layer": "chain", "block": "ALL", "reason": ""},
+                                     {"layer": "story", "block": "ch-0001", "reason": ""},
+                                     {"layer": "point", "block": "st-0001", "reason": ""}]
     assert kb.upserts == []                                      # 人审前零回写
     outline = (env.design / "outline.md").read_text(encoding="utf-8")
     assert "本次无变化块" in outline
@@ -497,7 +497,7 @@ def test_audit_opt_layer_skips_no_change_blocks(tmp_path):
     led = Ledger.load(env.design)
     assert led.status == "awaiting_review"                       # 没被空草稿绊成 halted
     assert led.layer("point")["audit_round"] == 1               # 优化后重审推进了一轮
-    assert led.data["no_change"] == [{"layer": "point", "block": "st-0001"}]
+    assert led.data["no_change"] == [{"layer": "point", "block": "st-0001", "reason": ""}]
     assert "matrix-point-r0-ch-0001" in task.call_ids()
     assert "matrix-point-r1-ch-0001" in task.call_ids()
 
@@ -819,7 +819,9 @@ def test_no_change_record_withdrawn_when_block_gains_nodes(tmp_path):
     _write(env.drafts_dir("story") / "ch-0002.json",
            {"layer": "story", "block": "ch-0002", "nodes": [], "note": "no_change"})
     _patch_ids(ctx, "story", "")                              # h_opt / h_writeback 的收口钩子
-    assert ctx.led.data["no_change"] == [{"layer": "story", "block": "ch-0002"}]
+    # 人手造账本条目（不经 h_gen，无 reason 键）：按键比较整 dict，撤回判据仍只看 (layer, block)
+    assert [{k: e[k] for k in ("layer", "block")}
+            for e in ctx.led.data["no_change"]] == [{"layer": "story", "block": "ch-0002"}]
     draft = json.loads((env.drafts_dir("story") / "ch-0001.json").read_text(encoding="utf-8"))
     assert draft["nodes"][0]["id"] == "st-0001"               # 顺带钉新节点补 id
 
@@ -1172,3 +1174,46 @@ def test_gate_undecided_relay_turn_does_not_reannounce(tmp_path):
     assert led.data["gate"]["int_round"] == 1                  # 解读轮不被二次推进
     assert [c for c in task.call_ids() if c.startswith("gate-int")] == ["gate-int-r1"]
     assert kb.upserts == [] and kb.deletes == []
+
+
+def test_first_build_layer_rejects_no_change_draft_as_bad_draft(tmp_path):
+    """首建模式下「无变化」不是合法终态：认它就等于让模型空手过关（裁定 29 的假完整通道）。"""
+    kb = StubKb()                                              # 空库：chain 层 first_build
+    env = _env(tmp_path, kb)
+    task = ScriptTask()
+    state = {"messages": [HumanMessage("按业务信息生成测试设计")], "case": {}}
+    turn = _drive(env, state, task)                            # h_plan 下发 plan 指令
+    _append(state, turn)
+    simulate(env)                                              # 写 plan.json（全量首建）
+    turn = _drive(env, state, task)                            # 进 gen：下发 chain/ALL 生成指令
+    assert turn["case"]["route"] == "agent"
+    assert "design/drafts/chain/ALL.json" in turn["messages"][0].content
+    _write(env.drafts_dir("chain") / "ALL.json",
+           {"layer": "chain", "block": "ALL", "nodes": [], "note": "no_change"})
+    turn = _drive(env, state, task)                            # h_gen 读到无变化草稿
+    text = str(turn["messages"][0].content)
+    assert turn["case"]["route"] == "agent"                    # ① 重问（route=agent）而非过块
+    assert "首建模式不接受无变化块" in text
+    led = Ledger.load(env.design)
+    assert led.data.get("no_change") in (None, [])             # ② 账本 no_change 仍为空
+    assert led.layer("chain")["blocks"][0]["state"] != "done"  # ③ 块 state 不是 done
+
+
+def test_no_change_reason_lands_in_ledger_and_outline(tmp_path):
+    """reason 是给人看的那一句——必须进账本并原样出现在大纲「本次无变化块」。"""
+    kb = StubKb(layers={
+        "chain": [{"id": "ch-0001", "type": "chain", "parent": "", "level": 1,
+                   "name": "老链路", "priority": "P0"}],
+        "story": [{"id": "st-0001", "type": "story", "chains": ["ch-0001"],
+                   "name": "老故事", "priority": "P0"}],
+        "point": [{"id": "pt-0001", "type": "point", "story": "st-0001",
+                   "name": "老点", "entities": ["订单"], "directions": ["正向"],
+                   "priority": "P0"}]})
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask(), gen_nodes=lambda layer, block, mode:
+          {"nodes": [], "note": "no_change", "reason": "本块业务规则未变"})
+    led = Ledger.load(env.design)
+    assert led.status == "awaiting_review"
+    assert {"layer": "chain", "block": "ALL", "reason": "本块业务规则未变"} in led.data["no_change"]
+    outline_text = (env.design / "outline.md").read_text(encoding="utf-8")
+    assert "本块业务规则未变" in outline_text                    # 大纲那行带上理由

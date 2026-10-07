@@ -418,3 +418,20 @@ def test_outline_empty_and_populated_lists_have_no_blank_artifacts():
                   "未消化项（含不收敛归因）"):
         assert _section(empty, title) == ["- 无"], title
     assert "- 重规划事件：无" in empty
+
+
+def test_update_mode_instruction_offers_no_change_terminal_state():
+    text = gen_instruction("story", "ch-0002", draft_path="design/drafts/story/ch-0002.json",
+                           ref_hint="parent 填链路 id", kb_manifest_path="design/manifests/kb-story.json",
+                           mode="update")
+    assert '"nodes": []' in text and '"note": "no_change"' in text   # 第四种合法去向在场
+    assert "reason" in text                                          # 理由有独立落点
+    assert "首建" in text                                             # 讲明这条通道不延伸到首建
+
+
+def test_first_build_mode_never_offers_no_change():
+    text = gen_instruction("chain", "ALL", draft_path="design/drafts/chain/ALL.json",
+                           ref_hint="parent 留空", mode="first_build")
+    assert "no_change" not in text        # 首建模式给这条通道 = 教模型空手过关
+    assert "本块无变化" not in text
+    assert '"nodes": [...]' in text       # 首建仍只有「产出节点」这一条出路

@@ -43,6 +43,12 @@ def gen_instruction(layer: str, block: str, *, draft_path: str, ref_hint: str,
     if mode == "update":
         lines.append(f"先按需精读既有节点清单 {kb_manifest_path}（只读本块涉及的节点，不要通读全量），"
                      "新增 / 修改 / 删除都以本块草稿表达。")
+        lines.append(
+            "第四种合法去向·本块无变化：逐条比对后确认本次业务信息没动到本块（既不必新增也不必改删），"
+            '就把草稿整个写成 {"layer": "' + layer + '", "block": "' + block + '", "nodes": [], '
+            '"note": "no_change", "reason": "一句话说明为什么本块无变化"}。'
+            "note 必须逐字是 no_change，nodes 必须是空数组，理由只写在 reason——"
+            "这条通道只属于更新模式：本层 KB 无维护（首建）时无变化根本不存在。")
     if opinions_path:
         lines.append(f"本块在上一轮收到意见，清单见 {opinions_path}：生成时直接消化。")
     lines += [

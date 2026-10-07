@@ -249,8 +249,8 @@ def test_update_branch_end_to_end(tmp_path: Path) -> None:
     led = Ledger.load(env.design)
     assert led.status == "awaiting_review"
     assert [led.layer(x)["mode"] for x in ("chain", "story", "point")] == ["update"] * 3
-    assert led.data["no_change"] == [{"layer": "story", "block": "ch-0001"},
-                                     {"layer": "point", "block": "st-0001"}]
+    assert led.data["no_change"] == [{"layer": "story", "block": "ch-0001", "reason": ""},
+                                     {"layer": "point", "block": "st-0001", "reason": ""}]
     ids = task.call_ids()
     assert "blk-chain-ALL-r0" in ids
     assert "blk-story-ch-0002-r0" in ids and "blk-point-st-0002-r0" in ids

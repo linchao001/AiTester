@@ -1272,6 +1272,10 @@ def attribute_instruction(layer: str, block: str, *, opinions_path: str, out_pat
     ])
 ```
 
+> **update 分支说明（2026-10-07 裁定 29，第三片 T13）**：上方快照的 update 分支只讲到「新增 / 修改 / 删除」，
+> 现已追加第四种合法去向——确认本块业务信息没动到时，草稿写成 `{"layer", "block", "nodes": [], "note": "no_change", "reason": "…"}`；
+> `reason` 是给人在大纲「本次无变化块」那一行看的一句话，随账本条目 `{layer, block, reason}` 入账。此通道**只属于 update 模式**，首建不Offer。
+
 `backend/src/aitester/case_design/outline.py`：
 
 ```python
@@ -3756,6 +3760,9 @@ def _after_block(ctx: Ctx, layer: str) -> None:
         return
     _go(ctx, "audit", layer=layer)             # 块齐：进层全局审
 ```
+
+> **勘误（2026-10-07 裁定 29，第三片 T13）**：采信条件已收紧为「**仅 update 模式**采信 no_change，
+> 首建模式按坏草稿重问」，且账本条目带 `reason`。本快照是收紧前的形状，照抄会退回假完整通道。
 
 第二段（意见簿 / 块评审环 / 优化与归因阶段）：
 

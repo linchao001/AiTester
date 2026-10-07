@@ -172,8 +172,11 @@ def compose_outline(ledger_data: dict, nodes_by_layer: dict, report: dict, extra
     no_change = extras.get("no_change") or []
     if no_change:
         for item in no_change:
-            lines.append(f"- [{LAYER_CN.get(item.get('layer', ''), item.get('layer', ''))}]"
-                         f" 块 {item.get('block', '')}（智能体判定无变化，未产生草稿）")
+            layer_cn = LAYER_CN.get(item.get("layer", ""), item.get("layer", ""))
+            reason = str(item.get("reason") or "").strip()
+            lines.append(f"- [{layer_cn}] 块 {item.get('block', '')}"
+                         "（智能体判定无变化，未产生草稿）"
+                         + (f"：{reason}" if reason else ""))
     else:
         lines.append("- 无")
     return "\n".join(lines) + "\n"

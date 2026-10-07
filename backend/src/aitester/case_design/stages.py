@@ -498,8 +498,14 @@ def h_gen(ctx: Ctx) -> Any:
     raw = _read_json(draft_path)
     if raw is None:
         return ctx.ask(_gen_text(ctx, layer, block))
-    if not raw.get("nodes") and str(raw.get("note") or "") == "no_change":
-        led.data.setdefault("no_change", []).append({"layer": layer, "block": block})
+    if _is_no_change(raw):
+        if str(led.layer(layer)["mode"]) != "update":
+            return ctx.ask(_gen_text(ctx, layer, block, errors=[
+                "首建模式不接受无变化块：本层知识库无维护，nodes 为空即漏做——"
+                "请按业务信息产出本块节点"]))
+        led.data.setdefault("no_change", []).append({
+            "layer": layer, "block": block,
+            "reason": str(raw.get("reason") or "").strip()})
         _block_entry(ctx, layer, block)["state"] = "done"
         _after_block(ctx, layer)
         return None
