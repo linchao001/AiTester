@@ -515,9 +515,9 @@ git commit -m "feat(case-design): 点层收口后回扫声称核对——确定�
 
 ### Task 17：付费走查三（四条判据，成本只报数不设线）
 
-- [ ] Step 1: 隔离实例自起（端口用 **8011**，别占 8010 也别碰 8000/5173），`REME_KNOWLEDGE_BASES_DIR=D:/tmp/walkthrough_case/kb`、`KB_ID=case_probe`，进程内 `env -u DASHSCOPE_API_KEY KB_EMBEDDING_API_KEY=`（零向量调用）；**复用走查二回写后的 KB 根**（三层已 maintained），先 `md5sum` 全量存基线。
-- [ ] Step 2: 写 v3——**只改一条链的一个故事**，另一条链一字未改；业务文档内保留粒度约定句（防链层发散，见走查一教训）。
-- [ ] Step 3: 跑增量任务到大纲门，核对判据 ①③（账本 `no_change` 带 reason、未动链节点**整文件 md5 与基线逐字节一致**、大纲两格在场）。
-- [ ] Step 4: 明示批准回写，核对判据 ④（批准前 KB 零写入；终帧带未重写尾句；`writeback.written/untouched` 与 md5 实测互相印证）。
-- [ ] Step 5: 判据 ② 报数：本次 call 帧数 vs 首建 1648 / 走查二 2830。**超了也照报**，不许改提示词或判据把它跑过。
-- [ ] Step 6: 清场按走查纪律（探针会话与项目删净、`projects.json`/`sessions/index.json` md5 回基线、真实 KB 未被触碰），读数回填 spec「走查记录」。
+- [x] Step 1: 隔离实例自起（端口用 **8011**，别占 8010 也别碰 8000/5173），`REME_KNOWLEDGE_BASES_DIR=D:/tmp/walkthrough_case/kb`、`KB_ID=case_probe`，进程内 `env -u DASHSCOPE_API_KEY KB_EMBEDDING_API_KEY=`（零向量调用）；**复用走查二回写后的 KB 根**（三层已 maintained），先 `md5sum` 全量存基线。
+- [x] Step 2: 写 v3——**只改一条链的一个故事**，另一条链一字未改；业务文档内保留粒度约定句（防链层发散，见走查一教训）。
+- [x] Step 3: 跑增量任务到大纲门，核对判据 ①③（账本 `no_change` 带 reason、未动链节点**整文件 md5 与基线逐字节一致**、大纲两格在场）。
+- [x] Step 4: 明示批准回写，核对判据 ④（批准前 KB 零写入；终帧带未重写尾句；`writeback.written/untouched` 与 md5 实测互相印证）。
+- [x] Step 5: 判据 ② 报数：本次 call 帧数 vs 首建 1648 / 走查二 2830。**超了也照报**，不许改提示词或判据把它跑过。
+- [x] Step 6: 清场按走查纪律（探针会话与项目删净、`projects.json`/`sessions/index.json` md5 回基线、真实 KB 未被触碰），读数回填 spec「走查记录」。
