@@ -311,3 +311,74 @@ def test_p4_blind_enumeration_sees_sources_not_tree(tmp_path: Path) -> None:
                                   "evidence": "business/wiki/orders.md"}]
     sources = json.loads((env.manifests_dir / "sources.json").read_text(encoding="utf-8"))
     assert sources["kb_files"] == ["business/wiki/orders.md"]   # 白名单=业务源清单
+
+
+# ---- T25 第四片整图：case_only 从一句人话走到末门呈递，批准后 done 且零知识库写入 ----
+
+def _case_only_script() -> list[AIMessage]:
+    """case_only：计划 → 批用例正文 → 停末门呈递。三层一律 skipped，零设计侧块。"""
+    plan = {"task_kind": "case_only", "entry_layer": "point", "terminal_layer": "point",
+            "target_subtree": "ch-0001", "source_files": [], "note": "给下单链路写用例"}
+    cases = {"chain": "ch-0001", "batch": "ch-0001-b1", "cases": [
+        {"case_id": "", "title": "下单正向：库存充足时提交订单", "covers": ["pt-0001"],
+         "preconditions": "买家已登录，购物车内有一件在售商品",
+         "steps": ["以买家身份提交订单", "读取订单状态与库存扣减记录"],
+         "expected": ["订单状态为已创建", "库存数量比提交前减少 1"],
+         "priority": "P0", "note": ""}]}
+    return [
+        _ai(_tc("w1", "write", "design/plan.json", plan)),                    # 1
+        _ai("计划已写好，本次是纯用例任务。"),                                  # 2
+        _ai(_tc("w2", "write", "design/cases/ch-0001-b1.json", cases)),        # 3
+        _ai("第一批用例正文已交。"),                                           # 4
+    ]
+
+
+def test_case_only_end_to_end_delivery_and_approval(tmp_path: Path) -> None:
+    """第四片整图：case_only 从一句人话走到末门呈递，批准后 done 且**零知识库写入**（裁定 35/36）。"""
+    kb = StubKb(layers={
+        "chain": [{"id": "ch-0001", "type": "chain", "parent": "", "level": 1,
+                   "name": "下单链路", "business_scope": "下单主流程", "priority": "P0"}],
+        "story": [{"id": "st-0001", "type": "story", "chains": ["ch-0001"],
+                   "name": "下单成功", "priority": "P0"}],
+        "point": [{"id": "pt-0001", "type": "point", "story": "st-0001",
+                   "name": "下单正向", "entities": ["订单"], "directions": ["正向"],
+                   "priority": "P0"}],
+    }, root=str(tmp_path / "kb_root"))               # 三层 maintained 存量：case_only 的放行前提
+    env = _env(tmp_path, kb)
+    task = ScriptTask({
+        "case-ch-0001-b1-r0": _j({"opinions": [], "resolutions": []}),
+        "case-gate-int-r1": _j({"opinions": [], "resolutions": []}),
+    })
+    tools = _tools_with_task(tmp_path, task)
+    provider = ScriptedProvider(_case_only_script())
+
+    frames = list(stream_graph(build_case_design_graph, provider, tools,
+                               [HumanMessage(content="给下单链路写用例")], case_env=env))
+    assert frames[-1]["reply"] == "用例交付物已生成（design/case-delivery.md），等待人工评审。"
+    assert len(provider.calls) == 4                 # 两次工具回合 + 两句人话，不多不少
+    assert [e["tool"] for e in frames if e["type"] == "call"] == ["write", "write"]
+    # 呈递轮只派过一次批评审：末门解读（case-gate-int-r1）等人话那一轮才发（同
+    # test_case_only_ring_reaches_delivery_gate 的 drain 级事实）。
+    assert task.call_ids() == ["case-ch-0001-b1-r0"]
+    # 设计侧零动：三层全 skipped ⇒ 一块草稿都没落，①②③ 一次没派
+    assert [Ledger.load(env.design).layer(x)["mode"] for x in ("chain", "story", "point")] == \
+        ["skipped"] * 3
+    assert not any(i.startswith(("blk-", "enum-", "claims-", "matrix-"))
+                   for i in task.call_ids())
+    delivery = (env.design / "case-delivery.md").read_text(encoding="utf-8")
+    assert "实测：未落实点 0 个" in delivery
+    assert "cc-0001" in delivery                     # 用例 id 由系统补齐，只活在这份交付物里
+    assert kb.upserts == [] and kb.deletes == []     # 呈递阶段零写库
+
+    provider2 = ScriptedProvider([])                 # 批准轮：零工具调用，只回人话
+    frames2 = list(stream_graph(build_case_design_graph, provider2, tools,
+                                [HumanMessage(content="通过")], case_env=env))
+    assert frames2[-1]["reply"] == ("用例交付确认完成：用例正文只落项目空间 design/cases/，"
+                                    "本次零知识库写入。")
+    assert kb.upserts == [] and kb.deletes == []     # 裁定 35：末门批准 ≠ 回写授权
+    assert task.call_ids() == ["case-ch-0001-b1-r0", "case-gate-int-r1"]   # 整环共两次子调用
+    led = Ledger.load(env.design)
+    assert led.status == "done" and led.data["writing"]["gate"]["approved_at"]
+    assert (env.cases_dir() / "ch-0001-b1.json").exists()
+    body = json.loads((env.cases_dir() / "ch-0001-b1.json").read_text(encoding="utf-8"))
+    assert body["cases"][0]["case_id"] == "cc-0001"  # 补号写回文件本体，交付物与制品逐字一致

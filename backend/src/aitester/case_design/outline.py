@@ -3,23 +3,10 @@
 from __future__ import annotations
 
 from aitester.case_design.constants import CHAIN, LAYER_CN, LAYERS, POINT, STORY
+from aitester.case_design.schema import is_draft_row
 
 _LAYER_STATE_CN = {"done": "已定稿", "audited": "已过审", "active": "进行中", "pending": "未开始",
                    "stale_pending": "失效待重算（下次任务重跑）", "skipped": "本次不动"}
-
-
-def _is_draft_row(row: dict) -> bool:
-    """这一行是不是**草稿**（写库侧唯一会写的来源）：生产侧 `_outline_nodes` 给 KB 存量行标
-    `state=存量`、给草稿标 新增／更新／删除；测试夹具与本仓快照另用 `op`（存量 noop／草稿
-    upsert）表达同一区分。两个信号都认——先 `state`，`state` 缺失才落到 `op`。
-    delete 草稿在 `_tree_lines` 已被过滤，不进这里。
-    """
-    state = str(row.get("state") or "")
-    if state == "存量":
-        return False
-    if state:
-        return True
-    return str(row.get("op") or "noop") == "upsert"
 
 
 def _dedup_written(rows: list[dict]) -> list[dict]:
@@ -46,7 +33,7 @@ def _dedup_written(rows: list[dict]) -> list[dict]:
             out.append(row)               # 同 id 只出一行：占在该 id 的首次出现处
             continue
         slot = slot_of[key]
-        if not _is_draft_row(out[slot]):
+        if not is_draft_row(out[slot]):
             out[slot] = row               # 存量让位给草稿；草稿之间先出现者胜
     return out
 

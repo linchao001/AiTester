@@ -26,6 +26,22 @@ def parse_json_fence(text: str) -> Any:
     return json.loads(blocks[0])
 
 
+def is_draft_row(row: dict) -> bool:
+    """这一行是不是**草稿**（写库侧唯一会写的来源）：生产侧 `_outline_nodes` 给 KB 存量行标
+    `state=存量`、给草稿标 新增／更新／删除；测试夹具与本仓快照另用 `op`（存量 noop／草稿
+    upsert）表达同一区分。两个信号都认——先 `state`，`state` 缺失才落到 `op`。
+    delete 草稿在 `_tree_lines` 已被过滤，不进这里。
+    R-59：同源判别式只许有一处实现，呈递侧 `outline._dedup_written` 与分母侧
+    `writing.denominator_points` 共用本函数（与 `stages._collect_writeback_items` 首见即留同口径）。
+    """
+    state = str(row.get("state") or "")
+    if state == "存量":
+        return False
+    if state:
+        return True
+    return str(row.get("op") or "noop") == "upsert"
+
+
 class DraftNode(BaseModel):
     """一个草稿节点（upsert 或 delete）。新增节点 id 留空由驱动分配。"""
 

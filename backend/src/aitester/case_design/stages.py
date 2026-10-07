@@ -455,7 +455,8 @@ def _case_targets(ctx: Ctx) -> list[dict]:
     """编写环的取数单点：活宇宙 = KB 存量 ∪ 本 run 草稿，范围走 `in_scope_targets`（与三层同源）。
 
     mixed 的同一轮里 `ctx.kb_rows` 缓存的是**回写前**的存量，只用它会漏掉本 run 刚过审的点；
-    `_rows_of` 把草稿拼在后面，配合 `denominator_points` 的同 id 后到为准，分母就是回写后的现稿。
+    `_rows_of` 把草稿拼在后面，配合 `denominator_points` 的同 id 取先出现的草稿（与写库侧
+    `seen` 首见即留同源），分母就是回写后的现稿。
     """
     descriptor = (ctx.led.data.get("task") or {}).get("descriptor") or {}
     chains, stories, points = (_rows_of(ctx, CHAIN), _rows_of(ctx, STORY), _rows_of(ctx, POINT))

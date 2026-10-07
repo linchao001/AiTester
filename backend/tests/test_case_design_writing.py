@@ -334,3 +334,30 @@ def test_shared_point_counted_once_in_measured_line():
                                   "unresolved": [], "cases_by_chain": {}})
     assert "未落实点 1 个" in text and "未落实点 2 个" not in text
     assert text.count("pt-0001") >= 2          # 两条链路各自可见（呈递不缩水），但计数只算一次
+
+
+# ---- R-59（T25 追加子项）：分母与写库侧同源，同 id 取「将被写库的那一份」 ----
+
+def test_denominator_takes_the_row_writeback_would_write():
+    """R-59：同一个 pt- id 出现在两个点层草稿块时，分母必须取**先出现**的那一条——
+    与写库侧 `_collect_writeback_items` 的 `seen` 首见即留同源。旧 last-row-wins 会取后块，
+    于是履约表按一份从未进过库的场景算覆盖。"""
+    rows = [{"id": "pt-0001", "story": "st-0001", "name": "存量点", "state": "存量"},
+            {"id": "pt-0001", "story": "st-0001", "name": "前块草稿点", "op": "upsert",
+             "state": "更新"},
+            {"id": "pt-0001", "story": "st-0001", "name": "后块草稿点", "op": "upsert",
+             "state": "更新"},
+            {"id": "pt-0002", "story": "st-0001", "name": "另一点", "op": "upsert",
+             "state": "更新"}]
+    stories = [{"id": "st-0001", "chains": ["ch-0001"]}]
+    got = denominator_points(rows, {"stories": {"st-0001"}}, "ch-0001", stories)
+    assert [p["name"] for p in got] == ["前块草稿点", "另一点"]
+    assert all(p["name"] != "存量点" for p in got)         # 有草稿就不呈存量那份
+
+
+def test_denominator_keeps_stock_row_when_no_draft_exists():
+    """R-59 的另一半：只有存量行时分母照旧要有它（否则真漏测被算成界外点）。"""
+    rows = [{"id": "pt-0001", "story": "st-0001", "name": "存量点", "state": "存量"}]
+    got = denominator_points(rows, {"stories": {"st-0001"}}, "ch-0001",
+                             [{"id": "st-0001", "chains": ["ch-0001"]}])
+    assert [p["name"] for p in got] == ["存量点"]

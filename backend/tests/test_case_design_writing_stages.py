@@ -1346,3 +1346,44 @@ def test_c_1_contradictory_message_never_approves_case_gate(tmp_path):
     gate = led.data["writing"]["gate"]
     assert not gate.get("approved_at") and gate["unclear"] == 1        # 计入待决串，连续用尽即 halt
     assert kb.upserts == [] and kb.deletes == []                       # 裁定 35：末门本来就零 KB 写
+
+
+# ---- T25 Step 2：裁定 40 的 mixed 同轮续跑（drain 级，两道门两次人话）----
+
+def test_mixed_continues_into_writing_ring_right_after_writeback(tmp_path):
+    """裁定 40：mixed 的设计侧批准后**同轮**续跑编写环，直到用例末门才发终帧。
+
+    设计侧取「三层存量 + 逐块 no_change」的最小增量（回写零节点），编写环只出 1 批。
+    两次人话分别是两道门：第一次「通过」= 大纲门（设计侧回写），第二次「通过」= 用例末门。
+    若实现把续跑写成「等用户再指令」，第一条 drain 就会停在大纲门后不再有编写环事实——
+    下面的 `writing` 断言即红。**不许**把断言改成「三次人话」迁就实跑。
+    """
+    kb = _kb_with_three_layers(tmp_path)
+    env = _env(tmp_path, kb)
+    task = ScriptTask()
+    nc = lambda layer, block, mode: {"nodes": [], "note": "no_change"}   # noqa: E731
+
+    first = drain(env, kb, task, plan=_MIXED_PLAN, gen_nodes=nc)
+    led = _led(env)
+    assert led.status == "awaiting_review" and led.data["gate"]["approved_at"] == ""
+    assert _end_text(first["frames"]) == "大纲已生成（design/outline.md），等待人工评审。"
+    assert led.data["writing"]["status"] == ""                  # 批准前编写环一步不许动
+
+    second = drain(env, kb, task, state={"messages": [HumanMessage("通过")], "case": {}},
+                   plan=_MIXED_PLAN, gen_nodes=nc)
+    led = _led(env)
+    assert led.data["gate"]["approved_at"]                      # 设计侧门已过（批准那一轮）
+    assert led.status == "awaiting_review"                      # 现在等的是**用例末门**
+    assert led.data["writing"]["status"] == "awaiting_review"
+    assert led.data["writing"]["note"].startswith("设计侧回写完成 @")
+    assert (env.cases_dir() / "ch-0001-b1.json").exists()       # 编写环确实跑了批，不是空转
+    assert _end_text(second["frames"]) == "用例交付物已生成（design/case-delivery.md），等待人工评审。"
+
+    frames3: list[dict] = []
+    turn = _drive(env, {"messages": [HumanMessage("通过")], "case": {}}, task,
+                  writer=frames3.append)
+    assert turn["case"]["route"] == "end"
+    assert "零知识库写入" in _end_text(frames3)
+    assert Ledger.load(env.design).status == "done"
+    assert kb.upserts == [] and kb.deletes == []        # 全 no_change ⇒ 设计侧本轮零节点回写；
+    # 若实跑出现非空 upserts，说明 no_change 块被重发（T13 语义破了），照报不改断言。
