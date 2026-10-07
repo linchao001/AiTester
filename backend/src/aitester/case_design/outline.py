@@ -116,7 +116,8 @@ def compose_outline(ledger_data: dict, nodes_by_layer: dict, report: dict, extra
     for f in hard:
         lines.append(f"  - [{f.get('code')}] {f.get('layer')}/{f.get('where')}：{f.get('detail')}")
     rep = report.get("report") or {}
-    lines.append(f"- report：剩余空归属 {rep.get('empty_seam', 0)}；矩阵无理由空格 {rep.get('matrix_unreasoned', 0)}；"
+    lines.append(f"- report：剩余空归属 {rep.get('empty_seam', 0)}（呈递项，不卡关）；"
+                 f"矩阵无理由空格 {rep.get('matrix_unreasoned', 0)}；"
                  f"未消化项 {rep.get('unresolved', 0)}；断言方向缺失 {rep.get('point_missing_directions', 0)}")
     lines += ["", "## 未消化项（含不收敛归因）"]
     unresolved = extras.get("unresolved") or []
@@ -136,9 +137,15 @@ def compose_outline(ledger_data: dict, nodes_by_layer: dict, report: dict, extra
     claims = extras.get("claims") or []
     if claims:
         for c in claims:
+            tail = {"deterministic": "（回扫补认·确定性）",
+                    "reviewer": "（回扫补认·复核）"}.get(str(c.get("rescanned") or ""), "")
             lines.append(f"- {c.get('claimant', '')} 声称「{c.get('claim', '')}」→ "
                          f"{'空归属（未消化）' if c.get('verdict') == 'unclaimed' else '已核对'}"
-                         f"（owner={c.get('owner', '')}）")
+                         f"（owner={c.get('owner', '')}）{tail}")
+        rescan = extras.get("claims_rescan") or {}
+        if rescan:
+            lines.append(f"- 回扫补认：确定性 {rescan.get('deterministic', 0)} 条／"
+                         f"复核 {rescan.get('reviewer', 0)} 条（{rescan.get('at', '')}）")
     else:
         lines.append("- 无")
     lines += ["", "## 矩阵复核（③「不需要」的业务理由）"]

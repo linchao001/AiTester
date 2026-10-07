@@ -19,9 +19,10 @@ from aitester.case_design.driver import case_env_of
 from aitester.case_design.env import CaseDesignEnv
 from aitester.case_design.kb import KbClientError
 from aitester.case_design.ledger import Ledger
+from aitester.case_design.outline import compose_outline
 from aitester.case_design.stages import (
     Ctx, _collect_writeback_items, _drafts_errors, _drop_out_of_window_hards,
-    _patch_ids, drive_turn, h_writeback,
+    _open_of, _outline_extras, _patch_ids, _rescan_claims, drive_turn, h_writeback,
 )
 
 REV_CLEAN = '```json\n{"opinions": [], "resolutions": []}\n```'
@@ -1369,3 +1370,121 @@ def test_first_build_no_change_draft_is_loud_in_opt_and_writeback(tmp_path):
             assert "chain/ALL.json 不可解析" in str(exc), mode
         else:
             raise AssertionError(f"首建无变化草稿在回写处被静默跳过：{mode}")
+
+
+# ---- T15（D-3）：点层收口后回扫声称核对（裁定 32/33 + R-46） ----
+
+def _unclaimed(ref: str, claim: str) -> dict:
+    """② 落账形状的最小残余行：verdict=unclaimed，等回扫翻转或原样进大纲。"""
+    return {"ref": ref, "claimant": "st-0001", "claim": claim,
+            "verdict": "unclaimed", "owner": "", "note": "无认领"}
+
+
+def _rescan_ctx(tmp_path, claims, *, story_nodes=None, point_nodes=None, script=None):
+    """最小账本：故事层已过审且 claims 留有 unclaimed 行，手动直调回扫（不经整驱）。"""
+    env = _env(tmp_path, StubKb())
+    led = Ledger.fresh(env.design)
+    led.layer("story")["state"] = "audited"
+    led.layer("story")["claims"] = claims
+    led.layer("point")["state"] = "audited"
+    if story_nodes:
+        _write(env.drafts_dir("story") / "ch-0001.json",
+               {"layer": "story", "block": "ch-0001", "nodes": story_nodes})
+    if point_nodes:
+        _write(env.drafts_dir("point") / "st-0001.json",
+               {"layer": "point", "block": "st-0001", "nodes": point_nodes})
+    task = ScriptTask(script)
+    ctx = Ctx(env=env, task_tool=task, writer=lambda e: None, config={},
+              state_messages=[], led=led)
+    return env, task, ctx
+
+
+def test_rescan_flips_id_naming_claim_without_any_reviewer_call(tmp_path):
+    """声称里点名了 pt-0002 且点层草稿已有该节点 ⇒ 确定性翻转，零评审调用（裁定 32①）。"""
+    _, task, ctx = _rescan_ctx(
+        tmp_path, [_unclaimed("st-0001-a1", "该场景由 pt-0002 覆盖")],
+        point_nodes=[{"op": "upsert", "type": "point", "id": "pt-0002",
+                      "story": "st-0001", "directions": ["正向"]}])
+    calls_before = len(task.calls)
+    _rescan_claims(ctx)
+    row = ctx.led.layer("story")["claims"][0]
+    assert row["verdict"] == "covered" and row["owner"] == "pt-0002"
+    assert row["rescanned"] == "deterministic"
+    assert len(task.calls) == calls_before                  # 一条模型调用都不许花
+    assert ctx.led.layer("story")["claims_rescan"]["reviewer"] == 0
+    assert ctx.led.layer("story")["claims_rescan"]["deterministic"] == 1
+
+
+def test_rescan_sends_only_residual_rows_to_one_bounded_pass(tmp_path):
+    """翻不动的残余行最多一次有界复核；复跑也不登记意见、不重开任何环。"""
+    _, task, ctx = _rescan_ctx(
+        tmp_path, [_unclaimed("st-0001-a1", "取消场景由 st-0002 覆盖"),
+                   _unclaimed("st-0001-a2", "异常回滚由兄弟机制承接")],
+        story_nodes=[{"op": "upsert", "type": "story", "id": "st-0002",
+                      "chains": ["ch-0001"]}])
+    _rescan_claims(ctx)
+    rescan_calls = [c for c in task.calls if c["call_id"].startswith("claims-rescan")]
+    assert len(rescan_calls) == 1                           # 有界：绝不逐行、绝不逐轮
+    # 只喂残余行：确定性可翻的 a1 不许出现在复核简报里
+    assert "st-0001-a2" in rescan_calls[0]["brief"]
+    assert "st-0001-a1" not in rescan_calls[0]["brief"]
+    assert _open_of(ctx, "story", source="audit") == []     # 不登记意见
+    assert ctx.led.layer("story")["state"] == "audited"     # 没被回扫重开
+    rows = {r["ref"]: r for r in ctx.led.layer("story")["claims"]}
+    assert rows["st-0001-a1"]["verdict"] == "covered"
+    assert rows["st-0001-a1"]["rescanned"] == "deterministic"
+    assert rows["st-0001-a2"]["verdict"] == "unclaimed"     # 复核器没认领时原样带进大纲
+    stats = ctx.led.layer("story")["claims_rescan"]
+    assert stats["deterministic"] == 1 and stats["reviewer"] == 0
+
+
+def test_rescan_reviewer_pass_spends_no_second_call_on_reclose(tmp_path):
+    """R-46①：复核每 run 至多一次。二次收口确定性可重跑（零调用），reviewer 分支跳过，
+    已有 rescanned 标记不丢、claims_rescan 计数不重复增长。"""
+    _, task, ctx = _rescan_ctx(
+        tmp_path, [_unclaimed("st-0001-a1", "场景由兄弟故事承接"),
+                   _unclaimed("st-0001-a2", "异常路径由存量机制承接")],
+        script={"claims-rescan*": _j({"claims": [
+            {"ref": "st-0001-a1", "verdict": "covered", "owner": "st-0002",
+             "note": "兄弟故事认领"}], "opinions": []})})
+    _rescan_claims(ctx)
+    first = [c for c in task.calls if c["call_id"].startswith("claims-rescan")]
+    assert len(first) == 1
+    rows = {r["ref"]: r for r in ctx.led.layer("story")["claims"]}
+    assert rows["st-0001-a1"]["rescanned"] == "reviewer"
+    assert ctx.led.layer("story")["claims_rescan"]["reviewer"] == 1
+    calls_before = len(task.calls)
+    _rescan_claims(ctx)                                     # 第二次收口（gate 退回重做）
+    rescan_calls = [c for c in task.calls if c["call_id"].startswith("claims-rescan")]
+    assert len(rescan_calls) == 1                           # 一次都不增
+    assert len(task.calls) == calls_before                  # 第二次收口零调用
+    rows = {r["ref"]: r for r in ctx.led.layer("story")["claims"]}
+    assert rows["st-0001-a1"]["rescanned"] == "reviewer"    # 标记不丢
+    assert rows["st-0001-a2"]["verdict"] == "unclaimed"
+    stats = ctx.led.layer("story")["claims_rescan"]
+    assert stats["reviewer"] == 1 and stats["deterministic"] == 0
+
+
+def test_rescan_marks_and_stats_are_visible_in_outline(tmp_path):
+    """裁定 18 同族：回扫翻转必须在接缝归属表可见，claims_rescan 必须经 extras 落成计数行；
+    report 行的空归属必须标注「呈递项，不卡关」口径。"""
+    _, _, ctx = _rescan_ctx(
+        tmp_path, [_unclaimed("st-0001-a1", "该场景由 pt-0002 覆盖"),
+                   _unclaimed("st-0001-a2", "取消场景由兄弟故事承接"),
+                   _unclaimed("st-0001-a3", "异常回滚由存量机制承接")],
+        point_nodes=[{"op": "upsert", "type": "point", "id": "pt-0002",
+                      "story": "st-0001", "directions": ["正向"]}],
+        script={"claims-rescan*": _j({"claims": [
+            {"ref": "st-0001-a2", "verdict": "covered", "owner": "pt-0003",
+             "note": "点层已认领"}], "opinions": []})})
+    _rescan_claims(ctx)                                     # a1 确定性；a2 复核；a3 残余
+    report = {"hard": [], "report": {"empty_seam": 1, "matrix_unreasoned": 0,
+                                     "unresolved": 0, "point_missing_directions": 0}}
+    extras = _outline_extras(ctx, {})
+    assert extras["claims_rescan"] == ctx.led.layer("story")["claims_rescan"]
+    md = compose_outline(ctx.led.data, {}, report, extras)
+    assert "- report：剩余空归属 1（呈递项，不卡关）" in md
+    assert "（owner=pt-0002）（回扫补认·确定性）" in md
+    assert "（owner=pt-0003）（回扫补认·复核）" in md
+    stats = ctx.led.layer("story")["claims_rescan"]
+    assert f"- 回扫补认：确定性 1 条／复核 1 条（{stats['at']}）" in md

@@ -921,6 +921,71 @@ def _claims_story(ctx: Ctx, round_no: int) -> None:
     _close_missing(ctx, STORY, "audit", issued)
 
 
+_CLAIM_ID_RE = re.compile(r"\b(?:ch|st|pt)-\d{4}\b")
+
+
+def _rescan_claims(ctx: Ctx) -> None:
+    """点层收口后回扫 ② 的结论（裁定 32）：被声称方常由点层才落成，故事层无法自证。
+
+    两级、都有界：① 确定性查表——声称文本点名了 `ch-/st-/pt-` id 且该 id 已在
+    「KB 存量 ∪ 本 run 三层草稿」落成 ⇒ 直接转 covered，零模型调用；
+    ② 残余行**最多一次**复核（复用 ② 的声称核对器，只喂残余行）。
+    回扫**不登记意见、不重开任何环**——重开环会把「人已看过的过关层」变成无限回溯；
+    翻不动的行原样带进大纲，empty_seam 仍只是呈递项，交人裁决。
+
+    R-46：点层收口有两条合法路径（归因收口/过审收口），且大纲门退回→重做后可再次收口。
+    确定性查表可随时重跑（零调用）；reviewer 分支以 `claims_rescan` 是否已落账做门控——
+    只要某次调用见到残余行，返回前必写 st["claims_rescan"]，此后本 run 一切再入都跳过
+    复核分支 ⇒ 每 run 至多一次模型调用（残余行原样带进大纲）。
+    """
+    st = ctx.led.layer(STORY)
+    rows = st.get("claims") or []
+    residual = [r for r in rows if str(r.get("verdict") or "") == "unclaimed"]
+    if not residual:
+        return
+    ids: set[str] = set()
+    for layer in LAYERS:
+        ids |= {str(r.get("id") or "") for r in ctx.kb_rows(layer) if r.get("id")}
+        ids |= {str(n.get("id") or "") for n in _draft_nodes(ctx, layer) if n.get("id")}
+    deterministic = 0
+    still: list[dict] = []
+    for row in residual:
+        hits = [m.group(0) for m in _CLAIM_ID_RE.finditer(str(row.get("claim") or ""))
+                if m.group(0) in ids]
+        if hits:
+            row["verdict"] = "covered"
+            row["owner"] = hits[0]
+            row["rescanned"] = "deterministic"
+            row["note"] = (str(row.get("note") or "") +
+                           f"｜回扫：{hits[0]} 已落成节点").lstrip("｜")
+            deterministic += 1
+        else:
+            still.append(row)
+    reviewer = 0
+    if still and "claims_rescan" not in st:        # 复核每 run 至多一次（R-46）
+        call_id = f"claims-rescan-r{int(ctx.led.layer(POINT).get('audit_round') or 0)}"
+        out, raw = run_reviewer(ctx.task_tool, CASE_REVIEW_AGENT_ID,
+                                _claims_brief(ctx, "回扫", still), model_cls=ClaimsOut,
+                                call_id=call_id, title="声称核对·点层回扫", config=ctx.config,
+                                archive=lambda cid, text: _archive_review(ctx, cid, text))
+        _archive_review(ctx, call_id, raw)
+        by_ref = {str(r.get("ref") or ""): r for r in out.claims if isinstance(r, dict)}
+        for row in still:
+            verdict = str((by_ref.get(str(row.get("ref") or "")) or {}).get("verdict") or "")
+            if verdict == "covered":
+                row["verdict"] = "covered"
+                row["owner"] = str((by_ref.get(str(row.get("ref") or "")) or {})
+                                   .get("owner") or row.get("owner") or "")
+                row["rescanned"] = "reviewer"
+                reviewer += 1
+    prev = st.get("claims_rescan") or {}
+    st["claims_rescan"] = {                        # 重跑累加确定性计数；reviewer 不重复增长
+        "deterministic": deterministic + int(prev.get("deterministic") or 0),
+        "reviewer": reviewer + int(prev.get("reviewer") or 0),
+        "at": _now(),
+    }
+
+
 def _matrix_brief(ctx: Ctx, chain_id: str, stories: list[dict], entities: list[str]) -> str:
     return "\n".join([
         f"【矩阵复核·链路 {chain_id}】对每个（业务实体 × 用户故事）组合判断当前测试点是否覆盖。",
@@ -1000,6 +1065,8 @@ def h_audit(ctx: Ctx) -> None:
 
 def _layer_audited(ctx: Ctx, layer: str) -> None:
     ctx.led.layer(layer)["state"] = "audited"
+    if layer == POINT:
+        _rescan_claims(ctx)        # 被声称方到这一层才可能落成；gate 重入不重花钱（裁定 33）
     _after_layer(ctx, layer)
 
 
@@ -1127,6 +1194,7 @@ def _outline_extras(ctx: Ctx, nodes_by_layer: dict) -> dict:
         "unresolved": unresolved,
         "duplicates": _duplicate_groups(nodes_by_layer),
         "claims": layers[STORY].get("claims") or [],
+        "claims_rescan": layers[STORY].get("claims_rescan") or {},
         "matrix_notes": [c for c in (layers[POINT].get("matrix") or [])
                          if str(c.get("verdict")) == "not_needed"
                          and str(c.get("reason") or "").strip()],

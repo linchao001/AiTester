@@ -6176,6 +6176,10 @@ backend/.venv/Scripts/python D:/tmp/walkthrough_case/parse_ss.py D:/tmp/walkthro
 | ④ 复核 | 大纲结构指标节 hard 全 0（同 3.3 表） | 0 |
 | 环有效性 | `blocks[].round` / `audit_round` ≤5；落点对照表覆盖当轮全部意见（有意见时逐条有去向） | 满足 |
 
+> **勘误（2026-10-07 裁定 32）**：上表「增量 × 存量接缝有归属结论」条的「空归属 = 0」写作门禁线属**口径抬高**——实现一直是 report 呈递项
+> （`checks.py:233`），走查二实测剩余 10 条且故事层无法自证被声称方存在。收口见第三片 T15（点层回扫）与
+> spec 文末裁定 32/33；走查三按「呈递 + 回扫补认数」验收，不再要求 =0。
+
 4.4 人审门「通过」（`send2.json` 改 message 为「通过」重发，日志 `ss2-approve.log`，同 3.4 逐字断言）。回写断言：
 
 ```bash
