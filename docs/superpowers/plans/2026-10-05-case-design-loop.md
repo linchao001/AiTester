@@ -2,13 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **执行状态（2026-10-07 收口）：T1–T12 全部执行完毕，终评与三片修复亦闭合，本计划 69 个 step 已全部勾选；
+> 门禁 744 passed / 0 failed，`origin/main=ae9102a`。逐任务完成行、裁定 R-0…R-36 与走查读数记在账本
+> `.superpowers/sdd/2026-10-05-case-design-loop/progress.md`（追加式，恢复时以它为准，勿按本文件重派任务）。
+> 执行中与本计划文本不一致之处一律见文末「实施偏离登记」与 spec 文末「走查记录／终评记录」两段——
+> 勾选只表示「该步执行过」，发码形态以登记为准。走查二判出的三条缺口（块级「无变化」态缺提示词、
+> `updated_at` 使 md5 判据永不可能成立、跨层空归属属呈递项）是**下一片的开工项**，本计划不覆盖。
+
 **Goal:** 把 `case_design` 从默认 react 循环换成注册名 `case_design_loop` 的专属工作流：三层（业务链路 / 用户故事 / 测试点）按「探测 → 分块生成 → 评审 → 优化」逐层推进，每层收口各做一次全局审（①树外遗漏对照 / ②声称核对 / ③实体×故事矩阵空格核对），组装增量大纲过 ④ 确定性检查后交唯一人审门，人审通过由驱动确定性回写知识库。
 
 **Architecture:** 三层环全部由**驱动节点**（`case_design/driver.py`）推进：图拓扑 `START → driver → (agent | END)`，`agent → tools? gate : driver`，`tools` 命名与 `_unanswered`/gate 复用 react 图既有件；`case_env`（`CaseDesignEnv{project_dir, kb}`）经 `RunnableConfig.configurable[CASE_DESIGN_KEY]` 注入（对齐 `GATE_KEY` 通道，`GraphBuilder` 签名不变）。长期状态落项目空间文件 `design/`（账本 `design/ledger.json` 为唯一真相，每步重读、每步写回）；主智能体通过 `read/write/edit/...` 工具读写设计制品，评审/优化循环里**评审由驱动内联驱动子智能体完成**（`TaskTool.build_child` + `drive_child(isolated=True)`，判决出评审侧、主智能体不得改判），优化指令由驱动经 `HumanMessage` 下发给主智能体；回写不走模型工具——驱动经 `KbClient`（新 reme job `case_nodes_list/upsert/delete`，自研 step 实现）确定性执行。
 
 **Tech Stack:** Python 3.12 / FastAPI / LangGraph（checkpointer、custom stream writer、interrupt 复用既有 gate）/ pydantic v2 / ReMe 0.4.1.8（plugin 机制 + Application 内嵌 job/step）/ pytest。
 
-**Spec:** `docs/superpowers/specs/2026-10-05-case-design-loop-design.md`（状态：待批准；本计划与其差异逐条登记在「计划期裁定」，T10 收尾时以「实施偏离登记」一节回写该 spec）
+**Spec:** `docs/superpowers/specs/2026-10-05-case-design-loop-design.md`（状态：已批准、已执行；本计划与其差异逐条登记在「计划期裁定」，T10 收尾时以「实施偏离登记」一节回写该 spec）
 
 ## 全局约束（每个任务隐含）
 
@@ -117,7 +124,7 @@
 - Consumes: 既有 `orchestration/agent_graph.py`（`stream_graph` / `StreamGraph 折叠口径`）、`orchestration/gate.py`（`GateContext` / `make_gate_node`）、`orchestration/subagent.py`（`drive_child`）、`services/kb/config.py`（`build_reme_config`）、`services/kb/manager.py`（`RemeKbManager`）、`tests/streaming_fakes.py`（`ChunkedStreamMixin`）
 - Produces: P1/P2/P3 全绿 → T5 的 `_ensure_node_buckets` 与 watch_dirs 断言、T8 的驱动转场、T9 的拓扑接线直接以本探针为母本；任一门禁段失败 → **HALT**，按「兜底菜单」报送用户
 
-- [ ] **Step 1: P1+P2 探针（自定义拓扑过闸 + 折叠/round 口径）**
+- [x] **Step 1: P1+P2 探针（自定义拓扑过闸 + 折叠/round 口径）**
 
 `probe_p1p2.py` 用既有件拼一个最小专属拓扑（与 T9 的 `build_case_design_graph` 同形：`START → driver → agent/gate/tools → driver`，节点名必须 `tools`），用 `ScriptedProvider` 驱动：
 
@@ -236,7 +243,7 @@ cd /d/tmp/probe_case && /d/code/github/AiTester/backend/.venv/Scripts/python pro
 
 Expected: `P1+P2 OK`。断言失败即停，把事件序列原文贴进 findings.txt 并 HALT 报数 + 菜单（退路见 spec 前提探针表：P1 退回复用 react builder 外层包阶段路由；P2 退路是改 `stream_graph` 折叠口径，属跨片影响面，需单开裁定）。
 
-- [ ] **Step 2: P3 探针（KB 外部前提落地面：插件真机制 + 自研 step + 新桶入 watch）**
+- [x] **Step 2: P3 探针（KB 外部前提落地面：插件真机制 + 自研 step + 新桶入 watch）**
 
 `probe_p3.py` 用 monkeypatch 的 entry point 指向一个 throwaway 插件包（模拟 T5 的 `kb_plugin`），验证：插件发现 → backends 注册 → 自研 step 派发 → job kwargs 落 context → Response 通道 → 新桶被 `index_update_loop` 接收：
 
@@ -323,11 +330,11 @@ if __name__ == "__main__":
 
 Expected: `P3 OK`。失败即 HALT：把 `build_reme_config` 实际形态、job 白名单 `_KB_JOBS`、插件解析入口三处的实况写进 findings.txt，报数 + 菜单（P-1/P-2/P-3 任一缺 → 更新分支与回写不能开工，能力范围不砍）。
 
-- [ ] **Step 3: 收口 findings.txt 并核对结论**
+- [x] **Step 3: 收口 findings.txt 并核对结论**
 
 findings.txt 必须含三段：P1+P2 的事件序列摘录与 `OK`、P3 的插件/step/桶三处实测结论、以及给 T5/T8/T9 的落体提示（哪些断言可以直接抄进正式测试）。**探针脚本与 throwaway 包留在 `D:\tmp\probe_case\`，不入库。**
 
-- [ ] **Step 4: 无提交**（探针为 throwaway）
+- [x] **Step 4: 无提交**（探针为 throwaway）
 
 ---
 
@@ -349,7 +356,7 @@ findings.txt 必须含三段：P1+P2 的事件序列摘录与 `OK`、P3 的插�
   - `schema.DraftNode/Opinion/OpinionTarget/ReviewOut/EnumeratorOut/CompareOut/ClaimsOut/MatrixOut/parse_json_fence/validate_drafts/parse_draft_file`
   - `ledger.Ledger`: `load(design_dir) -> Ledger | None`、`fresh(design_dir) -> Ledger`、`.data`、`.save()`、`.cursor`、`.layer(layer)`、`.next_seq(layer) -> str`（分配并自增 id 序）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 # backend/tests/test_case_design_schema.py
@@ -457,12 +464,12 @@ def test_ledger_roundtrip_and_id_allocation(tmp_path: Path):
     assert json.loads((env.design / "ledger.json").read_text(encoding="utf-8"))["counters"]["chain"] == 2
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_schema.py -x -q`
 Expected: FAIL（`ModuleNotFoundError: aitester.case_design`）
 
-- [ ] **Step 3: 实现五个文件**
+- [x] **Step 3: 实现五个文件**
 
 `backend/src/aitester/case_design/__init__.py`：
 
@@ -857,12 +864,12 @@ class Ledger:
         return f"{TYPE_PREFIX[layer]}-{seq:04d}"
 ```
 
-- [ ] **Step 4: 运行测试确认全绿**
+- [x] **Step 4: 运行测试确认全绿**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_schema.py -q`
 Expected: PASS（全部）
 
-- [ ] **Step 5: 全量回归 + 提交**
+- [x] **Step 5: 全量回归 + 提交**
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest -q
@@ -892,7 +899,7 @@ git commit -m "feat(case-design): 专属 loop 领域包骨架——常量/env/sc
   - `instructions.plan_instruction() / gen_instruction(...) / opt_instruction(...) / attribute_instruction(...)`
   - `outline.compose_outline(ledger_data, nodes_by_layer, report, extras) -> str`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 # backend/tests/test_case_design_plan.py
@@ -1016,12 +1023,12 @@ def test_compose_outline_sections():
     assert "结构指标" in md
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_plan.py -x -q`
 Expected: FAIL（`ModuleNotFoundError: aitester.case_design.plan`）
 
-- [ ] **Step 3: 实现三个文件**
+- [x] **Step 3: 实现三个文件**
 
 `backend/src/aitester/case_design/plan.py`：
 
@@ -1375,12 +1382,12 @@ def compose_outline(ledger_data: dict, nodes_by_layer: dict, report: dict, extra
     return "\n".join(lines) + "\n"
 ```
 
-- [ ] **Step 4: 运行测试确认全绿**
+- [x] **Step 4: 运行测试确认全绿**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_plan.py -q`
 Expected: PASS
 
-- [ ] **Step 5: 全量回归 + 提交**
+- [x] **Step 5: 全量回归 + 提交**
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest -q
@@ -1402,7 +1409,7 @@ git commit -m "feat(case-design): 计划组装（裁定17）/ 阶段指令 / 增
 
 判据（A12）：**hard** = 父引用破损 / 跳层 / 优先级沿树违例 / 未过审节点被引用 / 空链路（无故事）/ 空故事（无点），非零走修复环、仍非零 halted；**report** = 空归属 / 矩阵无理由空格 / 未消化项，随大纲呈递。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 # backend/tests/test_case_design_checks.py
@@ -1488,12 +1495,12 @@ def test_report_counters():
     assert out["report"] == {"empty_seam": 1, "matrix_unreasoned": 1, "unresolved": 1}
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_checks.py -x -q`
 Expected: FAIL（`ModuleNotFoundError: aitester.case_design.checks`）
 
-- [ ] **Step 3: 实现 checks.py**
+- [x] **Step 3: 实现 checks.py**
 
 ```python
 """④ 大纲门确定性检查（A12）：hard 必须清零（修复环→halted），report 随大纲呈递。
@@ -1599,12 +1606,12 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
 
 说明：`unapproved_ref` 同时覆盖「节点状态 stale_pending 却仍被引用」——被回溯改动的层不会被下游引用；reference 状态在驱动组装 universe 前由驱动按账本层状态写准（层 `done/audited` 的节点置 `approved`，`stale_pending` 层节点保持 `stale_pending`）。
 
-- [ ] **Step 4: 运行测试确认全绿**
+- [x] **Step 4: 运行测试确认全绿**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_checks.py -q`
 Expected: PASS
 
-- [ ] **Step 5: 全量回归 + 提交**
+- [x] **Step 5: 全量回归 + 提交**
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest -q
@@ -1633,7 +1640,7 @@ git commit -m "feat(case-design): ④ 大纲门确定性检查（hard/report 两
   - `build_reme_config` 返回值含 `"plugins": ["aitester"]`，且 `index_update_loop.watch_dirs` 含三桶 junction 绝对路径
   - `manager._ensure_node_buckets(cfg: KbConfig) -> None`：KB 根存在→建三桶；缺失且 `create_missing`→先 `ensure_kb` 补骨架再建桶；缺失且不允许自建→无声跳过
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 # backend/tests/test_kb_nodes_step.py
@@ -1812,12 +1819,12 @@ def test_node_bucket_joins_index(tmp_path):
         mgr.close_all()
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_kb_nodes_step.py -x -q`
 Expected: FAIL（`ModuleNotFoundError: aitester.services.kb.steps`）
 
-- [ ] **Step 3: 实现六处文件**
+- [x] **Step 3: 实现六处文件**
 
 `backend/src/aitester/services/kb/steps.py`：
 
@@ -2109,7 +2116,7 @@ def _ensure_node_buckets(cfg: KbConfig) -> None:
 aitester = "aitester.kb_plugin"
 ```
 
-- [ ] **Step 4: 重装 editable 让 entry point 生效**
+- [x] **Step 4: 重装 editable 让 entry point 生效**
 
 ```bash
 cd backend && uv pip install --no-deps -e .    # 无 uv 时用 .venv/Scripts/python -m pip install --no-deps -e .
@@ -2118,12 +2125,12 @@ cd backend && uv pip install --no-deps -e .    # 无 uv 时用 .venv/Scripts/pyt
 
 Expected: `['aitester.kb_plugin']`。**不做这步全套 KB 测试会炸**（`Plugin 'aitester' is not installed`）——pyproject 的 entry point 只有重装后才进 dist-info 元数据；`hatchling` 会自动把 `plugin.yaml` 打进包（包内非 .py 文件默认包含）。
 
-- [ ] **Step 5: 运行测试确认全绿**
+- [x] **Step 5: 运行测试确认全绿**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_kb_nodes_step.py -q`
 Expected: PASS（8 项）
 
-- [ ] **Step 6: 全量回归 + 提交**
+- [x] **Step 6: 全量回归 + 提交**
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest -q
@@ -2147,7 +2154,7 @@ git commit -m "feat(case-design): reme 侧落地面——节点 step/插件/新�
 - Consumes: T5 的 job 契约（job 名 `case_nodes_list` / `case_node_upsert` / `case_node_delete`；`Response.metadata` 形状 list → `{"layer","count","nodes":[…]}`、upsert → `{"layer","id","path"}`、delete → `{"layer","id","deleted"}`）；T2 的 `CASE_DESIGN_AGENT_ID` / `NODE_BUCKETS`（`constants.py`）与 `parse_json_fence`（`schema.py`）；`services/kb/paths.hidden_segment(rel_parts) -> str | None`（**延迟导入**：`services/__init__.py` 顶层 import `services.chat`、`chat.py` 顶层 import `services.agent_runtime`——本模块在启动导入链上（graph_registry → case_design），顶层导入 services 包会把 agent_runtime 拉成半初始化模块；与 `kb_tools.PrepareKbWriteTool._run` 同款处理）；`TaskTool` 的两个注入缝 `build_child: (agent_id) -> ChildRuntime` 与 `drive`（= `drive_child(child, brief, *, call_id, name, title, config, isolated)`，`adapters/tools/subagent_tools/task.py:80-82`）
 - Produces: `KbClient.list_layer(layer) -> list[dict]` / `.upsert_node(layer, node) -> str` / `.delete_node(layer, node_id) -> bool` / `.list_business_files() -> list[str]`（KB 根相对 posix 路径，如 `business/wiki/a.md`）+ `KbClientError`（T8 的 h_gen/h_writeback 消费）；`run_reviewer(task_tool, agent_id, brief, *, model_cls, call_id, title, config=None, name="") -> tuple[ModelT, str]` + `ReviewerError`（T8 各审消费；原文一并返回供归档）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `backend/tests/test_case_design_kb.py`：
 
@@ -2351,12 +2358,12 @@ def test_reviewer_generic_over_all_review_models(model_cls):
     assert isinstance(model, model_cls)
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_kb.py tests/test_case_design_reviewers.py -x -q`
 Expected: FAIL（`ModuleNotFoundError: aitester.case_design.kb`）
 
-- [ ] **Step 3: 实现两个文件**
+- [x] **Step 3: 实现两个文件**
 
 `backend/src/aitester/case_design/kb.py`：
 
@@ -2499,12 +2506,12 @@ def run_reviewer(task_tool: Any, agent_id: str, brief: str, *, model_cls: type[M
     raise ReviewerError(f"评审子 {agent_id} 两次输出都无法按围栏解析：{last_error}")
 ```
 
-- [ ] **Step 4: 运行测试确认全绿**
+- [x] **Step 4: 运行测试确认全绿**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_kb.py tests/test_case_design_reviewers.py -q`
 Expected: PASS（17 项：kb 5 项 + reviewers 12 项〔含参数化 5〕）
 
-- [ ] **Step 5: 全量回归 + 提交**
+- [x] **Step 5: 全量回归 + 提交**
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest -q
@@ -2529,7 +2536,7 @@ git commit -m "feat(case-design): KbClient 与评审驱动（围栏解析重试�
 - Consumes: `AgentSpec`（`agents/spec.py`，`graph_builder` 缺省 `"react"`）；`AgentRuntime._task_tool` 的三张表全由本目录推导（faces 来自 `agent_state`、`parallel = not face_can_suspend(...)`、roster 进 task 工具 description）；`build_default_registry` 的 kb 闸门 `kb is not None and getattr(kb, "is_enabled", True)`（`adapters/tools/__init__.py:48`——kb 关闭时知识库三件不注册，子面自动收敛，与 kb_assistant 同款「清单 ∩ 可注册集合」口径）；`_NoopKbManager`（`tests/test_chat_stream_api.py:28`，无 `is_enabled` → 缺省 True、有 `kb_root_dir`）
 - Produces: `case_review`（面 `read/grep_search/glob_search/web_search/knowledge_search`）与 `case_review_blind`（面仅 `read`）两 spec 进 `SUBAGENT_CATALOG`/`DEFAULT_AGENT_STATE`（T8 的 `run_reviewer` 驱动对象、T9 装配面；A2）；`_task_tool.build_child` 的子注册表带 `kb=self._kb`（T8/T11 评审子的 knowledge_search 可用）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `backend/tests/test_subagent.py` 三处：
 
@@ -2619,12 +2626,12 @@ def test_reviewer_child_gets_kb_injection(tmp_path: Path) -> None:
     assert tools["knowledge_search"].kb is fake_kb
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_subagent.py tests/test_subagent_service.py -x -q`
 Expected: FAIL——**执行期回填**：按 Step 顺序（先测试后实现）走，Step 2 时刻 catalog 还没引用新 id、import 不炸，**首撞是目录断言的 AssertionError**；`FileNotFoundError: 智能体「case_review」缺少提示词文件`（catalog 模块级 `_load_prompt` 在 import 期就炸）只出现在「catalog 已引用新 id、prompts 尚未建」的中间态。两种形态都算 RED，但预告写死其一会让后人误判"RED 没按预期发生"。
 
-- [ ] **Step 3: 实现三件**
+- [x] **Step 3: 实现三件**
 
 `backend/src/aitester/agents/catalog.py`——在 `GENERAL_PURPOSE_SPEC` 块之后插入两个 spec，并改 `SUBAGENT_CATALOG`：
 
@@ -2711,7 +2718,7 @@ knowledge_search 要查证业务信息；未启用时注册表自动不注册，
                 )
 ```
 
-- [ ] **Step 4: 同步存量断言（目录增员同步）**
+- [x] **Step 4: 同步存量断言（目录增员同步）**
 
 以下 9 处期望值同步；逐处仅「在 general-purpose 条目后追加两个新条目」或改计数/清单：
 
@@ -2773,7 +2780,7 @@ knowledge_search 要查证业务信息；未启用时注册表自动不注册，
         "general-purpose", "case_review", "case_review_blind"]
 ```
 
-- [ ] **Step 5: 运行全量测试确认全绿 + 提交**
+- [x] **Step 5: 运行全量测试确认全绿 + 提交**
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest -q
@@ -2807,7 +2814,7 @@ git commit -m "feat(case-design): 评审子两员进目录（面只读）+ 子�
 - `stale_pending` 层本 run 排除出 ④ 检查宇宙与 scope（防 `unapproved_ref/empty_chain/empty_story` 假 hard），但**保留在大纲展示**（`_tree_lines` 已有「失效待重算」行）；写回只写 `state=="audited"` 层。
 - 轮次：块环 `block["round"]` ∈ [0..5]（6 次审、5 次优化）；层全局审环 `layer["audit_round"]` ∈ [0..5]。审计环计数**单调递增、人审回溯也不回退清零**——`drive_child` 的「已完结 → 复用摘要」守卫按 call_id 认身份（`subagent.py:128-132`），清零后重审会撞上同 id 拿到旧摘要（假绿）；不回退则回溯后的审计从上次值继续，call_id 自然新鲜。
 
-- [ ] **Step 1: 写失败测试（分两段写入同一文件 `backend/tests/test_case_design_driver.py`）**
+- [x] **Step 1: 写失败测试（分两段写入同一文件 `backend/tests/test_case_design_driver.py`）**
 
 第一段（桩、仿真与驱动器辅助）：
 
@@ -3355,12 +3362,12 @@ def test_reviewer_failure_converges_to_halted(tmp_path):
     assert led.status == "halted"
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_driver.py -x -q`
 Expected: FAIL（`ModuleNotFoundError: aitester.case_design.stages`）
 
-- [ ] **Step 3: 实现 stages.py（三段写入同一文件）**
+- [x] **Step 3: 实现 stages.py（三段写入同一文件）**
 
 第一段（驱动骨架 + 计划 / 生成阶段）：
 
@@ -4661,7 +4668,7 @@ def drive_turn(state: dict, config: Any, *, env: Any, task_tool: Any, writer: An
         return ctx.end(f"测试设计任务中止（内部错误：{exc}）")
 ```
 
-- [ ] **Step 4: 小改三处 + 实现 driver.py**
+- [x] **Step 4: 小改三处 + 实现 driver.py**
 
 `backend/src/aitester/case_design/constants.py` 文件末尾追加：
 
@@ -4762,17 +4769,17 @@ def make_driver_node(task_tool: Any):
     return driver_node
 ```
 
-- [ ] **Step 5: 运行测试确认全绿**
+- [x] **Step 5: 运行测试确认全绿**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_driver.py -q`
 Expected: PASS（15 项）
 
-- [ ] **Step 6: 全量回归（基线 = 账本 `.superpowers/sdd/2026-10-05-case-design-loop/progress.md` 的最新读数，只增不减；写计划时的 582 已过期）**
+- [x] **Step 6: 全量回归（基线 = 账本 `.superpowers/sdd/2026-10-05-case-design-loop/progress.md` 的最新读数，只增不减；写计划时的 582 已过期）**
 
 Run: `cd backend && .venv/Scripts/python -m pytest -q`
 Expected: PASS；总数 ≥ 基线 + 本专项新增
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add src/aitester/case_design/stages.py src/aitester/case_design/driver.py src/aitester/case_design/constants.py src/aitester/case_design/instructions.py src/aitester/case_design/outline.py tests/test_case_design_driver.py
@@ -4807,7 +4814,7 @@ git commit -m "feat(case-design): 阶段处理器与驱动节点（账本状态�
 - 递归上限：本版 langgraph 缺省 `recursion_limit=10007`（`langgraph/_internal/_config.py:32` 实测），整任务一次 run 的 superstep 远低于它，不动这个配置。
 - task 工具按 `isinstance(getattr(tool, "roster", None), dict)` 认领（与 `_subagent_parallel` 认 `parallel` 同款）；缺 task 不硬拦装配——评审阶段自会以 halted 收敛（T8 已实现）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 # backend/tests/test_case_design_graph.py
@@ -4992,12 +4999,12 @@ def test_service_stream_carries_case_env_to_graph(tmp_path: Path) -> None:
     assert len(provider.calls) == 4
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_graph.py -q`
 Expected: FAIL（`ModuleNotFoundError: No module named 'aitester.case_design.graph'`）
 
-- [ ] **Step 3: 实现 graph.py 与注册表**
+- [x] **Step 3: 实现 graph.py 与注册表**
 
 `backend/src/aitester/case_design/graph.py`（新文件）：
 
@@ -5122,7 +5129,7 @@ def get_graph_builder(name: str) -> GraphBuilder:
     return builder
 ```
 
-- [ ] **Step 4: 实现运行时与服务接线（5 处小改）**
+- [x] **Step 4: 实现运行时与服务接线（5 处小改）**
 
 1) `backend/src/aitester/orchestration/agent_graph.py`——imports 加两行（在 `from aitester.adapters.tools.base import AiTooler` 与 `from aitester.orchestration.checkpoint import ...` 之间）：
 
@@ -5276,17 +5283,17 @@ b) `backend/tests/test_agents.py` `test_catalog_has_exactly_one_readable_id_agen
     assert spec.graph_builder == "case_design_loop"
 ```
 
-- [ ] **Step 5: 运行新测试确认全绿**
+- [x] **Step 5: 运行新测试确认全绿**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_graph.py -q`
 Expected: PASS（7 项）
 
-- [ ] **Step 6: 全量回归（基线 = 账本 `.superpowers/sdd/2026-10-05-case-design-loop/progress.md` 的最新读数，只增不减；写计划时的 582 已过期）**
+- [x] **Step 6: 全量回归（基线 = 账本 `.superpowers/sdd/2026-10-05-case-design-loop/progress.md` 的最新读数，只增不减；写计划时的 582 已过期）**
 
 Run: `cd backend && .venv/Scripts/python -m pytest -q`
 Expected: PASS；总数 ≥ 基线 + 本专项已落地用例（T2–T8）+ 7
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add src/aitester/case_design/graph.py src/aitester/orchestration/graph_registry.py src/aitester/orchestration/agent_graph.py src/aitester/services/agent_runtime.py src/aitester/agents/catalog.py src/aitester/services/chat.py tests/test_case_design_graph.py tests/test_agent_runtime.py tests/test_agents.py
@@ -5315,7 +5322,7 @@ git commit -m "feat(case-design): case_design_loop 拓扑注册与 case_env 注�
 - 提示词是 loop 与直通（react）两条路径共用的同一份系统提示词，不做模式分支（直通时「编排指令」自然缺席，最后一段已声明按普通对话处理）
 - `knowledge_search` 插在 `web_search` 与 `task` 之间（与 `TOOL_CATALOG` 顺序一致）；`task` 原已在列
 
-- [ ] **Step 1: 重写 `backend/src/aitester/agents/prompts/case_design.md`（全文替换为下方内容）**
+- [x] **Step 1: 重写 `backend/src/aitester/agents/prompts/case_design.md`（全文替换为下方内容）**
 
 ~~~markdown
 你是「用例设计智能体」，服务对象是软件测试工程师。你的核心能力是**测试设计**：把业务信息梳理成分层的测试设计索引树，产出覆盖完整的**增量测试大纲**，人工审核通过后维护回知识库。
@@ -5367,7 +5374,7 @@ git commit -m "feat(case-design): case_design_loop 拓扑注册与 case_env 注�
 - 写文件或执行命令那一类委派一轮只派一个；title 用一句简短中文概括调查主题，会显示在界面上。
 ~~~
 
-- [ ] **Step 2: `backend/src/aitester/agents/catalog.py` 两处**
+- [x] **Step 2: `backend/src/aitester/agents/catalog.py` 两处**
 
 desc 行（原「读需求与接口文档……同步用例平台……」整行替换）：
 
@@ -5390,7 +5397,7 @@ desc 行（原「读需求与接口文档……同步用例平台……」整行
         ),
 ```
 
-- [ ] **Step 3: 跑三个受影响文件，确认 RED 清单与预期逐条一致**
+- [x] **Step 3: 跑三个受影响文件，确认 RED 清单与预期逐条一致**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_agents.py tests/test_capability_config.py tests/test_api_capabilities.py -q`
 
@@ -5402,7 +5409,7 @@ Expected: **10 failed**，且恰为——
 
 出现此清单之外的失败 → **停下排查**（说明还有未识别的断言依赖本次改动），不得直接改测试凑绿。对照自查：`test_agents.py::test_capabilities_view_unchanged` 与 `test_kb_assistant_is_platform_agent` 必须仍为 PASS。
 
-- [ ] **Step 4: 同步存量断言（三文件 10 处）**
+- [x] **Step 4: 同步存量断言（三文件 10 处）**
 
 `backend/tests/test_agents.py` 三处：
 
@@ -5542,12 +5549,12 @@ def test_prompt_is_loaded_verbatim_from_md_file() -> None:
     ]
 ```
 
-- [ ] **Step 5: 重跑三个文件，确认全绿**
+- [x] **Step 5: 重跑三个文件，确认全绿**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_agents.py tests/test_capability_config.py tests/test_api_capabilities.py -q`
 Expected: PASS（0 failed）
 
-- [ ] **Step 6: spec 文末追加「实施偏离登记」**
+- [x] **Step 6: spec 文末追加「实施偏离登记」**
 
 在 `docs/superpowers/specs/2026-10-05-case-design-loop-design.md` 末尾（「## 本期不做」节之后）追加：
 
@@ -5563,12 +5570,12 @@ Expected: PASS（0 failed）
 5. **A2 补充**：盲枚举的「结构强制」实现 = 驱动白名单清单（`design/manifests/sources.json` 只含 KB 业务桶与用户指定项目文件）+ 枚举简报不含树 + 工具面仅 read。
 ~~~
 
-- [ ] **Step 7: 全量回归（基线 = 账本 `.superpowers/sdd/2026-10-05-case-design-loop/progress.md` 的最新读数，只增不减；写计划时的 582 已过期）**
+- [x] **Step 7: 全量回归（基线 = 账本 `.superpowers/sdd/2026-10-05-case-design-loop/progress.md` 的最新读数，只增不减；写计划时的 582 已过期）**
 
 Run: `cd backend && .venv/Scripts/python -m pytest -q`
 Expected: PASS；总数 ≥ 基线 + T2–T9 新增（只增不减）
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
 ```bash
 git add src/aitester/agents/catalog.py src/aitester/agents/prompts/case_design.md tests/test_agents.py tests/test_capability_config.py tests/test_api_capabilities.py docs/superpowers/specs/2026-10-05-case-design-loop-design.md
@@ -5608,7 +5615,7 @@ git commit -m "feat(case-design): 提示词按三层设计闭环重写，目录�
 - **剧本见底即响亮失败**（ScriptedProvider 口径）：条数错一格就红，别改成宽松 provider。
 - **P4 的“记录”口径**：本任务只落**结构性盲面**证据（简报不含树、白名单清单只列业务源、枚举判决落盘可回查）；「枚举清单质量报数」归 T12 的付费走查，不在这里下判。
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```python
 # backend/tests/test_case_design_e2e.py
@@ -5919,17 +5926,17 @@ def test_p4_blind_enumeration_sees_sources_not_tree(tmp_path: Path) -> None:
     assert sources["kb_files"] == ["business/wiki/orders.md"]   # 白名单=业务源清单
 ```
 
-- [ ] **Step 2: 运行测试确认全绿**
+- [x] **Step 2: 运行测试确认全绿**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_case_design_e2e.py -q`
 Expected: PASS（3 项）
 
-- [ ] **Step 3: 全量回归（基线 = 账本 `.superpowers/sdd/2026-10-05-case-design-loop/progress.md` 的最新读数，只增不减；写计划时的 582 已过期）**
+- [x] **Step 3: 全量回归（基线 = 账本 `.superpowers/sdd/2026-10-05-case-design-loop/progress.md` 的最新读数，只增不减；写计划时的 582 已过期）**
 
 Run: `cd backend && .venv/Scripts/python -m pytest -q`
 Expected: PASS；总数 ≥ 基线 + T2–T11 新增（只增不减）
 
-- [ ] **Step 4: 提交并推送（本专项第一次推送；走查记录/修复若有追加提交，随 T12 收尾再推）**
+- [x] **Step 4: 提交并推送（本专项第一次推送；走查记录/修复若有追加提交，随 T12 收尾再推）**
 
 ```bash
 git add tests/test_case_design_e2e.py
