@@ -22,7 +22,8 @@ from aitester.case_design.ledger import Ledger
 from aitester.case_design.outline import compose_outline
 from aitester.case_design.stages import (
     Ctx, _collect_writeback_items, _drafts_errors, _drop_out_of_window_hards,
-    _open_of, _outline_extras, _patch_ids, _rescan_claims, drive_turn, h_writeback,
+    _layer_audited, _open_of, _outline_extras, _patch_ids, _rescan_claims, drive_turn,
+    h_writeback,
 )
 
 REV_CLEAN = '```json\n{"opinions": [], "resolutions": []}\n```'
@@ -1488,3 +1489,24 @@ def test_rescan_marks_and_stats_are_visible_in_outline(tmp_path):
     assert "（owner=pt-0003）（回扫补认·复核）" in md
     stats = ctx.led.layer("story")["claims_rescan"]
     assert f"- 回扫补认：确定性 1 条／复核 1 条（{stats['at']}）" in md
+
+
+def test_point_layer_closeout_hook_fires_the_rescan(tmp_path):
+    """挂点证据（唯一）：经 `_layer_audited(ctx, "point")` 收口就必须触发回扫——
+    删掉 `if layer == POINT: _rescan_claims(ctx)` 这条用例必红，直调用例做不到这件事。"""
+    _, task, ctx = _rescan_ctx(
+        tmp_path, [_unclaimed("st-0001-a1", "该场景由 pt-0002 覆盖")],
+        point_nodes=[{"op": "upsert", "type": "point", "id": "pt-0002",
+                      "story": "st-0001", "directions": ["正向"]}])
+    # 收口必经 `_after_layer`（读 task.descriptor 划窗口）；按经驱动用例的 plan 形状补齐。
+    ctx.led.data["task"]["descriptor"] = {
+        "task_kind": "design", "entry_layer": "chain", "terminal_layer": "point",
+        "target_subtree": "", "source_files": [], "note": "全量"}
+    calls_before = len(task.calls)
+    _layer_audited(ctx, "point")                            # 经挂点收口，不直调 `_rescan_claims`
+    row = ctx.led.layer("story")["claims"][0]
+    assert row["verdict"] == "covered" and row["owner"] == "pt-0002"
+    assert row["rescanned"] == "deterministic"              # ① 挂点确实跑到了回扫
+    assert len(task.calls) == calls_before                  # ② 收口路径里不许冒模型调用
+    assert ctx.led.layer("story")["state"] == "audited"     # ③ 回扫没重开故事层
+    assert _open_of(ctx, "story", source="audit") == []     # ③ 也没登记任何意见

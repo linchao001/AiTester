@@ -936,7 +936,7 @@ def _rescan_claims(ctx: Ctx) -> None:
     R-46：点层收口有两条合法路径（归因收口/过审收口），且大纲门退回→重做后可再次收口。
     确定性查表可随时重跑（零调用）；reviewer 分支以 `claims_rescan` 是否已落账做门控——
     只要某次调用见到残余行，返回前必写 st["claims_rescan"]，此后本 run 一切再入都跳过
-    复核分支 ⇒ 每 run 至多一次模型调用（残余行原样带进大纲）。
+    复核分支 ⇒ 每 run 至多一次复核 pass（内含至多一次重试派发，残余行原样带进大纲）。
     """
     st = ctx.led.layer(STORY)
     rows = st.get("claims") or []
@@ -947,7 +947,6 @@ def _rescan_claims(ctx: Ctx) -> None:
     for layer in LAYERS:
         ids |= {str(r.get("id") or "") for r in ctx.kb_rows(layer) if r.get("id")}
         ids |= {str(n.get("id") or "") for n in _draft_nodes(ctx, layer) if n.get("id")}
-    deterministic = 0
     still: list[dict] = []
     for row in residual:
         hits = [m.group(0) for m in _CLAIM_ID_RE.finditer(str(row.get("claim") or ""))
@@ -958,10 +957,8 @@ def _rescan_claims(ctx: Ctx) -> None:
             row["rescanned"] = "deterministic"
             row["note"] = (str(row.get("note") or "") +
                            f"｜回扫：{hits[0]} 已落成节点").lstrip("｜")
-            deterministic += 1
         else:
             still.append(row)
-    reviewer = 0
     if still and "claims_rescan" not in st:        # 复核每 run 至多一次（R-46）
         call_id = f"claims-rescan-r{int(ctx.led.layer(POINT).get('audit_round') or 0)}"
         out, raw = run_reviewer(ctx.task_tool, CASE_REVIEW_AGENT_ID,
@@ -977,11 +974,10 @@ def _rescan_claims(ctx: Ctx) -> None:
                 row["owner"] = str((by_ref.get(str(row.get("ref") or "")) or {})
                                    .get("owner") or row.get("owner") or "")
                 row["rescanned"] = "reviewer"
-                reviewer += 1
-    prev = st.get("claims_rescan") or {}
-    st["claims_rescan"] = {                        # 重跑累加确定性计数；reviewer 不重复增长
-        "deterministic": deterministic + int(prev.get("deterministic") or 0),
-        "reviewer": reviewer + int(prev.get("reviewer") or 0),
+    # 计数口径 =「本张表里被回扫补认的行数」：写账前按当前 claims 行现算，与紧邻其上的逐行标记对账
+    st["claims_rescan"] = {
+        "deterministic": sum(1 for r in rows if r.get("rescanned") == "deterministic"),
+        "reviewer": sum(1 for r in rows if r.get("rescanned") == "reviewer"),
         "at": _now(),
     }
 
