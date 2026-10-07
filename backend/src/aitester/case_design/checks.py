@@ -58,7 +58,7 @@ def build_universe(nodes_by_layer: dict[str, list[dict]], kb_rows: dict[str, lis
                 bucket = _BUCKET[layer]
                 # R-60（与 `stages._collect_writeback_items` 的 `seen` 首见即留同源）：草稿之间只留
                 # 先出现的那一行——写库侧只遍历草稿，④ 若取后见行就判了一个永不入库的节点。
-                # 这里不能用 `schema.is_draft_row`：下面 setdefault 已把 state 换成宇宙自己的
+                # 这里不能用 `schema.is_draft_row`：下面 setdefault 在 state 缺席时会把它换成宇宙自己的
                 # `kb`/`approved` 词汇，判据会反，故用循环自带的 is_kb。KB 在前草稿在后，覆盖方向不变。
                 if not is_kb:
                     if (bucket, nid) in draft_seen:
