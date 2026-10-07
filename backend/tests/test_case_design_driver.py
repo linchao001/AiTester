@@ -48,7 +48,8 @@ class StubKb:
     就会读到真东西。默认 None 表示「未绑定」，由 _env 绑到本用例的 tmp_path 下。
     """
 
-    def __init__(self, layers=None, root=None, fail_upserts=0, unchanged=False):
+    def __init__(self, layers=None, root=None, fail_upserts=0,
+                 unchanged_ids=None, track_content=False, fail_upsert_after=0):
         self.layers = layers or {}
         self.kb_root_dir = str(root) if root is not None else ""
         self.upserts: list = []
@@ -56,7 +57,14 @@ class StubKb:
         self.fail_upserts = fail_upserts
         # 默认不带 unchanged 键：真实 step 只在「内容与库内一致」时才回传 True，
         # 既有终帧逐字断言（基句不许动）一律走「没带」这条形状。
-        self.unchanged = unchanged
+        # unchanged_ids：只给这批 id 报未触碰（混编轮次——尾句只该数未触碰那部分）。
+        self.unchanged_ids = unchanged_ids
+        # track_content：像真实 step 那样记账——同一份内容第二次下发才报未触碰（首轮一律真写）。
+        self.track_content = track_content
+        self._seen: set = set()
+        # fail_upsert_after：第 N+1 个 upsert 失败一次（模拟整轮中途崩、重试轮才写全）。
+        self.fail_upsert_after = fail_upsert_after
+        self._after_tripped = False
         self.job_names: list = []
 
     def run_job_sync(self, name, *, project_id="default", agent_id="console",
@@ -70,10 +78,19 @@ class StubKb:
             if self.fail_upserts > 0:
                 self.fail_upserts -= 1
                 return _resp(success=False, answer="disk full")
-            self.upserts.append((kwargs["layer"], dict(kwargs["node"])))
-            meta = {"layer": kwargs["layer"], "id": kwargs["node"].get("id", "?"), "path": "p"}
-            if self.unchanged:                       # 库内已有同内容节点：step 报未触碰
-                meta["unchanged"] = True
+            if (self.fail_upsert_after and not self._after_tripped
+                    and len(self.upserts) >= self.fail_upsert_after):
+                self._after_tripped = True         # 只炸一次：重试轮就该写全
+                return _resp(success=False, answer="disk full")
+            node = dict(kwargs["node"])
+            self.upserts.append((kwargs["layer"], node))
+            meta = {"layer": kwargs["layer"], "id": node.get("id", "?"), "path": "p"}
+            # 按内容记账：先查再记——这份内容已经在库里就是「未触碰」，第一次出现必须算真写。
+            seen = json.dumps(node, sort_keys=True, ensure_ascii=False)
+            if (node.get("id") in (self.unchanged_ids or ())
+                    or (self.track_content and seen in self._seen)):
+                meta["unchanged"] = True              # 库内已有同内容节点：step 报未触碰
+            self._seen.add(seen)
             return _resp(meta)
         if name == "case_node_delete":
             self.deletes.append((kwargs["layer"], kwargs["id"]))
@@ -451,7 +468,7 @@ def test_writeback_counts_untouched_nodes_and_says_it(tmp_path):
     裁定 30 的呈递面：等值判定单点在 step，驱动只累计 written/untouched 进账本、把尾句说给人看
     （驱动内不加第二次比较）。裁定 31 的底线：基句一字不改，`untouched == 0` 时终帧与现状逐字节相同。
     """
-    kb = StubKb()
+    kb = StubKb(track_content=True)                             # 像真实 step：同内容重复下发才报未触碰
     env = _env(tmp_path, kb)
     drain(env, kb, ScriptTask())
     frames: list[dict] = []
@@ -464,14 +481,12 @@ def test_writeback_counts_untouched_nodes_and_says_it(tmp_path):
     assert led.data["writeback"]["untouched"] == 0
     assert _end_text(frames) == "回写完成：本次过审节点已写入知识库。"   # 无未触碰时逐字节不变
 
-    # 同一批节点再过一次门（库内内容已一致）：把账本复位成「刚过审、游标在回写」，
-    # StubKb 从这轮起按真实 step 语义逐节点回传 unchanged=True。
+    # 同一批节点再过一次门（库内内容已一致）：把账本复位成「刚过审、游标在回写」。
     led.cursor.update({"stage": "writeback"})
     for layer in ("chain", "story", "point"):
         led.layer(layer)["state"] = "audited"
     led.status = "awaiting_review"
     led.save()
-    kb.unchanged = True
     frames2: list[dict] = []
     ctx = Ctx(env=env, task_tool=ScriptTask(), writer=frames2.append, config={},
               state_messages=[HumanMessage("通过，回写")], led=led)
@@ -482,6 +497,42 @@ def test_writeback_counts_untouched_nodes_and_says_it(tmp_path):
     assert led.data["writeback"]["untouched"] == n
     assert _end_text(frames2) == ("回写完成：本次过审节点已写入知识库。"
                                   f"（{n} 个节点内容与库内一致，未重写。）")
+
+
+def test_writeback_mixed_round_says_only_the_untouched_subset(tmp_path):
+    """混编轮次（走查三的真实形状）：一部分节点改了、一部分没动，尾句只数没动那部分。"""
+    kb = StubKb(unchanged_ids={"st-0002", "pt-0002"})
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask())
+    frames: list[dict] = []
+    _drive(env, {"messages": [HumanMessage("通过，回写")], "case": {}}, ScriptTask(),
+           writer=frames.append)
+    led = Ledger.load(env.design)
+    assert led.data["writeback"]["written"] == 3
+    assert led.data["writeback"]["untouched"] == 2
+    assert _end_text(frames) == ("回写完成：本次过审节点已写入知识库。"
+                                 "（2 个节点内容与库内一致，未重写。）")
+
+
+def test_writeback_retry_does_not_call_previous_attempt_writes_untouched(tmp_path):
+    """I-1（T14 复审）：中途崩的那次尝试真写过的文件，重试轮报 unchanged 也不许说成「未重写」。
+
+    「未重写」对人说的是这一整轮没动过那个文件；把上一尝试的写入算进未触碰，就是拿
+    裁定 31 的尾句在唯一那道门上谎报——计数按整轮记，不按最后一次尝试记。
+    """
+    kb = StubKb(track_content=True, fail_upsert_after=2)         # 前 2 个真落库，第 3 个炸一次
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask())
+    frames: list[dict] = []
+    _drive(env, {"messages": [HumanMessage("通过，回写")], "case": {}}, ScriptTask(),
+           writer=frames.append)
+    led = Ledger.load(env.design)
+    assert led.status == "done"
+    assert len(kb.upserts) == 7                                  # 2 + 整轮 5（重试轮重发全批）
+    assert led.data["writeback"]["log"]                           # 失败留痕仍在
+    assert led.data["writeback"]["written"] == 5                  # 上一尝试写过的 2 个仍算写入
+    assert led.data["writeback"]["untouched"] == 0                # 整轮里五个文件全被动过
+    assert _end_text(frames) == "回写完成：本次过审节点已写入知识库。"   # 基句逐字节，无尾句
 
 
 def test_update_no_change_blocks_flow_and_mark_outline(tmp_path):

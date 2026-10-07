@@ -1442,19 +1442,24 @@ def h_writeback(ctx: Ctx) -> Any:
     kb = KbClient(ctx.env.kb)
     ok = False
     written = untouched = 0
+    # 本轮真下过笔的节点（跨尝试记账）：重试整轮重来时它们必然报 unchanged，
+    # 但「未重写」是对人说这一整轮没动过文件——上一尝试写过就不能算未触碰（复审 T14 I-1）。
+    rewrote: set[tuple[str, str]] = set()
     for attempt in range(1, WRITEBACK_FIX_CAP + 2):
         try:
             written = untouched = 0                       # 重试整轮重来：跨尝试累加会虚报写入数
             for layer, node_id, payload in _collect_writeback_items(ctx):
                 if payload is None:
                     kb.delete_node(layer, node_id)          # 删除没有"等值"可言，原样执行
+                    rewrote.add((layer, node_id))
                     written += 1
                 else:
                     meta = kb.upsert_node(layer, payload)
-                    if meta.get("unchanged"):
+                    if meta.get("unchanged") and (layer, node_id) not in rewrote:
                         untouched += 1
                     else:
                         written += 1
+                        rewrote.add((layer, node_id))
             ok = True
             break
         except GraphBubbleUp:

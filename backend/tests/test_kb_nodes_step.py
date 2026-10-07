@@ -23,6 +23,7 @@ from aitester.services.kb.steps import (
     _atomic_write,
     parse_node_markdown,
     render_node_markdown,
+    strip_updated_at,
 )
 
 # 账本/夹具零产品线业务名词（全局约束）：一律用「实体甲/实体乙」这类中性名。
@@ -504,8 +505,6 @@ def test_strip_updated_at_scope_is_the_first_frontmatter_block_only():
     正文行都以「- 标签：」起头，但库内文件可被人/其它工具改过——正文出现顶格 `updated_at:` 时
     若整文件盲替换就会造出假等值（唯一那道门上说谎的另一条路）。
     """
-    from aitester.services.kb.steps import strip_updated_at
-
     text = render_node_markdown("chain", CHAIN_NODE)
     front, sep, body = text.partition("\n---\n")
     stripped = strip_updated_at(text)
@@ -521,5 +520,10 @@ def test_strip_updated_at_scope_is_the_first_frontmatter_block_only():
     out = strip_updated_at(nasty)
     assert "updated_at: 2026-01-01T00:00:00" not in out      # frontmatter 那行剥掉
     assert "updated_at: 2020-01-01T00:00:00" in out          # 正文那行原样保留（不盲替换）
+    # 只剥那一行，不规整行尾：库内文件 frontmatter 末尾多一个空行就是另一份内容，
+    # 「补换行再 rstrip」的写法会把空行吞掉，造出比逐字节口径更松的假等值。
+    with_blank = "---\nid: ch-0001\nname: 链A\n\n---\n\n# 链A\n"
+    without_blank = "---\nid: ch-0001\nname: 链A\n---\n\n# 链A\n"
+    assert strip_updated_at(with_blank) != strip_updated_at(without_blank)
     assert strip_updated_at("没有 frontmatter") == "没有 frontmatter"
     assert strip_updated_at("") == ""

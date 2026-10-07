@@ -74,7 +74,7 @@ def render_node_markdown(layer: str, node: dict[str, Any]) -> str:
     return f"---\n{head}\n---\n\n" + "\n".join(body) + "\n"
 
 
-_TS_LINE_RE = re.compile(r"^updated_at:.*\n", re.MULTILINE)
+_TS_LINE_RE = re.compile(r"^updated_at:.*(?:\n|$)", re.MULTILINE)
 
 
 def strip_updated_at(text: str) -> str:
@@ -88,9 +88,10 @@ def strip_updated_at(text: str) -> str:
     front, sep, body = text[4:].partition("\n---\n")
     if not sep:
         return text
-    # 补一个行尾再剥：`updated_at` 恒为 frontmatter 末行，而 sep 恰好吃掉它那行换行，
-    # 少了这行换行 `_TS_LINE_RE` 就一行也剥不掉（等值判定退化成整文件比时间戳，幂等形同虚设）。
-    return "---\n" + _TS_LINE_RE.sub("", front + "\n").rstrip("\n") + sep + body
+    # `$` 分支是必需的：`updated_at` 恒为 frontmatter 末行，而 sep 恰好吃掉它那行的换行，
+    # 只认 `\n` 就一行也剥不掉（等值判定退化成整文件比时间戳，幂等形同虚设）。
+    # 不用「补换行再 rstrip」的写法：那会连 frontmatter 末尾的空行一起吞掉，比逐字节口径更松。
+    return "---\n" + _TS_LINE_RE.sub("", front) + sep + body
 
 
 def parse_node_markdown(text: str, layer: str) -> dict[str, Any]:
