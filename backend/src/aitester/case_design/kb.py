@@ -36,8 +36,10 @@ class KbClient:
     def list_layer(self, layer: str) -> list[dict[str, Any]]:
         return list(self._job("case_nodes_list", layer=layer).get("nodes") or [])
 
-    def upsert_node(self, layer: str, node: dict[str, Any]) -> str:
-        return str(self._job("case_node_upsert", layer=layer, node=node).get("path") or "")
+    def upsert_node(self, layer: str, node: dict[str, Any]) -> dict[str, Any]:
+        """回传 job metadata（含 path 与 unchanged）：unchanged 是「这个节点根本没被触碰」的凭据，
+        驱动必须把它呈递给人（裁定 18 的写侧同型）。"""
+        return self._job("case_node_upsert", layer=layer, node=node)
 
     def delete_node(self, layer: str, node_id: str) -> bool:
         return bool(self._job("case_node_delete", layer=layer, id=node_id).get("deleted"))

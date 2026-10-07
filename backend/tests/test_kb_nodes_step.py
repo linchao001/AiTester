@@ -425,3 +425,101 @@ def test_upsert_creates_missing_bucket_without_ensure_step(tmp_path, monkeypatch
         assert lst.metadata["nodes"][0]["id"] == "ch-0001"
     finally:
         mgr.close_all()
+
+
+# ---- D-2 节点写幂等：同内容不重写、不刷 updated_at（等值判定的单点口径） ----
+
+
+def test_upsert_with_identical_content_touches_nothing(tmp_path):
+    """同内容重复 upsert：不重写文件、不刷 updated_at——「未涉及节点逐字节不变」靠这一条成立。"""
+    kb_root = _seed_kb(tmp_path)
+    path = kb_root / "business" / "chains" / "ch-0001.md"
+    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        first = mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE)
+        assert first.success, first.answer
+        assert first.metadata["unchanged"] is False           # 首写（库里没这个文件）必是真写
+        t1 = path.read_text(encoding="utf-8")
+        mtime1 = path.stat().st_mtime_ns
+        # updated_at 是秒级时间戳：隔一秒再写才验得出「时间戳没被刷」而不是「恰好同一秒」
+        time.sleep(1.1)
+        meta = mgr.run_job_sync("case_node_upsert", layer="chain", node=dict(CHAIN_NODE))
+        assert meta.success and meta.metadata["unchanged"] is True
+        assert "unchanged ch-0001" == meta.answer
+        t2 = path.read_text(encoding="utf-8")
+        assert t2 == t1                                  # 整文件逐字节不变（时间戳也没动）
+        assert path.stat().st_mtime_ns == mtime1          # 连文件都没碰——原子替换必改 mtime
+    finally:
+        mgr.close_all()
+
+
+def test_upsert_with_changed_content_rewrites_and_refreshes_timestamp(tmp_path):
+    """内容变了就必须重写并刷时间戳：幂等只免「没改还写」，不免「改了不写」。"""
+    kb_root = _seed_kb(tmp_path)
+    path = kb_root / "business" / "chains" / "ch-0001.md"
+    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        assert mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE).success
+        t1 = path.read_text(encoding="utf-8")
+        time.sleep(1.1)
+        changed = {**CHAIN_NODE, "name": "实体甲链路（改名）"}
+        meta = mgr.run_job_sync("case_node_upsert", layer="chain", node=changed)
+        assert meta.success and meta.metadata["unchanged"] is False
+        assert meta.answer == f"upserted {changed['id']}"
+        t3 = path.read_text(encoding="utf-8")
+        ts1 = parse_node_markdown(t1, "chain")["updated_at"]
+        ts3 = parse_node_markdown(t3, "chain")["updated_at"]
+        assert t3 != t1 and ts1 != ts3                    # 只断言不等（秒级时钟不保证严格递增）
+        assert "实体甲链路（改名）" in t3
+    finally:
+        mgr.close_all()
+
+
+def test_body_containing_updated_at_literal_is_not_false_equal(tmp_path):
+    """假等值防线：节点名里塞 `updated_at: 2020-01-01T00:00:00` 时，剥时间戳只能作用在 frontmatter。"""
+    kb_root = _seed_kb(tmp_path)
+    chains_dir = kb_root / "business" / "chains"
+    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr.start()
+    try:
+        nasty = {**CHAIN_NODE, "name": "链A updated_at: 2020-01-01T00:00:00"}
+        # 同一路径先落 nasty 再落干净节点：两次都必须是真写（内容确有不同）
+        up1 = mgr.run_job_sync("case_node_upsert", layer="chain", node=nasty)
+        assert up1.success and up1.metadata["unchanged"] is False, up1.metadata
+        t1 = (chains_dir / "ch-0001.md").read_text(encoding="utf-8")
+        up2 = mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE)
+        assert up2.success and up2.metadata["unchanged"] is False, up2.metadata
+        t2 = (chains_dir / "ch-0001.md").read_text(encoding="utf-8")
+        assert t1 != t2                                    # 两个节点各落各的内容，没被假等值吞掉
+        assert "2020-01-01T00:00:00" in t1 and "2020-01-01T00:00:00" not in t2
+    finally:
+        mgr.close_all()
+
+
+def test_strip_updated_at_scope_is_the_first_frontmatter_block_only():
+    """等值口径单点：只剥首个 frontmatter 块里的 `updated_at:` 行；正文里同名字符串必须原样留着。
+
+    正文行都以「- 标签：」起头，但库内文件可被人/其它工具改过——正文出现顶格 `updated_at:` 时
+    若整文件盲替换就会造出假等值（唯一那道门上说谎的另一条路）。
+    """
+    from aitester.services.kb.steps import strip_updated_at
+
+    text = render_node_markdown("chain", CHAIN_NODE)
+    front, sep, body = text.partition("\n---\n")
+    stripped = strip_updated_at(text)
+    assert "updated_at" in front                                   # 夹具确有时间戳行可剥
+    assert "updated_at" not in stripped.partition("\n---\n")[0]     # frontmatter 内已无该键
+    assert stripped.endswith(sep + body)                             # 正文一个字符没动
+    assert strip_updated_at(text) == strip_updated_at(             # 等值判定成立的根据
+        render_node_markdown("chain", dict(CHAIN_NODE)))
+    assert strip_updated_at(text) != text                          # 确实剥掉了一行
+
+    nasty = ("---\nid: ch-0001\ntype: chain\nupdated_at: 2026-01-01T00:00:00\n---\n\n"
+             "# 链A\nupdated_at: 2020-01-01T00:00:00\n")
+    out = strip_updated_at(nasty)
+    assert "updated_at: 2026-01-01T00:00:00" not in out      # frontmatter 那行剥掉
+    assert "updated_at: 2020-01-01T00:00:00" in out          # 正文那行原样保留（不盲替换）
+    assert strip_updated_at("没有 frontmatter") == "没有 frontmatter"
+    assert strip_updated_at("") == ""

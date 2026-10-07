@@ -1441,13 +1441,20 @@ def h_writeback(ctx: Ctx) -> Any:
             _patch_ids(ctx, layer, "")             # 兜底：任何空 id 在写库前补齐
     kb = KbClient(ctx.env.kb)
     ok = False
+    written = untouched = 0
     for attempt in range(1, WRITEBACK_FIX_CAP + 2):
         try:
+            written = untouched = 0                       # 重试整轮重来：跨尝试累加会虚报写入数
             for layer, node_id, payload in _collect_writeback_items(ctx):
                 if payload is None:
-                    kb.delete_node(layer, node_id)
+                    kb.delete_node(layer, node_id)          # 删除没有"等值"可言，原样执行
+                    written += 1
                 else:
-                    kb.upsert_node(layer, payload)
+                    meta = kb.upsert_node(layer, payload)
+                    if meta.get("unchanged"):
+                        untouched += 1
+                    else:
+                        written += 1
             ok = True
             break
         except GraphBubbleUp:
@@ -1459,12 +1466,15 @@ def h_writeback(ctx: Ctx) -> Any:
     if not ok:
         led.status = "writeback_failed"
         return ctx.end("回写失败（已自动重试 3 次）：知识库暂不可写；回复「重试」可再次尝试。")
+    wb["written"], wb["untouched"] = written, untouched
     for layer in LAYERS:
         if led.layer(layer)["state"] == "audited":
             led.layer(layer)["state"] = "done"
     wb["done"] = True
     led.status = "done"
-    return ctx.end("回写完成：本次过审节点已写入知识库。")
+    # 等值判定的单点在 step（裁定 30）：这里不作第二次比较，只把「几个节点其实没被触碰」如实呈递。
+    tail = f"（{untouched} 个节点内容与库内一致，未重写。）" if untouched else ""
+    return ctx.end("回写完成：本次过审节点已写入知识库。" + tail)
 
 
 _STAGE_HANDLERS: dict[str, Any] = {

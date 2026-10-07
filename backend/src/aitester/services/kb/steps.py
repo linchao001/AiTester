@@ -5,6 +5,8 @@
 
 存储形态：`<kb_root>/<bucket>/<id>.md`；frontmatter 是机器字段（枚举与引用靠它），
 正文是人读视图（也是 reindex 后 knowledge_search 的内容面）。写入原子替换（A6）。
+等值判定单点在本模块：`strip_updated_at` 剥掉 frontmatter 时间戳后逐字相同即视为未变，
+既不重写文件也不刷 `updated_at`（D-2）——「未涉及节点逐字节不变」这句对人说的话由这里背书。
 """
 
 from __future__ import annotations
@@ -70,6 +72,25 @@ def render_node_markdown(layer: str, node: dict[str, Any]) -> str:
     body = [f"# {front['name']}", ""]
     body += [f"- {label}：{_fmt(front[field])}" for field, label in _BODY_LABELS[layer]]
     return f"---\n{head}\n---\n\n" + "\n".join(body) + "\n"
+
+
+_TS_LINE_RE = re.compile(r"^updated_at:.*\n", re.MULTILINE)
+
+
+def strip_updated_at(text: str) -> str:
+    """剥掉 frontmatter 内的 `updated_at:` 行——内容等值判定的唯一口径（单点在本模块）。
+
+    只处理首个 frontmatter 块：正文行都以「- 标签：」起头，把正文里偶然出现的同名字符串
+    当时间戳剥掉会造出假等值（人审门上说谎的另一条路）。
+    """
+    if not (text or "").startswith("---\n"):
+        return text or ""
+    front, sep, body = text[4:].partition("\n---\n")
+    if not sep:
+        return text
+    # 补一个行尾再剥：`updated_at` 恒为 frontmatter 末行，而 sep 恰好吃掉它那行换行，
+    # 少了这行换行 `_TS_LINE_RE` 就一行也剥不掉（等值判定退化成整文件比时间戳，幂等形同虚设）。
+    return "---\n" + _TS_LINE_RE.sub("", front + "\n").rstrip("\n") + sep + body
 
 
 def parse_node_markdown(text: str, layer: str) -> dict[str, Any]:
@@ -161,9 +182,14 @@ class CaseNodesStep(BaseStep):
                 raise ValueError("upsert requires a non-empty node name")
             bucket_dir.mkdir(parents=True, exist_ok=True)
             path = bucket_dir / node_filename(node_id)
-            _atomic_write(path, render_node_markdown(layer, node))
-            response.metadata = {"layer": layer, "id": node_id, "path": str(path)}
-            response.answer = f"upserted {node_id}"
+            rendered = render_node_markdown(layer, node)
+            existing = path.read_text(encoding="utf-8") if path.is_file() else None
+            unchanged = existing is not None and strip_updated_at(existing) == strip_updated_at(rendered)
+            if not unchanged:
+                _atomic_write(path, rendered)
+            response.metadata = {"layer": layer, "id": node_id, "path": str(path),
+                                 "unchanged": unchanged}
+            response.answer = f"unchanged {node_id}" if unchanged else f"upserted {node_id}"
         else:
             node_id = _validate_id(layer, self.context.get("id"))
             path = bucket_dir / node_filename(node_id)

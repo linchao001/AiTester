@@ -213,6 +213,9 @@ def test_first_build_end_to_end(tmp_path: Path) -> None:
                        ("story", "st-0001"), ("story", "st-0002"),
                        ("point", "pt-0001"), ("point", "pt-0002")}
     assert kb.deletes == []
+    # 计数呈递：替身没报 unchanged（= 真实首写语义）⇒ 六个全记 written、untouched 归零，
+    # 上面那条终帧逐字断言（裁定 31 基句）就是 untouched==0 不加尾句的证据。
+    assert led.data["writeback"]["written"] == 6 and led.data["writeback"]["untouched"] == 0
     banned = {"op", "block", "state", "in_scope", "round", "reason"}
     for _, node in kb.upserts:
         assert not (banned & set(node))                     # 工作稿痕迹不许进 KB 载荷

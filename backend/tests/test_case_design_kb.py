@@ -43,10 +43,13 @@ def test_list_layer_forwards_job_and_returns_rows():
 
 
 def test_upsert_and_delete_forward_shapes():
-    kb = _StubKb(resp=_Resp(metadata={"layer": "story", "id": "st-0001",
-                                      "path": "D:/kb/demo/business/stories/st-0001.md"}))
-    path = KbClient(kb).upsert_node("story", {"type": "story", "name": "S"})
-    assert path.endswith("st-0001.md")
+    kb = _StubKb(resp=_Resp(metadata={
+        "layer": "story", "id": "st-0001", "unchanged": False,
+        "path": "D:/kb/demo/business/stories/st-0001.md"}))
+    meta = KbClient(kb).upsert_node("story", {"type": "story", "name": "S"})
+    # 返回整份 metadata（不再只是 path 字符串）：unchanged 是「这个节点根本没被触碰」的凭据，
+    # 驱动必须把它呈递给人——等值判定的口径在 step 单点，这里只许原样透出。
+    assert meta["path"].endswith("st-0001.md") and meta["unchanged"] is False
     assert kb.calls[0]["name"] == "case_node_upsert"
     assert kb.calls[0]["kwargs"] == {"layer": "story", "node": {"type": "story", "name": "S"}}
 

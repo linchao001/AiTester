@@ -48,12 +48,15 @@ class StubKb:
     就会读到真东西。默认 None 表示「未绑定」，由 _env 绑到本用例的 tmp_path 下。
     """
 
-    def __init__(self, layers=None, root=None, fail_upserts=0):
+    def __init__(self, layers=None, root=None, fail_upserts=0, unchanged=False):
         self.layers = layers or {}
         self.kb_root_dir = str(root) if root is not None else ""
         self.upserts: list = []
         self.deletes: list = []
         self.fail_upserts = fail_upserts
+        # 默认不带 unchanged 键：真实 step 只在「内容与库内一致」时才回传 True，
+        # 既有终帧逐字断言（基句不许动）一律走「没带」这条形状。
+        self.unchanged = unchanged
         self.job_names: list = []
 
     def run_job_sync(self, name, *, project_id="default", agent_id="console",
@@ -68,8 +71,10 @@ class StubKb:
                 self.fail_upserts -= 1
                 return _resp(success=False, answer="disk full")
             self.upserts.append((kwargs["layer"], dict(kwargs["node"])))
-            return _resp({"layer": kwargs["layer"], "id": kwargs["node"].get("id", "?"),
-                          "path": "p"})
+            meta = {"layer": kwargs["layer"], "id": kwargs["node"].get("id", "?"), "path": "p"}
+            if self.unchanged:                       # 库内已有同内容节点：step 报未触碰
+                meta["unchanged"] = True
+            return _resp(meta)
         if name == "case_node_delete":
             self.deletes.append((kwargs["layer"], kwargs["id"]))
             return _resp({"layer": kwargs["layer"], "id": kwargs["id"], "deleted": True})
@@ -438,6 +443,45 @@ def test_writeback_failure_retries_then_next_message_recovers(tmp_path):
     led = Ledger.load(env.design)
     assert turn["case"]["route"] == "end" and led.status == "done"
     assert len(kb.upserts) == 5                                  # 恢复后一次写全（幂等重试）
+
+
+def test_writeback_counts_untouched_nodes_and_says_it(tmp_path):
+    """第二次整轮回写：内容未变的节点 step 报 unchanged，驱动不谎报「全部写入」。
+
+    裁定 30 的呈递面：等值判定单点在 step，驱动只累计 written/untouched 进账本、把尾句说给人看
+    （驱动内不加第二次比较）。裁定 31 的底线：基句一字不改，`untouched == 0` 时终帧与现状逐字节相同。
+    """
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask())
+    frames: list[dict] = []
+    _drive(env, {"messages": [HumanMessage("通过，回写")], "case": {}}, ScriptTask(),
+           writer=frames.append)
+    led = Ledger.load(env.design)
+    n = len(kb.upserts)
+    assert n == 5 and led.status == "done"                        # 整轮首写：五个节点全落库
+    assert led.data["writeback"]["written"] == n
+    assert led.data["writeback"]["untouched"] == 0
+    assert _end_text(frames) == "回写完成：本次过审节点已写入知识库。"   # 无未触碰时逐字节不变
+
+    # 同一批节点再过一次门（库内内容已一致）：把账本复位成「刚过审、游标在回写」，
+    # StubKb 从这轮起按真实 step 语义逐节点回传 unchanged=True。
+    led.cursor.update({"stage": "writeback"})
+    for layer in ("chain", "story", "point"):
+        led.layer(layer)["state"] = "audited"
+    led.status = "awaiting_review"
+    led.save()
+    kb.unchanged = True
+    frames2: list[dict] = []
+    ctx = Ctx(env=env, task_tool=ScriptTask(), writer=frames2.append, config={},
+              state_messages=[HumanMessage("通过，回写")], led=led)
+    assert h_writeback(ctx)["case"]["route"] == "end"
+    led = Ledger.load(env.design)
+    assert len(kb.upserts) == 2 * n                                # 下发次数照旧，只是零重写
+    assert led.data["writeback"]["written"] == 0
+    assert led.data["writeback"]["untouched"] == n
+    assert _end_text(frames2) == ("回写完成：本次过审节点已写入知识库。"
+                                  f"（{n} 个节点内容与库内一致，未重写。）")
 
 
 def test_update_no_change_blocks_flow_and_mark_outline(tmp_path):
