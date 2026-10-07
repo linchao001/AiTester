@@ -38,7 +38,7 @@
 - Consumes: `stages._is_no_change(raw) -> bool`（**判据不变**：`not nodes and note == "no_change"` 严格全等）；`ctx.led.layer(layer)["mode"] ∈ {"first_build","update"}`；`gen_instruction(..., mode=...)` 既有形参。
 - Produces: 账本 `led.data["no_change"]` 条目形状改为 **`{"layer": str, "block": str, "reason": str}`（恒带三键，reason 可为空串）**。M-6 撤回逻辑（`stages.py:1372-1375`）按 `(layer, block)` 过滤，**不受影响、不要改**。
 
-- [ ] **Step 1: 先改测试，钉住提示词面（红）**
+- [x] **Step 1: 先改测试，钉住提示词面（红）**
 
 `backend/tests/test_case_design_plan.py` 末尾追加：
 
@@ -63,7 +63,7 @@ def test_first_build_mode_never_offers_no_change():
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_plan.py -q`
 Expected: 两条 FAIL（现指令全文无 `no_change` 措辞）。
 
-- [ ] **Step 2: 改 `instructions.py` 的 update 分支**
+- [x] **Step 2: 改 `instructions.py` 的 update 分支**
 
 `gen_instruction` 内，把现有 update 分支（`:43-45`）替换为——注意 `:44-45` 原文「新增 / 修改 / 删除都以本块草稿表达」**逐字保留**（Step 1 第二条用例断言它），新句子接在后面：
 
@@ -79,11 +79,11 @@ Expected: 两条 FAIL（现指令全文无 `no_change` 措辞）。
             "这条通道只属于更新模式：本层 KB 无维护（首建）时无变化根本不存在。")
 ```
 
-- [ ] **Step 3: 跑 Step 1 用例转绿**
+- [x] **Step 3: 跑 Step 1 用例转绿**
 
 Run: `... -m pytest tests/test_case_design_plan.py -q` → 全绿。
 
-- [ ] **Step 4: 钉住「首建模式不采信 no_change」与 reason 入账（红）**
+- [x] **Step 4: 钉住「首建模式不采信 no_change」与 reason 入账（红）**
 
 `backend/tests/test_case_design_driver.py` 末尾追加（沿用该文件既有挂具：`_ctx(tmp_path, ...)` / `drive(...)` / `StubKb` / `write_draft`——**先读文件顶部与 `test_update_no_change_blocks_flow_and_mark_outline`（:441-467）照搬其建境方式**，别造新挂具）：
 
@@ -115,7 +115,7 @@ def test_no_change_reason_lands_in_ledger_and_outline(tmp_path):
 
 Run: `... -m pytest tests/test_case_design_driver.py -q` → 新用例 FAIL（现 `h_gen` 无条件采信、条目无 reason）。
 
-- [ ] **Step 5: 改 `stages.h_gen` 采信条件**
+- [x] **Step 5: 改 `stages.h_gen` 采信条件**
 
 把 `:501-505` 的 inlined 判定替换为（`_is_no_change` 原样保留、仍被 `:738`/`:1393` 使用）：
 
@@ -133,7 +133,7 @@ Run: `... -m pytest tests/test_case_design_driver.py -q` → 新用例 FAIL（�
         return None
 ```
 
-- [ ] **Step 6: 大纲渲染带 reason**
+- [x] **Step 6: 大纲渲染带 reason**
 
 `outline.py:171-178` 的循环体改为：
 
@@ -150,7 +150,7 @@ Run: `... -m pytest tests/test_case_design_driver.py -q` → 新用例 FAIL（�
         lines.append("- 无")
 ```
 
-- [ ] **Step 7: 回填上一片计划里的代码快照（裁定 24：发码为准，冲突回填文本）**
+- [x] **Step 7: 回填上一片计划里的代码快照（裁定 24：发码为准，冲突回填文本）**
 
 `docs/superpowers/plans/2026-10-05-case-design-loop.md:1236` 那份 `gen_instruction` 代码快照现在与发码不一致——
 在其后补一行 update 分支说明，并在 T3 的 `h_gen` 快照（同文件内 `if not raw.get("nodes") and str(raw.get("note")`
@@ -161,12 +161,12 @@ Run: `... -m pytest tests/test_case_design_driver.py -q` → 新用例 FAIL（�
 > 首建模式按坏草稿重问」，且账本条目带 `reason`。本快照是收紧前的形状，照抄会退回假完整通道。
 ```
 
-- [ ] **Step 8: 全量门禁**
+- [x] **Step 8: 全量门禁**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest -q`
 Expected: **0 failed，总数 ≥ 744 + 新增 4 条**。任何 `no_change` 相关既有用例红 = 契约变更未同步，按 Step 4 的四处清单核。
 
-- [ ] **Step 9: 提交**
+- [x] **Step 9: 提交**
 
 ```bash
 git add backend/src/aitester/case_design/instructions.py backend/src/aitester/case_design/stages.py backend/src/aitester/case_design/outline.py backend/tests/test_case_design_plan.py backend/tests/test_case_design_driver.py backend/tests/test_case_design_e2e.py docs/superpowers/plans/2026-10-05-case-design-loop.md
