@@ -505,7 +505,8 @@ def h_gen(ctx: Ctx) -> Any:
                 "请按业务信息产出本块节点"]))
         led.data.setdefault("no_change", []).append({
             "layer": layer, "block": block,
-            "reason": str(raw.get("reason") or "").strip()})
+            # 折成单行：reason 直接进大纲成行，含换行就能伪造额外大纲行。
+            "reason": " ".join(str(raw.get("reason") or "").split())})
         _block_entry(ctx, layer, block)["state"] = "done"
         _after_block(ctx, layer)
         return None
@@ -736,12 +737,14 @@ def _drafts_errors(ctx: Ctx, layer: str, block: str) -> list[str]:
 
     no_change 块（空 nodes + note 标记）是合法终态，跳过——否则混合层走层环优化时
     会被空草稿绊住，重问到 FIX_CAP 后错误中止（见 _is_no_change）。
+    跳过只在 update 模式生效：首建模式的无变化块是漏做，必须在这里也报成坏草稿。
     """
     blocks = [block] if block else [str(e["id"]) for e in ctx.led.layer(layer)["blocks"]]
     errors: list[str] = []
+    skip_no_change = str(ctx.led.layer(layer)["mode"]) == "update"
     for bid in blocks:
         path = ctx.env.drafts_dir(layer) / f"{bid}.json"
-        if _is_no_change(_read_json(path)):
+        if skip_no_change and _is_no_change(_read_json(path)):
             continue
         _, errs = parse_draft_file(layer, path)
         errors += [f"{bid}.json: {e}" for e in errs]
@@ -1395,8 +1398,9 @@ def _collect_writeback_items(ctx: Ctx) -> list[tuple[str, str, dict | None]]:
     for layer in LAYERS:
         if ctx.led.layer(layer)["state"] != "audited":
             continue
+        skip_no_change = str(ctx.led.layer(layer)["mode"]) == "update"
         for path in sorted(ctx.env.drafts_dir(layer).glob("*.json")):
-            if _is_no_change(_read_json(path)):
+            if skip_no_change and _is_no_change(_read_json(path)):
                 continue                   # 无变化块：零节点零写入（合法终态）
             nodes, errors = parse_draft_file(layer, path)
             if errors:

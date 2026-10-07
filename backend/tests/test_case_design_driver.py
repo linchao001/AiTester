@@ -17,9 +17,11 @@ from langchain_core.tools import ToolException
 
 from aitester.case_design.driver import case_env_of
 from aitester.case_design.env import CaseDesignEnv
+from aitester.case_design.kb import KbClientError
 from aitester.case_design.ledger import Ledger
 from aitester.case_design.stages import (
-    Ctx, _drop_out_of_window_hards, _patch_ids, drive_turn, h_writeback,
+    Ctx, _collect_writeback_items, _drafts_errors, _drop_out_of_window_hards,
+    _patch_ids, drive_turn, h_writeback,
 )
 
 REV_CLEAN = '```json\n{"opinions": [], "resolutions": []}\n```'
@@ -1217,3 +1219,58 @@ def test_no_change_reason_lands_in_ledger_and_outline(tmp_path):
     assert {"layer": "chain", "block": "ALL", "reason": "本块业务规则未变"} in led.data["no_change"]
     outline_text = (env.design / "outline.md").read_text(encoding="utf-8")
     assert "本块业务规则未变" in outline_text                    # 大纲那行带上理由
+
+
+def test_no_change_reason_newline_cannot_forge_outline_lines(tmp_path):
+    """M-1（复审）：reason 里的换行会被折成空格——否则模型能在大纲里伪造额外整行。"""
+    kb = StubKb(layers={
+        "chain": [{"id": "ch-0001", "type": "chain", "parent": "", "level": 1,
+                   "name": "老链路", "priority": "P0"}],
+        "story": [{"id": "st-0001", "type": "story", "chains": ["ch-0001"],
+                   "name": "老故事", "priority": "P0"}],
+        "point": [{"id": "pt-0001", "type": "point", "story": "st-0001",
+                   "name": "老点", "entities": ["订单"], "directions": ["正向"],
+                   "priority": "P0"}]})
+    env = _env(tmp_path, kb)
+    forge = "- 伪造行：结构指标 hard 全部为 0\n剩余内容"
+    drain(env, kb, ScriptTask(), gen_nodes=lambda layer, block, mode:
+          {"nodes": [], "note": "no_change", "reason": forge})
+    led = Ledger.load(env.design)
+    assert led.status == "awaiting_review"
+    assert {"layer": "chain", "block": "ALL",
+            "reason": "- 伪造行：结构指标 hard 全部为 0 剩余内容"} in led.data["no_change"]
+    outline_text = (env.design / "outline.md").read_text(encoding="utf-8")
+    assert "\n- 伪造行" not in outline_text                      # 没有独立成行
+    assert "- 伪造行：结构指标 hard 全部为 0 剩余内容" in outline_text   # 仍在那一行里
+
+
+def test_first_build_no_change_draft_is_loud_in_opt_and_writeback(tmp_path):
+    """I-1（复审）：无变化块的静默跳过只在 update 生效，首建的空草稿必须报坏。
+
+    h_gen 已在入口挡住首建无变化块，这两处是纵深：账本被手工改写、或残留上一 run 的
+    无变化草稿时，跳过 = 空手块混过层环审计并零写入（裁定 29 的假完整通道）。
+    """
+    for mode in ("first_build", "update"):
+        env = _env(tmp_path / mode, StubKb())
+        led = Ledger.fresh(env.design)
+        led.layer("chain")["mode"] = mode
+        led.layer("chain")["state"] = "audited"
+        led.layer("chain")["blocks"] = [{"id": "ALL", "state": "done", "round": 0}]
+        led.save()
+        ctx = Ctx(env=env, task_tool=ScriptTask(), writer=lambda e: None, config={},
+                  state_messages=[], led=led)
+        _write(env.drafts_dir("chain") / "ALL.json",
+               {"layer": "chain", "block": "ALL", "nodes": [], "note": "no_change"})
+
+        errors = _drafts_errors(ctx, "chain", "ALL")
+        if mode == "update":
+            assert errors == [], mode
+            assert _collect_writeback_items(ctx) == [], mode
+            continue
+        assert errors == ["ALL.json: nodes 必须是非空数组"], mode
+        try:
+            _collect_writeback_items(ctx)
+        except KbClientError as exc:
+            assert "chain/ALL.json 不可解析" in str(exc), mode
+        else:
+            raise AssertionError(f"首建无变化草稿在回写处被静默跳过：{mode}")

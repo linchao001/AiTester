@@ -1274,7 +1274,7 @@ def attribute_instruction(layer: str, block: str, *, opinions_path: str, out_pat
 
 > **update 分支说明（2026-10-07 裁定 29，第三片 T13）**：上方快照的 update 分支只讲到「新增 / 修改 / 删除」，
 > 现已追加第四种合法去向——确认本块业务信息没动到时，草稿写成 `{"layer", "block", "nodes": [], "note": "no_change", "reason": "…"}`；
-> `reason` 是给人在大纲「本次无变化块」那一行看的一句话，随账本条目 `{layer, block, reason}` 入账。此通道**只属于 update 模式**，首建不Offer。
+> `reason` 是给人在大纲「本次无变化块」那一行看的一句话，随账本条目 `{layer, block, reason}` 入账。此通道**只属于 update 模式**，首建不提供。
 
 `backend/src/aitester/case_design/outline.py`：
 
