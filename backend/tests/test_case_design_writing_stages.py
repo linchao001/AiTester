@@ -11,10 +11,11 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from aitester.case_design import stages
-from aitester.case_design.constants import CASE_BATCH_CAP, LAYER_CN
+from aitester.case_design.constants import CASE_BATCH_CAP, LAYER_CN, ROUND_CAP
+from aitester.case_design.instructions import case_attribute_instruction
 from aitester.case_design.ledger import Ledger
 from aitester.case_design.schema import ReviewOut
-from aitester.case_design.stages import _writing_enabled
+from aitester.case_design.stages import _CAUSES, _writing_enabled
 
 from test_case_design_driver import (  # 复用既有挂具，不抄第二份
     ScriptTask, StubKb, _append, _drive, _end_text, _env, _j, _write, drain,
@@ -370,6 +371,28 @@ def _opinion(value: str, kind: str = "颗粒度", ask: str = "拆成两步再断
             "ask": ask, "evidence": "步骤合并，失败难定位"}
 
 
+_HUMAN_ASK = "人类反馈：断言要写成可核对的金额"
+
+
+def _book_human_op(env, batch: str) -> None:
+    """往编写环意见簿手工记一条「门后回溯」来源的未销账意见（T22 的形状，本文件先当护栏）。
+
+    与批评审意见同 `block`：批环三处在途判定（评审简报 / 「无在途即收口」/ 归因盖账）都必须按
+    `source="case_block"` 把它滤掉——三层侧就是这么在构造上免疫跨来源串味的。
+    """
+    led = _led(env)
+    led.data["writing"]["opinions"].append(
+        {"ref": "op-90", "key": "node:cc-0001:颗粒度", "source": "case_human", "block": batch,
+         "target": {"type": "node", "value": "cc-0001"}, "kind": "颗粒度",
+         "ask": _HUMAN_ASK, "evidence": "人工反馈",
+         "resolved": False, "escalated": False, "disposition": "", "note": ""})
+    led.save()
+
+
+def _op_by_ref(led, ref: str) -> dict:
+    return next(op for op in led.data["writing"]["opinions"] if op["ref"] == ref)
+
+
 def _boot_to_first_batch(env, state, task, frames):
     """两段开环：驱动①索要计划（此时账本已在盘上，plan 落盘不会被归档）→ 落 plan →
     驱动②（h_plan→case_plan→首批指令）。返回累加后的现场供各批环用例复用。"""
@@ -377,6 +400,7 @@ def _boot_to_first_batch(env, state, task, frames):
     _write(env.design / "plan.json", _CASE_ONLY_PLAN)
     turn = _drive(env, state, task, writer=frames.append)               # ② 首批指令
     _append(state, turn)
+    assert _end_text(frames) == ""                    # 开环不许半路终局（halted 也落在这里）
     return turn
 
 
@@ -470,9 +494,13 @@ def test_case_gen_mismatched_chain_selfreport_is_reasked(tmp_path):
     text = turn["messages"][-1].content
     assert "ch-0002" in text and "ch-0001" in text
     assert task.calls == []
+    assert not (env.reviews_dir / "case-ch-0001-b1-r0.review.md").exists()
     led = _led(env)
     assert led.data["writing"]["batches"][0]["state"] == "todo"
     assert led.cursor["block"] == "ch-0001-b1"
+    assert led.data["counters"]["case"] == 0                       # 与 batch 腿同款：没烧任何 cc- 序号
+    saved = json.loads((env.cases_dir() / "ch-0001-b1.json").read_text(encoding="utf-8"))
+    assert [c["case_id"] for c in saved["cases"]] == [""] * len(b1)   # 文件原样未被补号改写
 
 
 # ---- T21 意见环：开环 / 处置销账 / unresolved / 归因 / 简报形状纪律 ----
@@ -489,6 +517,7 @@ def _to_case_opt(tmp_path: Path):
     b1 = _manifest_points(env, "ch-0001-b1")
     _write(env.cases_dir() / "ch-0001-b1.json", _cases_payload("ch-0001", "ch-0001-b1", b1))
     turn = _drive(env, state, task, writer=frames.append)                # r0 出意见 → 优化指令
+    assert _end_text(frames) == ""                     # 现场开环干净：没终局、没 halted
     return env, task, state, frames, turn
 
 
@@ -551,12 +580,15 @@ def test_bad_disposition_is_reasked_not_booked(tmp_path):
 
 def test_case_attribute_books_cause_and_closes(tmp_path):
     env, task, state, frames, _ = _to_case_opt(tmp_path)
+    _book_human_op(env, "ch-0001-b1")         # 同 block 的门后回溯意见：归因不许一并盖账
     led = _led(env)
     led.cursor.update({"stage": "case_attribute", "round": 5})   # 复现「轮次用尽」现场
     led.save()
     turn = _drive(env, state, task, writer=frames.append)        # 首派归因
     assert "attr-case-ch-0001-b1-r5.json" in turn["messages"][-1].content
     assert (env.attribution_dir / "open-case-ch-0001-b1-r5.json").is_file()
+    open_raw = (env.attribution_dir / "open-case-ch-0001-b1-r5.json").read_text(encoding="utf-8")
+    assert _HUMAN_ASK not in open_raw                            # 在途清单只摊本来源的意见
 
     _write(env.attribution_dir / "attr-case-ch-0001-b1-r5.json",
            {"cause": "成本超限", "note": "评审与生成反复不一致，再跑只烧钱"})
@@ -564,6 +596,7 @@ def test_case_attribute_books_cause_and_closes(tmp_path):
     led = _led(env)
     assert led.data["writing"]["unresolved"][0]["cause"] == "成本超限"
     assert led.data["writing"]["unresolved"][0]["refs"] == ["op-01"]
+    assert _op_by_ref(led, "op-90")["escalated"] is False         # 人类意见留给门后回溯环处置
     assert led.data["writing"]["batches"][0]["state"] == "done"
     assert led.cursor["block"] == "ch-0001-b2"
 
@@ -589,6 +622,7 @@ def test_batch_review_brief_literals_pass_review_schema(tmp_path):
             {"target": {"type": types[0], "value": "cc-0001"}, "kind": kind,
              "ask": "怎么改", "evidence": "依据"}], "resolutions": []})
     assert '"resolutions"' in brief and '"ref": "op-01"' in brief and '"resolved": true' in brief
+    assert _end_text(frames) == ""                       # 收帧有断言：整条开环没终局
 
 
 def test_batch_review_brief_rejects_out_of_enum_kind(tmp_path):
@@ -597,12 +631,11 @@ def test_batch_review_brief_rejects_out_of_enum_kind(tmp_path):
     env = _env(tmp_path, kb)
     task = ScriptTask()
     state = {"messages": [HumanMessage(content="给下单链路生成用例")], "case": {}}
-    _append(state, _drive(env, state, task, writer=lambda e: None))
-    _write(env.design / "plan.json", _CASE_ONLY_PLAN)
-    _append(state, _drive(env, state, task, writer=lambda e: None))
+    frames: list[dict] = []
+    _boot_to_first_batch(env, state, task, frames)
     _write(env.cases_dir() / "ch-0001-b1.json",
            _cases_payload("ch-0001", "ch-0001-b1", _manifest_points(env, "ch-0001-b1")))
-    _drive(env, state, task, writer=lambda e: None)
+    _append(state, _drive(env, state, task, writer=frames.append))
     kinds = re.search(r'"kind": "([^"]+)"', task.calls[0]["brief"]).group(1).split("|")
     from pydantic import ValidationError
     for kind in kinds:
@@ -610,3 +643,142 @@ def test_batch_review_brief_rejects_out_of_enum_kind(tmp_path):
             ReviewOut.model_validate({"opinions": [
                 {"target": {"type": "node", "value": "cc-0001"}, "kind": kind + "X",
                  "ask": "a", "evidence": "b"}], "resolutions": []})
+    assert _end_text(frames) == ""                       # 收帧有断言：整条开环没终局
+
+
+# ---- T21 修复轮 1：I-1 优化轮同口径自检 / I-2 在途意见按 source 过滤 / M-3 轮次用尽转场 ----
+
+def test_opt_round_uncovering_a_point_is_reasked(tmp_path):
+    """优化轮交回的正文与首轮同口径复核：机器可证的漏点当场重问，不补号、不落处置表、不派复审。
+
+    `case_opt_instruction` 明文授权「删掉无用例」，而 `instructions.py` 又向模型承诺「否则会被判漏测」——
+    这条判定必须在优化路径上真存在，否则一轮优化就能把某点唯一认领的那条删掉还照样收口复审（裁定 39）。
+    """
+    env, task, state, frames, _ = _to_case_opt(tmp_path)
+    path = env.cases_dir() / "ch-0001-b1.json"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    covered_before = [c["covers"][0] for c in saved["cases"]]
+    assert saved["cases"][-1]["case_id"] == "cc-0010" and covered_before[-1] == "pt-0010"
+    # 删掉 pt-0010 的唯一认领，并新增一条空号用例（只压已有点）：自检若被跳过，补号就会白烧序号。
+    saved["cases"] = saved["cases"][:-1] + [
+        _cases_payload("ch-0001", "ch-0001-b1", ["pt-0001"])["cases"][0]]
+    _write(path, saved)
+    _write(env.reviews_dir / "case-ch-0001-b1-fix-r0.json",
+           {"dispositions": [{"ref": "op-01", "status": "fixed", "note": "已拆两步并补断言"}]})
+
+    turn = _drive(env, state, task, writer=frames.append)
+    assert turn["case"]["route"] == "agent"
+    text = turn["messages"][-1].content
+    assert "没有任何用例认领" in text and "pt-0010" in text     # hard detail 文案原样进重问
+    assert task.call_ids() == ["case-ch-0001-b1-r0"]            # 零复审：坏批不烧付费评审
+    assert not (env.reviews_dir / "case-ch-0001-b1-r1.review.md").exists()
+    led = _led(env)
+    assert led.data["writing"]["batches"][0]["state"] != "done"  # 没收口
+    assert led.data["counters"]["case"] == 10                    # 没为新正文补号
+    assert led.cursor["stage"] == "case_opt"                     # 原地重问，不转场
+    op = led.data["writing"]["opinions"][0]
+    assert op["resolved"] is False and op["escalated"] is False  # 处置表没被落账
+    assert _end_text(frames) == ""
+    assert led.data["writing"]["unresolved"] == []
+
+
+def test_opt_round_mismatched_root_batch_is_reasked(tmp_path):
+    """优化轮把根 batch 写成别批 ⇒ 归属核对同样挡下：整个文件被重写，根归属也可能被写坏，
+    自报归属护栏（裁定 38）必须在优化环也跑一次，不然交付表与正文又分成两张皮。"""
+    env, task, state, frames, _ = _to_case_opt(tmp_path)
+    path = env.cases_dir() / "ch-0001-b1.json"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    saved["batch"] = "ch-0001-b2"                          # 正文留在 b1，文件头自称 b2
+    _write(path, saved)
+    _write(env.reviews_dir / "case-ch-0001-b1-fix-r0.json",
+           {"dispositions": [{"ref": "op-01", "status": "fixed", "note": "已拆两步并补断言"}]})
+
+    turn = _drive(env, state, task, writer=frames.append)
+    assert turn["case"]["route"] == "agent"
+    text = turn["messages"][-1].content
+    assert "ch-0001-b2" in text and "ch-0001-b1" in text   # 期望值与实际值都要给人看
+    assert task.call_ids() == ["case-ch-0001-b1-r0"]       # 零复审
+    led = _led(env)
+    assert led.data["writing"]["batches"][0]["state"] != "done"
+    assert led.data["counters"]["case"] == 10
+    assert led.data["writing"]["opinions"][0]["resolved"] is False
+    assert led.cursor["stage"] == "case_opt"
+    assert _end_text(frames) == ""
+
+
+def test_case_review_ignores_human_sourced_ops_in_same_batch(tmp_path):
+    """批评审只认 `case_block` 来源的在途意见：同一 block 里门后回溯（`case_human`）的意见
+    既不喂给评审子，也不把批卡在「仍有在途」。三层靠 `_open_of(source=...)` 在构造上免疫，
+    第四层必须同款——这条断言与来源是否只有一种无关，T22 落地后仍是护栏。"""
+    kb = _kb_with_many_points(tmp_path, n=11)
+    env = _env(tmp_path, kb)
+    task = ScriptTask()                                    # 默认 REV_CLEAN：评审子给干净判决
+    state = {"messages": [HumanMessage(content="给下单链路生成用例")], "case": {}}
+    frames: list[dict] = []
+    _boot_to_first_batch(env, state, task, frames)
+
+    _book_human_op(env, "ch-0001-b1")
+
+    b1 = _manifest_points(env, "ch-0001-b1")
+    _write(env.cases_dir() / "ch-0001-b1.json", _cases_payload("ch-0001", "ch-0001-b1", b1))
+    _append(state, _drive(env, state, task, writer=frames.append))
+
+    led = _led(env)
+    assert task.call_ids() == ["case-ch-0001-b1-r0"]
+    assert _HUMAN_ASK not in task.calls[0]["brief"]           # 简报里不出现跨来源意见
+    assert "上一轮尚未销账的意见" not in task.calls[0]["brief"]
+    assert led.data["writing"]["batches"][0]["state"] == "done"   # 批照样收口
+    assert led.cursor["block"] == "ch-0001-b2"                    # 并推进到下一批
+    assert _op_by_ref(led, "op-90")["resolved"] is False           # 人类意见不由批环销账
+    assert _op_by_ref(led, "op-90")["escalated"] is False          # 也不由批环盖账
+    assert _end_text(frames) == ""
+
+
+def test_case_round_cap_attributes_with_the_round_it_ended_on(tmp_path):
+    """轮次用尽的转场是 `case_attribute` 的唯一生产入口：游标必须带上轮号与来源，
+    归因两套文件按该轮号渲染（照三层 test_block_round_cap_attributes_and_continues 的先例）。"""
+    kb = _kb_with_many_points(tmp_path, n=11)
+    env = _env(tmp_path, kb)
+    task = ScriptTask({"case-ch-0001-b1-r*": _j({"opinions": [_opinion("cc-0001")],
+                                                 "resolutions": []})})   # 同一批恒定出一条意见
+    state = {"messages": [HumanMessage(content="给下单链路生成用例")], "case": {}}
+    frames: list[dict] = []
+    _boot_to_first_batch(env, state, task, frames)
+    b1 = _manifest_points(env, "ch-0001-b1")
+    _write(env.cases_dir() / "ch-0001-b1.json", _cases_payload("ch-0001", "ch-0001-b1", b1))
+    turn = _drive(env, state, task, writer=frames.append)                # r0 出意见 → case_opt
+    _append(state, turn)
+
+    steps = 0
+    while _led(env).cursor["stage"] == "case_opt":
+        led = _led(env)
+        round_no = int(led.cursor["round"])
+        refs = [op["ref"] for op in led.data["writing"]["opinions"]
+                if op["block"] == "ch-0001-b1" and not (op["resolved"] or op["escalated"])]
+        _write(env.reviews_dir / f"case-ch-0001-b1-fix-r{round_no}.json",
+               {"dispositions": [{"ref": ref, "status": "fixed", "note": "已按意见拆分"}
+                                 for ref in refs]})
+        turn = _drive(env, state, task, writer=frames.append)
+        _append(state, turn)
+        steps += 1
+        assert steps <= ROUND_CAP                                  # 防死循环：轮数有界
+
+    led = _led(env)
+    assert (led.cursor["stage"], int(led.cursor["round"]), led.cursor["source"]) \
+        == ("case_attribute", ROUND_CAP, "case_block")              # 转场带上轮号与来源
+    assert (led.cursor["layer"], led.cursor["block"]) == ("ch-0001", "ch-0001-b1")
+    assert len([c for c in task.call_ids() if c.startswith("case-ch-0001-b1-r")]) \
+        == ROUND_CAP + 1                                            # r0..r5：5 轮优化用尽
+    assert f"attr-case-ch-0001-b1-r{ROUND_CAP}.json" in turn["messages"][-1].content
+    assert (env.attribution_dir / f"open-case-ch-0001-b1-r{ROUND_CAP}.json").is_file()
+    assert led.data["writing"]["batches"][0]["state"] == "drafted"  # 归因未交回，批还没收口
+    assert _end_text(frames) == ""
+
+
+def test_case_attribute_instruction_enums_share_the_stage_causes():
+    """枚举同源钉桩：`case_attribute_instruction` 硬写的四选一必须与 `_CAUSES` 逐字一致
+    （重问文案从 `_CAUSES` 渲染，两份漂移就是 W3-1 那一类真机 halted）。"""
+    text = case_attribute_instruction("ch-0001-b1", opinions_path="a-in.json",
+                                      out_path="a-out.json")
+    assert "|".join(_CAUSES) in text
+    assert "cause 只能取上面四个值之一" in text

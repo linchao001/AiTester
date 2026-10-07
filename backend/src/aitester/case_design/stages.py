@@ -567,8 +567,13 @@ def _cases_file(ctx: Ctx, batch: str) -> Path:
     return ctx.env.cases_dir() / f"{batch}.json"
 
 
+def _case_manifest_file(ctx: Ctx, batch: str) -> Path:
+    """批分母清单的路径单点（与 `_cases_file` 同款缝）：清单文件名只在这里拼一次。"""
+    return ctx.env.manifests_dir / f"case-{batch}.json"
+
+
 def _case_manifest(ctx: Ctx, batch: str) -> dict:
-    return _read_json(ctx.env.manifests_dir / f"case-{batch}.json") or {}
+    return _read_json(_case_manifest_file(ctx, batch)) or {}
 
 
 def _case_batch_entry(ctx: Ctx, chain: str, batch: str) -> dict:
@@ -586,8 +591,32 @@ def _case_gen_text(ctx: Ctx, chain: str, batch: str) -> str:
     idx = next((i for i, b in enumerate(batches) if b["id"] == batch), 0)
     return case_gen_instruction(
         chain=chain, batch=batch,
-        manifest_path=ctx.rel(ctx.env.manifests_dir / f"case-{batch}.json"),
+        manifest_path=ctx.rel(_case_manifest_file(ctx, batch)),
         points=_case_batch_points(ctx, batch), batch_no=idx + 1, batch_total=len(batches))
+
+
+def _case_batch_errors(ctx: Ctx, chain: str, batch: str) -> list[str]:
+    """「这一批正文可不可收」的唯一判定：schema 拒收 → 自报归属核对 → 批内自检 hard。
+
+    三段串成一张错误表，前段非空即原样返回、后段不再跑（与改造前的现形一致）：schema 挡的是坏输入，
+    归属不符（裁定 38）时再核覆盖也没意义，而 hard 只在正文可用后才谈。首轮与优化轮共用这一处，
+    判定不许在两处分叉——机器可证的漏点比派一次付费复审便宜得多（裁定 39）。
+    """
+    cases, errors = parse_case_file(_cases_file(ctx, batch))
+    if errors:
+        return errors
+    raw = _read_json(_cases_file(ctx, batch)) or {}
+    mismatched: list[str] = []
+    if str(raw.get("chain") or "") != chain:
+        mismatched.append(f"文件自报链路「{raw.get('chain')}」与本批账本归属「{chain}」不符："
+                          "用例必须写在所属链路的批次文件里，根对象 chain 须填该链路 id")
+    if str(raw.get("batch") or "") != batch:
+        mismatched.append(f"文件自报批次「{raw.get('batch')}」与当前游标批次「{batch}」不符："
+                          "文件名与根对象 batch 必须同为该批 id")
+    if mismatched:
+        return mismatched
+    hard = run_case_checks(_case_manifest(ctx, batch).get("points") or [], cases)["hard"]
+    return [h["detail"] for h in hard]
 
 
 def _patch_case_ids(ctx: Ctx, batch: str) -> None:
@@ -607,11 +636,11 @@ def _patch_case_ids(ctx: Ctx, batch: str) -> None:
 
 def _case_review_brief(ctx: Ctx, chain: str, batch: str, round_no: int) -> str:
     points = _case_batch_points(ctx, batch)
-    open_ops = _w_open_of(ctx, block=batch)
+    open_ops = _w_open_of(ctx, block=batch, source="case_block")
     lines = [
         f"【批评审·用例·链路 {chain}·批次 {batch}·第 {round_no} 轮】",
         f"请只读审阅用例文件 {ctx.rel(_cases_file(ctx, batch))}"
-        f"（本批分母清单 {ctx.rel(ctx.env.manifests_dir / f'case-{batch}.json')}"
+        f"（本批分母清单 {ctx.rel(_case_manifest_file(ctx, batch))}"
         f"，本批应落实点 {('、'.join(points)) or '（无）'}），给出本判决：",
         '{"opinions": [{"target": {"type": "node", "value": "cc-用例 id 或 pt-测试点 id"}, '
         '"kind": "漏测|颗粒度|边界归属|命名漂移|失效", "ask": "怎么改", "evidence": "依据"}], '
@@ -653,7 +682,7 @@ def _run_case_review(ctx: Ctx, chain: str, batch: str) -> None:
     _apply_resolutions(ctx, out.resolutions)
     _w_register(ctx, [{"opinion": op, "key": f"{op.target.type}:{op.target.value}:{op.kind}"}
                       for op in out.opinions], block=batch)
-    open_ops = _w_open_of(ctx, block=batch)
+    open_ops = _w_open_of(ctx, block=batch, source="case_block")
     if not open_ops:
         entry["state"] = "done"
         _after_case_batch(ctx)
@@ -666,31 +695,17 @@ def _run_case_review(ctx: Ctx, chain: str, batch: str) -> None:
 
 
 def h_case_gen(ctx: Ctx) -> Any:
-    """批生成：文件到达 → schema 拒收 → 归属核对 → 批内确定性自检 → 补号 → 批评审 r0。
+    """批生成：文件到达 → 批内确定性自检（`_case_batch_errors`）→ 补号 → 批评审 r0。
 
     自检排在评审之前：漏点是机器可证的，重问比派一次付费评审便宜（裁定 39）；补号也在自检之后，
-    免得坏批白烧序号。归属核对（裁定 38）：schema 只验过自报 chain/batch「存在」，而交付表按
-    账本归属、文件头给人看——两处分裂等于交付表与正文拆成两张皮，坏归属的文件不得进自检/补号/评审。
+    免得坏批白烧序号。判定只在 `_case_batch_errors` 一处：schema 拒收、自报归属核对（裁定 38——
+    schema 只验过 chain/batch「存在」，而交付表按账本归属、文件头给人看，两处分裂就是交付表与正文
+    拆成两张皮）、以及 `run_case_checks` 的批内 hard；不通过一律原地重问，不进补号与评审。
     """
     chain, batch = ctx.cur["layer"], ctx.cur["block"]
-    cases, errors = parse_case_file(_cases_file(ctx, batch))
+    errors = _case_batch_errors(ctx, chain, batch)
     if errors:
         return ctx.ask(_case_gen_text(ctx, chain, batch) + _errors_block(errors), cap=NUDGE_CAP)
-    raw = _read_json(_cases_file(ctx, batch)) or {}
-    mismatched: list[str] = []
-    if str(raw.get("chain") or "") != chain:
-        mismatched.append(f"文件自报链路「{raw.get('chain')}」与本批账本归属「{chain}」不符："
-                          "用例必须写在所属链路的批次文件里，根对象 chain 须填该链路 id")
-    if str(raw.get("batch") or "") != batch:
-        mismatched.append(f"文件自报批次「{raw.get('batch')}」与当前游标批次「{batch}」不符："
-                          "文件名与根对象 batch 必须同为该批 id")
-    if mismatched:
-        return ctx.ask(_case_gen_text(ctx, chain, batch)
-                       + _errors_block(mismatched), cap=NUDGE_CAP)
-    hard = run_case_checks(_case_manifest(ctx, batch).get("points") or [], cases)["hard"]
-    if hard:
-        return ctx.ask(_case_gen_text(ctx, chain, batch)
-                       + _errors_block([h["detail"] for h in hard]), cap=NUDGE_CAP)
     _patch_case_ids(ctx, batch)
     _case_batch_entry(ctx, chain, batch)["state"] = "drafted"
     _run_case_review(ctx, chain, batch)
@@ -704,6 +719,10 @@ def _case_opt_prefix(batch: str, source: str) -> str:
 
 def h_case_opt(ctx: Ctx) -> Any:
     """用例优化：等「更新后的用例文件 + 处置表」→ 校验/销账 → 复审回环（与 `h_opt` 同纪律）。
+
+    优化轮交回的正文与首轮同口径复核（`_case_batch_errors`，机器可证的漏点比派复审便宜，裁定 39）：
+    `case_opt_instruction` 授权「改正文、拆条、合并、删掉无用例」，一轮优化就能删掉某点唯一认领、
+    或把根归属写歪——自检不过就重问，不补号、不落处置表、不派复审。
 
     意见簿在 `writing["opinions"]`、未消化项在 `writing["unresolved"]`：字段与三层逐字同形，
     末门与交付物因此只需要换取桶路径（裁定 39 复用纪律）。
@@ -730,8 +749,7 @@ def h_case_opt(ctx: Ctx) -> Any:
             elif str(row.get("status") or "") not in ("fixed", "covered", "unresolved"):
                 errors.append(f"dispositions[{i}]: status 须为 fixed|covered|unresolved")
     if not errors:
-        _, errs = parse_case_file(_cases_file(ctx, batch))
-        errors = errs
+        errors = _case_batch_errors(ctx, chain, batch)   # 与首轮同口径的批内确定性自检
     if errors:
         return ctx.ask(text + _errors_block(errors), cap=FIX_CAP)
     _patch_case_ids(ctx, batch)                     # 本轮新增用例补号
@@ -760,7 +778,7 @@ def h_case_attribute(ctx: Ctx) -> Any:
     """用例归因：批轮次用尽仍有在途意见 → 四选一归因 → 批带账收口（不阻塞其他批与末门）。"""
     chain, batch = ctx.cur["layer"], ctx.cur["block"]
     round_no = int(ctx.cur["round"])
-    open_ops = _w_open_of(ctx, block=batch)
+    open_ops = _w_open_of(ctx, block=batch, source="case_block")
     open_path = ctx.env.attribution_dir / f"open-case-{batch}-r{round_no}.json"
     out_path = ctx.env.attribution_dir / f"attr-case-{batch}-r{round_no}.json"
     text = case_attribute_instruction(batch, opinions_path=ctx.rel(open_path),
@@ -957,6 +975,12 @@ def _w_register(ctx: Ctx, entries: list[dict], *, block: str,
 
 
 def _w_open_of(ctx: Ctx, *, block: str, source: str | None = None) -> list[dict]:
+    """编写环在途意见：调用点一律显式带 `source`（与三层 `_open_of` 同纪律）。
+
+    同一 `block` 里可能同时躺着批评审（`case_block`）与门后回溯（`case_human`）两来源的意见，
+    不按来源过滤就会串味：人类意见被喂给评审子、批被人类意见卡在「仍有在途」、归因把人类意见
+    一并 `escalated`。三层侧靠 source 过滤在构造上免疫，第四层不许把这份免疫拆掉。
+    """
     out = []
     for op in ctx.led.data["writing"]["opinions"]:
         if _settled(op) or op["block"] != block:
