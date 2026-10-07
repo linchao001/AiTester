@@ -28,14 +28,14 @@ from langgraph.errors import GraphBubbleUp
 
 from aitester.case_design.checks import build_universe, run_checks
 from aitester.case_design.constants import (
-    CASE_BATCH_CAP, CASE_DELIVERY_NAME, CASE_REVIEW_AGENT_ID, CASE_REVIEW_BLIND_AGENT_ID,
-    CASES_DIR_NAME, CHAIN, FIX_CAP, LAYERS, LAYER_CN, MAX_TRANSITIONS, NUDGE_CAP, OUTLINE_NAME,
-    PLAN_NAME, POINT, ROUND_CAP, STORY, TYPE_PREFIX, WRITEBACK_FIX_CAP,
+    CASE_BATCH_CAP, CASE_DELIVERY_NAME, CASE_PREFIX, CASE_REVIEW_AGENT_ID,
+    CASE_REVIEW_BLIND_AGENT_ID, CASES_DIR_NAME, CHAIN, FIX_CAP, LAYERS, LAYER_CN, MAX_TRANSITIONS,
+    NUDGE_CAP, OUTLINE_NAME, PLAN_NAME, POINT, ROUND_CAP, STORY, TYPE_PREFIX, WRITEBACK_FIX_CAP,
 )
 from aitester.case_design.instructions import (
-    attribute_instruction, case_attribute_instruction, case_gen_instruction,
-    case_opt_instruction, gate_fix_instruction, gen_instruction, opt_instruction,
-    plan_instruction,
+    attribute_instruction, case_attribute_instruction, case_gate_fix_instruction,
+    case_gen_instruction, case_opt_instruction, gate_fix_instruction, gen_instruction,
+    opt_instruction, plan_instruction,
 )
 from aitester.case_design.kb import KbClient, KbClientError
 from aitester.case_design.ledger import Ledger
@@ -49,7 +49,7 @@ from aitester.case_design.schema import (
     ClaimsOut, CompareOut, EnumeratorOut, MatrixOut, Opinion, OpinionTarget, ReviewOut,
     parse_case_file, parse_draft_file,
 )
-from aitester.case_design.writing import plan_case_targets, run_case_checks
+from aitester.case_design.writing import compose_case_delivery, plan_case_targets, run_case_checks
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,10 @@ def _boot(ctx: Ctx, fresh: bool) -> None:
             led.data["carried_stale"] = carried
             ctx.led = led
         elif led.status == "awaiting_review":
-            _go(ctx, "gate_interpret")         # 人审续步：审 gate-int → 回写或优化环
+            if led.data["writing"].get("status") == "awaiting_review":
+                _go(ctx, "case_gate_interpret")    # 末门续步：批准还要过机器账，见 h_case_gate_interpret
+            else:
+                _go(ctx, "gate_interpret")         # 人审续步：审 gate-int → 回写或优化环
         elif led.status == "writeback_failed":
             # B-F1：续跑按本轮人话分流——批准+意见混写（「同意，把 st-0002 拆成两条」）
             # 绝不许被当成纯授权直接不可逆回写、意见静默丢弃。只有**裸授权**（重试/批准
@@ -684,7 +687,7 @@ def _run_case_review(ctx: Ctx, chain: str, batch: str) -> None:
                       for op in out.opinions], block=batch)
     open_ops = _w_open_of(ctx, block=batch, source="case_block")
     if not open_ops:
-        entry["state"] = "done"
+        _close_case_batch(ctx, entry)
         _after_case_batch(ctx)
         return
     if round_no >= ctx.round_cap():
@@ -796,8 +799,290 @@ def h_case_attribute(ctx: Ctx) -> Any:
         {"block": batch, "refs": [o["ref"] for o in open_ops], "cause": cause, "note": note})
     for op in open_ops:
         op["escalated"] = True                      # 带账离开在途集：不再触发优化环
-    _case_batch_entry(ctx, chain, batch)["state"] = "done"
+    _close_case_batch(ctx, _case_batch_entry(ctx, chain, batch))
     _after_case_batch(ctx)
+    return None
+
+
+# ---- 第四层编写环：末门（裁定 36/37：全片最后一道门；批准零 KB 写）----
+
+def _close_case_batch(ctx: Ctx, entry: dict) -> None:
+    """批收口单点：置 done 的同时从「失效待重算」除名——交付物不许列已经重算完的批。
+
+    两个收口出口（复审干净 / 归因带账离场）共用它，口径必须一致：归因离场的批同样不该再挂在
+    「待重算」上，否则交付物的「失效待重算批次」段永远在列旧账（裁定 36③ 的反面）。
+    """
+    entry["state"] = "done"
+    writing = ctx.led.data["writing"]
+    writing["stale_batches"] = [b for b in writing["stale_batches"] if b != entry["id"]]
+
+
+def _chain_of_batch(ledger_data: dict, batch: str) -> str:
+    """批次 → 链路：交付物的意见落点对照表要按链路呈递，簿本里只存批 id。"""
+    for entry in ledger_data["writing"].get("batches") or []:
+        if str(entry.get("id") or "") == batch:
+            return str(entry.get("chain") or "")
+    return ""
+
+
+def _batch_of_target(ctx: Ctx, value: str) -> str:
+    """门后回溯的意见落在哪一批：cc- 查正文归属，pt- 查分母清单，ch- 取该链路首批；其余指向不明。
+
+    返回空串 = 归不了批（人指的是设计侧的东西或没给 id）。调用方绝不许把它塞进随便一个批的
+    优化环——那会让「这条意见去哪了」在交付物上撒谎。
+    """
+    value = str(value or "")
+    targets = ctx.led.data["writing"].get("targets") or []
+    if value.startswith(CASE_PREFIX + "-"):
+        for target in targets:
+            for item in target.get("batches") or []:
+                bid = str(item.get("id") or "")
+                cases, errors = parse_case_file(_cases_file(ctx, bid))
+                if not errors and any(str(c.case_id) == value for c in cases):
+                    return bid
+        return ""
+    layer = _layer_of_id(value)
+    if layer == POINT:
+        for target in targets:
+            for item in target.get("batches") or []:
+                if value in [str(p) for p in item.get("points") or []]:
+                    return str(item.get("id") or "")
+        return ""
+    if layer == CHAIN:
+        for target in targets:
+            if str(target.get("chain") or "") == value and (target.get("batches") or []):
+                return str(target["batches"][0].get("id") or "")
+    return ""
+
+
+def _case_gate_report(ctx: Ctx) -> dict:
+    """末门确定性核对单点：逐链路把「本 run 的正文」与「分母清单」摆到一起核一次。
+
+    三条口径都是 fail-closed：
+    - 批次正文读不出来 / 形状不对 ⇒ 记 `broken` 并**照常计入该批分母点**（零用例=全漏测），
+      绝不当「无问题」放行；
+    - `uncovered` 走全局去重集合，一点挂两链时计数仍是一次（与 `compose_case_delivery` 的实测行同源）；
+    - hard 条目自带 `chain`/`batch`，修复指令与挂具都按它定位，不再二次反查。
+
+    单一事实源（C-22a）：`checks_by_chain`、`hard`、`uncovered` 全出自这同一次逐链路
+    `run_case_checks`——交付物的表格与计数、门的重核、修复清单因此不可能互相打脸。
+    """
+    checks_by_chain: dict[str, dict] = {}
+    cases_by_chain: dict[str, list] = {}
+    hard: list[dict] = []
+    broken: list[dict] = []
+    uncovered: set[str] = set()
+    for target in ctx.led.data["writing"].get("targets") or []:
+        chain = str(target.get("chain") or "")
+        points: list[dict] = []
+        cases: list = []
+        batch_of_point: dict[str, str] = {}
+        batch_of_case: dict[str, str] = {}
+        for item in target.get("batches") or []:
+            bid = str(item.get("id") or "")
+            for point in _case_manifest(ctx, bid).get("points") or []:
+                points.append(point)
+                batch_of_point[str(point.get("id") or "")] = bid
+            file_cases, errors = parse_case_file(_cases_file(ctx, bid))
+            if errors:
+                broken.append({"batch": bid, "chain": chain, "errors": errors})
+                continue
+            for case in file_cases:
+                cases.append(case)
+                batch_of_case[str(case.case_id)] = bid
+        checks = run_case_checks(points, cases)
+        checks_by_chain[chain] = checks
+        cases_by_chain[chain] = cases
+        for entry in checks["hard"]:
+            where = str(entry.get("where") or "")
+            batch = (batch_of_point.get(where) if entry.get("code") == "uncovered_point"
+                     else batch_of_case.get(where) or "")
+            hard.append({**entry, "chain": chain, "batch": str(batch or "")})
+            if entry.get("code") == "uncovered_point":
+                uncovered.add(where)
+    return {"checks_by_chain": checks_by_chain, "cases_by_chain": cases_by_chain,
+            "hard": hard, "uncovered": sorted(uncovered), "broken": broken}
+
+
+def _op_status_cn(op: dict) -> str:
+    if op.get("resolved"):
+        return "已销账"
+    if op.get("escalated"):
+        return "未消化"
+    return "在途"
+
+
+def _write_case_delivery(ctx: Ctx, report: dict) -> None:
+    """交付物落盘：段落顺序与计数全在 `compose_case_delivery`，这里只负责把账本事实喂给它。
+
+    这是「人在门上看到的东西」的唯一产地，主智能体无从在这里改口径——裁定 36 的实测计数必须
+    出自代码而不是出自模型。`chain`/`ask` 账本不存：按批 id 反查 targets、按 ref 回意见簿取。
+    """
+    led = ctx.led
+    writing = led.data["writing"]
+    notes = [{"where": f"[{chain}] {n['where']}", "kind": n["kind"], "detail": n["detail"]}
+             for chain, checks in report["checks_by_chain"].items()
+             for n in checks["report"]["notes"]]
+    dispositions = [{"chain": _chain_of_batch(led.data, str(o.get("block") or "")),
+                     "ref": o["ref"], "kind": o["kind"],
+                     "case": str((o.get("target") or {}).get("value") or ""),
+                     "ask": o["ask"], "status": _op_status_cn(o), "note": o.get("note") or ""}
+                    for o in writing["opinions"]]
+    unresolved = []
+    for row in writing["unresolved"]:
+        block = str(row.get("block") or "")
+        for ref in row.get("refs") or []:
+            op = next((o for o in writing["opinions"] if o["ref"] == ref), {})
+            unresolved.append({"chain": _chain_of_batch(led.data, block), "ref": ref,
+                               "ask": op.get("ask", ""), "cause": str(row.get("cause") or ""),
+                               "note": str(row.get("note") or "")})
+    ctx.env.delivery_path.write_text(
+        compose_case_delivery(led.data, writing.get("targets") or [],
+                              report["checks_by_chain"],
+                              {"uncovered": report["uncovered"], "notes": notes,
+                               "dispositions": dispositions, "unresolved": unresolved,
+                               "cases_by_chain": report["cases_by_chain"]}),
+        encoding="utf-8")
+
+
+_CASE_GATE_UNDECIDED = (
+    "【用例末门·待决】上面这条人审消息既没有可执行的意见（指向 cc- 用例 / pt- 测试点 / ch- 链路），"
+    "也没有明示批准（通过/批准/同意/确认）。本轮不放行、不放回批环，交付物 design/case-delivery.md "
+    "维持原状。请把上述状态转述给人并等待其明确答复，不要代替人给出批准。"
+    "本轮只输出一条面向人的答复，不要改动任何文件。"
+)
+_CASE_GATE_UNRESOLVED = (
+    "【用例末门·意见指向不明】人审给了内容，但没有落到具体批次：target 的 value 必须是交付物里"
+    "真实存在的 cc- 用例 id、pt- 测试点 id 或 ch- 链路 id（seam/树外遗漏属设计侧，请到测试设计任务里提）。"
+    "请向人确认指向后再说一次；本轮批次状态与交付物维持原状，不要改动任何文件。"
+)
+
+
+def _case_gate_refusal(report: dict) -> str:
+    """拒绝放行的面向人文案：逐条摆机器账，让人知道「批了但没过」到底是哪几条点没落实。"""
+    lines = ["【用例末门·不予放行】本轮人话是明示批准，但末门的机器账没有清零——"
+             "批准不能代替实测计数，交付物维持原状、零放行："]
+    lines += [f"- {h['detail']}" for h in report["hard"][:20]]
+    lines += [f"- 批次 {b['batch']} 正文不可解析：{b['errors'][0]}" for b in report["broken"][:20]]
+    lines.append("要改：说一句带 cc-/pt-/ch- id 的意见即可退回批环重做；要放行：把正文修好后重新批准。"
+                 "本轮只输出一条面向人的答复，不要改动任何文件。")
+    return "\n".join(lines)
+
+
+def h_case_gate(ctx: Ctx) -> Any:
+    """用例末门：待决不重呈 → 每次进门都重渲染实测 → hard/坏批清零（修复环 ≤round_cap）→ 呈递人审。"""
+    led, gate = ctx.led, ctx.led.data["writing"]["gate"]
+    if led.status == "awaiting_review":
+        # B-F4（比三层更严）：人正在等——待决转述轮、或被机器账拒绝放行的那一轮，游标都还停在
+        # case_gate。此处零重写、零轮次、零终帧：人本轮的话还没被答复，绝不许再递一遍交付物。
+        # 三层用「hard 为空」当守卫条件，是因为它呈递后宇宙不再变；末门的批准拒绝路径会让
+        # 「awaiting_review + hard 非零」成为合法现场，条件必须整个去掉。
+        return ctx.turn([], "end")
+    report = _case_gate_report(ctx)
+    _write_case_delivery(ctx, report)                 # 文件永远对得上当前实测，即使本轮不呈递
+    if report["hard"] or report["broken"]:
+        if int(gate["round"]) >= ctx.round_cap():
+            raise _Halt("用例末门履约检查连续未清零（修复环用尽）")
+        gate["round"] = int(gate["round"]) + 1
+        issues_path = ctx.env.reviews_dir / f"case-gate-issues-r{gate['round']}.json"
+        _write_json(issues_path, {"round": gate["round"], "hard": report["hard"],
+                                  "broken": report["broken"]})
+        # 预算单点同三层 B-F3：这条环的预算就是 gate["round"]/round_cap，ask 的 cap 显式传
+        # round_cap，否则 NUDGE_CAP=3 会抢在「修复环用尽」之前把任务收进「重试超限」。
+        return ctx.ask(case_gate_fix_instruction(issues_path=ctx.rel(issues_path),
+                                                 round_no=gate["round"]),
+                       cap=ctx.round_cap())
+    _go(ctx, "case_gate")
+    led.status = "awaiting_review"
+    ctx.led.data["writing"]["status"] = "awaiting_review"
+    return ctx.end("用例交付物已生成（design/case-delivery.md），等待人工评审。")
+
+
+def h_case_gate_interpret(ctx: Ctx) -> Any:
+    """末门人审续步：解读人话 → 批准还要过机器账 → 意见按目标批回环，其余批标 stale 不静默丢。"""
+    led, writing = ctx.led, ctx.led.data["writing"]
+    gate, human_text = writing["gate"], _human_text(ctx.state_messages)
+    k = int(gate.get("int_round") or 0) + 1
+    gate["int_round"] = k
+    brief = "\n".join([
+        "【人审解读·用例交付门】人审是最权威的评审。把人审原话转成结构化意见"
+        "（纯批准或没有要改的内容 → opinions 留空）：",
+        "人审原文：",
+        human_text or "（空）",
+        f"交付物 {ctx.rel(ctx.env.delivery_path)} 与用例正文所在目录 {ctx.rel(ctx.env.cases_dir())}/ "
+        f"可只读核对；证据栏填人审原话。",
+        '{"opinions": [{"target": {"type": "node|seam|outside", '
+        '"value": "cc-用例 id / pt-测试点 id / ch-链路 id"}, '
+        '"kind": "漏测|颗粒度|边界归属|命名漂移|失效", "ask": "怎么改", "evidence": "人审原话"}], '
+        '"resolutions": []}',
+        "target.type 只能取上面三个值之一；kind 只能取上面五个值之一；"
+        "指向某条用例时 type 用 node、value 填 cc- 四位数字 id（交付物的落点对照表里有）；"
+        "用例正文不在知识库，指向设计层（st- 故事）的意见不属于本门。没有意见时两个数组都返回空数组。",
+        "本门不做销账：resolutions 一律留空数组（回执由批评审逐轮给）。",
+    ])
+    call_id = f"case-gate-int-r{k}"                # 与大纲门 gate-int-rN 分开：同一 run 里两道门
+    out, raw = run_reviewer(ctx.task_tool, CASE_REVIEW_AGENT_ID, brief, model_cls=ReviewOut,
+                            call_id=call_id, title=f"用例门解读·r{k}", config=ctx.config,
+                            archive=lambda cid, text: _archive_review(ctx, cid, text))
+    _archive_review(ctx, call_id, raw)
+    if out.opinions:
+        gate["unclear"] = 0
+    elif _explicit_approval(human_text):
+        report = _case_gate_report(ctx)            # 批准不豁免机器账：hard 非零就是不能放行
+        if report["hard"] or report["broken"]:
+            # 拒绝放行是**有决定**的轮次，不占待决计数：每轮都要人重新说一次，成本由人控制。
+            led.status = "awaiting_review"
+            _go(ctx, "case_gate")
+            return ctx.ask(_case_gate_refusal(report))
+        gate["approved_at"] = _now()
+        gate["unclear"] = 0
+        writing["status"] = "done"
+        led.status = "done"
+        # 裁定 35：用例正文不进知识库——批准只是人对交付物的确认，本门零 KB 写、零回写授权。
+        return ctx.end("用例交付确认完成：用例正文只落项目空间 design/cases/，本次零知识库写入。")
+    else:
+        gate["unclear"] = int(gate.get("unclear") or 0) + 1
+        if gate["unclear"] > NUDGE_CAP:            # 连续待决：绝不猜批准
+            raise _Halt("用例交付门连续未给出可执行意见也未明示批准")
+        led.status = "awaiting_review"
+        _go(ctx, "case_gate")
+        return ctx.ask(_CASE_GATE_UNDECIDED)
+
+    # 门后回溯（裁定 36③）：先按目标批分组登记，一条也不许静默丢；登记用 source="case_human"，
+    # 与批评审的 case_block 两本分开，复审回执才认得出谁提的。
+    by_batch: dict[str, list] = {}
+    for op in out.opinions:
+        value = str(op.target.value or "")
+        by_batch.setdefault(_batch_of_target(ctx, value) if op.target.type == "node"
+                            else "", []).append(op)
+    for batch, ops in by_batch.items():
+        _w_register(ctx, [{"opinion": op,
+                           "key": f"{op.target.type}:{op.target.value}:{op.kind}"} for op in ops],
+                    block=batch, source="case_human")
+    batches = writing["batches"]
+    targeted = [b for b in batches if b.get("id") and by_batch.get(str(b["id"]))]
+    if not targeted:                               # 全是指向不明：只转述，一个批状态都不动
+        led.status = "awaiting_review"
+        _go(ctx, "case_gate")
+        return ctx.ask(_CASE_GATE_UNRESOLVED)
+    first = targeted[0]                            # 入账顺序即链路顺序：最早的受害批先重做
+    round_no = int(first["round"])
+    _write_in_file(ctx.env.reviews_dir / f"{_case_opt_prefix(first['id'], 'case_human')}"
+                   f"-in-r{round_no}.json",
+                   _w_open_of(ctx, block=first["id"], source="case_human"))
+    writing["status"] = "active"
+    first["state"] = "drafted"                     # 正文还在：改它，不是重烧整条链路
+    for entry in batches:
+        if entry is first or str(entry.get("state")) != "done":
+            continue
+        entry["state"] = "stale"
+        # 重算批的评审 call_id 必须新鲜：真实 TaskTool 按 call_id 复用已完结摘要，
+        # 同 id 重审等于把上一轮的判决原样递回（走查二在三层踩过同一条缝）。
+        entry["round"] = int(entry.get("round") or 0) + 1
+        if entry["id"] not in writing["stale_batches"]:
+            writing["stale_batches"].append(entry["id"])
+    _go(ctx, "case_opt", layer=first["chain"], block=first["id"], round=round_no,
+        source="case_human")
     return None
 
 
@@ -2037,7 +2322,8 @@ _STAGE_HANDLERS: dict[str, Any] = {
     "audit": h_audit, "gate": h_gate, "gate_interpret": h_gate_interpret,
     "writeback": h_writeback,
     "case_plan": h_case_plan, "case_gen": h_case_gen, "case_opt": h_case_opt,
-    "case_attribute": h_case_attribute,
+    "case_attribute": h_case_attribute, "case_gate": h_case_gate,
+    "case_gate_interpret": h_case_gate_interpret,
 }
 
 

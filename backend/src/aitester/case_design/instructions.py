@@ -155,3 +155,20 @@ def case_attribute_instruction(batch: str, *, opinions_path: str, out_path: str)
         "cause 只能取上面四个值之一，note 不得为空。",
         "写完即停。",
     ])
+
+
+def case_gate_fix_instruction(*, issues_path: str, round_no: int) -> str:
+    """末门修复指令：与 `gate_fix_instruction` 同纪律——每个 code 的**改法**逐字写出来，
+    不写「请自行修复」（主智能体只能按清单动手）。"""
+    return "\n".join([
+        f"【编排·用例末门修复·第 {round_no} 轮】末门确定性核对发现履约问题（清单在 {issues_path}）。",
+        "请只改被点名的批次正文（design/cases/<批次 id>.json），逐条清零：",
+        "- uncovered_point：该测试点没有任何用例认领——补一条认领它的用例，"
+        "或把它并进已有用例的 covers（并进后那条用例正文必须真的覆盖它）。",
+        "- phantom_cover：用例认领了分母外的点——covers 只许填本批清单里真实存在的 pt- 四位数字 id，"
+        "点 id 写错就改对，越界的用例直接删掉。",
+        "- 批次正文不可解析：按形状重写该文件（cases 数组，每条含 title/covers/preconditions/"
+        "steps/expected/priority，新增用例 case_id 留空串）。",
+        "问题清单里的 batch 字段就是该改的文件；不要做与清单无关的改动，"
+        "也不要改测试点分母（那是设计侧的事）。修完即停，编排层会重新核对。",
+    ])

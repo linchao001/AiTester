@@ -11,14 +11,15 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from aitester.case_design import stages
-from aitester.case_design.constants import CASE_BATCH_CAP, LAYER_CN, ROUND_CAP
+from aitester.case_design.constants import CASE_BATCH_CAP, LAYER_CN, NUDGE_CAP, ROUND_CAP
 from aitester.case_design.instructions import case_attribute_instruction
 from aitester.case_design.ledger import Ledger
 from aitester.case_design.schema import ReviewOut
 from aitester.case_design.stages import _CAUSES, _writing_enabled
+from aitester.case_design.writing import _HARD_CODES
 
 from test_case_design_driver import (  # 复用既有挂具，不抄第二份
-    ScriptTask, StubKb, _append, _drive, _end_text, _env, _j, _write, drain,
+    ScriptTask, StubKb, _append, _cases_payload, _drive, _end_text, _env, _j, _write, drain,
 )
 
 
@@ -336,8 +337,9 @@ def test_second_task_does_not_see_prior_case_surface(tmp_path):
 def _kb_with_many_points(tmp_path: Path, n: int = 11) -> StubKb:
     """一条链路 + 一个故事 + n 个测试点：n>CASE_BATCH_CAP ⇒ 天然切成两批。
 
-    夹具一律留第二批（11 点 ⇒ 两批）：case_gate 要到 T22 才注册，最后一个批次收口会
-    _go("case_gate") 撞 KeyError 收敛成 halted——本任务不许为此加防御分支。
+    T21 时夹具一律留第二批（`case_gate` 要到 T22 才注册，末批收口会 _go("case_gate")
+    撞 KeyError）；T22 注册完成后这个约束已解除，但 11 点/两批的形状保留——批环的
+    多批语义（含跨批归属、stale 批次）只有两批才测得到。
     """
     return StubKb(layers={
         "chain": [{"id": "ch-0001", "type": "chain", "level": 1, "parent": "",
@@ -354,16 +356,6 @@ def _kb_with_many_points(tmp_path: Path, n: int = 11) -> StubKb:
 def _manifest_points(env, batch: str) -> list[str]:
     raw = json.loads((env.manifests_dir / f"case-{batch}.json").read_text(encoding="utf-8"))
     return [str(p["id"]) for p in raw["points"]]
-
-
-def _cases_payload(chain: str, batch: str, points: list[str]) -> dict:
-    """一条点一条用例（1:1 是合法比例之一，裁定 38）；id 留空串交给驱动补号。"""
-    return {"chain": chain, "batch": batch, "cases": [
-        {"case_id": "", "title": f"用例·{pid}", "covers": [pid],
-         "preconditions": "账号已登录且购物车有一件可售商品",
-         "steps": ["登录并进入下单页", "提交订单"],
-         "expected": ["订单金额按该点场景的规则计算"],
-         "priority": "P1", "note": ""} for pid in points]}
 
 
 def _opinion(value: str, kind: str = "颗粒度", ask: str = "拆成两步再断言") -> dict:
@@ -603,7 +595,7 @@ def test_case_attribute_books_cause_and_closes(tmp_path):
 
 def test_batch_review_brief_literals_pass_review_schema(tmp_path):
     """走查三 W3-1 教训制度化：简报 advertise 的每个字面量都必须真能过 ReviewOut。"""
-    kb = _kb_with_many_points(tmp_path, n=11)              # 留第二批：末批收口会撞未注册的 case_gate
+    kb = _kb_with_many_points(tmp_path, n=11)              # 两批形状：见 _kb_with_many_points
     env = _env(tmp_path, kb)
     task = ScriptTask()
     state = {"messages": [HumanMessage(content="给下单链路生成用例")], "case": {}}
@@ -627,7 +619,7 @@ def test_batch_review_brief_literals_pass_review_schema(tmp_path):
 
 def test_batch_review_brief_rejects_out_of_enum_kind(tmp_path):
     """打错字必须即红：简报给出的枚举之外任何值都过不了 schema（否则真机会 halted）。"""
-    kb = _kb_with_many_points(tmp_path, n=11)              # 同上一条：刻意留第二批
+    kb = _kb_with_many_points(tmp_path, n=11)              # 两批形状：见 _kb_with_many_points
     env = _env(tmp_path, kb)
     task = ScriptTask()
     state = {"messages": [HumanMessage(content="给下单链路生成用例")], "case": {}}
@@ -782,3 +774,374 @@ def test_case_attribute_instruction_enums_share_the_stage_causes():
                                       out_path="a-out.json")
     assert "|".join(_CAUSES) in text
     assert "cause 只能取上面四个值之一" in text
+
+
+# ---- T22 末门：确定性核对 + 修复环 + 批准过机器账 + 门后回溯（裁定 35/36/38/39）----
+
+def _new_turn(text: str) -> dict:
+    """一次新用户回合的 state（`case` 清空）：`drive_turn` 的 fresh 只在这种回合成立。
+
+    往 drain 过的 state 上追加人话会被判成图内重入（boot 已 True），根本进不了
+    `case_gate_interpret`——只会撞 `h_case_gate` 的 B-F4 守卫。
+    """
+    return {"messages": [HumanMessage(content=text)], "case": {}}
+
+
+def _run_to_gate(tmp_path, *, n: int = 3, script=None):
+    """整环跑到末门呈递一次（离线、零联网）：返回 (kb, env, task, drained_state)。
+
+    夹具形状按 T20/T21 的既有纪律走 `drain(..., plan=...)`：账本还不存在时预写
+    `design/plan.json` 会被 `_boot` 的归档整目录搬走，绝不再用「先写 plan 再无账驱动」。
+    """
+    kb = _kb_with_many_points(tmp_path, n=n)
+    env = _env(tmp_path, kb)
+    task = ScriptTask(script=script)
+    state = drain(env, kb, task, plan=_CASE_ONLY_PLAN, state=_new_turn("给下单链路生成用例"))
+    assert "用例交付物已生成" in _end_text(state["frames"])     # 每条门侧用例都从真呈递起步
+    return kb, env, task, state
+
+
+def _reopen_gate(env):
+    """呈递一次 → 门后改了正文 → 游标推回 `case_gate`、解除待决：与走查里人/工具在门后
+    改文件是同一形状（坏批必须**在批收口之后**才出现，否则被 `h_case_gen` 当场拦下）。"""
+    led = _led(env)
+    led.cursor.update({"stage": "case_gate", "layer": "", "block": "", "round": 0,
+                       "source": "block", "nudge": 0, "asked": False})
+    led.status = "active"                    # 门重新核一次（不是人审续步）
+    led.save()
+    return led
+
+
+def _break_first_batch(env, keep: int = 1) -> None:
+    """人工侧把已 done 的正文改坏：只留前 keep 条认领 ⇒ 末门才会看见漏测。"""
+    path = env.cases_dir() / "ch-0001-b1.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["cases"] = raw["cases"][:keep]
+    _write(path, raw)
+
+
+def test_case_only_ring_reaches_delivery_gate(tmp_path):
+    """三点一批：批环收口 → 末门确定性核对清零 → 交付物落盘 → 等待人审（裁定 36 的最后一道）。"""
+    kb, env, task, state = _run_to_gate(tmp_path, n=3)
+
+    led = _led(env)
+    assert led.status == "awaiting_review" and led.data["writing"]["status"] == "awaiting_review"
+    assert led.data["writing"]["batches"][0]["state"] == "done"
+    assert led.data["writing"]["gate"]["round"] == 0          # 一次都没进修复环
+    text = env.delivery_path.read_text(encoding="utf-8")
+    assert "未落实点 0 个" in text and "pt-0001" in text
+    # C-22b：七段标题按「成员 + 先后」断言——「履约差异表」标题自带后缀，整行相等必假
+    order = ["## 前置判定", "## 用例清单", "## 履约差异表", "## 规范校验表",
+             "## 未消化项", "## 失效待重算批次", "## 意见落点对照表"]
+    positions = [text.index(title) for title in order]
+    assert positions == sorted(positions) and len(set(positions)) == len(order)
+    assert task.call_ids() == ["case-ch-0001-b1-r0"]
+    assert kb.upserts == [] and kb.deletes == []               # 裁定 35：末门零 KB 写
+
+
+def test_gate_fix_ring_clears_uncovered_before_delivery(tmp_path):
+    """末门是收口之后的第二次核对：已 done 的正文被改坏 ⇒ 先落清单、下发修复，清零才呈递。"""
+    _, env, task, _ = _run_to_gate(tmp_path, n=3)
+    cases_path = env.cases_dir() / "ch-0001-b1.json"
+    _break_first_batch(env)
+    _reopen_gate(env)
+
+    frames: list[dict] = []
+    turn = _drive(env, _new_turn("继续"), task, writer=frames.append)
+    assert turn["case"]["route"] == "agent"             # 未清零 ⇒ 不呈递，只下发修复指令
+    assert _led(env).data["writing"]["gate"]["round"] == 1
+    issues = json.loads((env.reviews_dir / "case-gate-issues-r1.json").read_text(encoding="utf-8"))
+    assert issues["round"] == 1
+    assert {h["code"] for h in issues["hard"]} == {"uncovered_point"}
+    assert issues["hard"][0]["batch"] == "ch-0001-b1" and issues["hard"][0]["chain"] == "ch-0001"
+    assert "case-gate-issues-r1.json" in turn["messages"][-1].content
+    assert "design/cases/" in turn["messages"][-1].content
+    assert "用例交付物已生成" not in _end_text(frames)   # 修复轮里一条终帧也不许发
+    # 交付物每次进门都按当前实测重渲染：呈递被挡，但人此刻打开文件看到的必须是「未落实 2 个」，
+    # 不许滞后在上一轮的「0 个」上（文件与机器账不一致就是假完整）。
+    assert "未落实点 2 个" in env.delivery_path.read_text(encoding="utf-8")
+
+    _write(cases_path, _cases_payload("ch-0001", "ch-0001-b1",
+                                      _manifest_points(env, "ch-0001-b1")))
+    frames = []
+    _drive(env, _new_turn("继续"), task, writer=frames.append)
+    assert "用例交付物已生成" in _end_text(frames)
+    led = _led(env)
+    assert led.data["writing"]["gate"]["round"] == 1     # 清零不再占新轮
+    assert led.data["writing"]["gate"]["int_round"] == 0  # 修复环不是人审续步，不占解读计数
+    assert "未落实点 0 个" in env.delivery_path.read_text(encoding="utf-8")
+
+
+def test_awaiting_review_reentry_does_not_represent(tmp_path):
+    """B-F4 同款守卫：待决转述轮里游标仍停在 case_gate，绝不允许二次呈递/重写交付物。"""
+    _, env, task, state = _run_to_gate(tmp_path, n=3)
+    before = env.delivery_path.read_bytes()
+    frames: list[dict] = []
+    turn = _drive(env, state, task, writer=frames.append)      # 同一轮重入（无新人话）
+    assert turn["case"]["route"] == "end" and frames == []
+    assert env.delivery_path.read_bytes() == before
+    led = _led(env)
+    assert led.status == "awaiting_review"
+    assert led.data["writing"]["gate"] == {"round": 0, "int_round": 0, "unclear": 0,
+                                           "approved_at": ""}   # 守卫轮零计数：什么都不许推进
+
+
+def test_approval_refused_while_points_uncovered(tmp_path):
+    """批准是人的话，但 hard 是机器的账：门呈递后正文被改坏 ⇒ 拒绝放行、维持 awaiting_review。"""
+    kb, env, task, _ = _run_to_gate(tmp_path, n=3,
+                                    script={"case-gate-int-r1": _j({"opinions": [],
+                                                                    "resolutions": []})})
+    _break_first_batch(env)
+
+    frames: list[dict] = []
+    turn = _drive(env, _new_turn("通过"), task, writer=frames.append)
+    assert turn["case"]["route"] == "agent"                     # 不予放行 = 下发转述指令
+    text = turn["messages"][-1].content
+    assert "不予放行" in text and "pt-0003" in text
+    assert _end_text(frames) == ""                              # 拒绝放行不发终帧
+    led = _led(env)
+    assert led.status == "awaiting_review" and led.data["writing"]["status"] == "awaiting_review"
+    assert led.data["writing"]["gate"]["approved_at"] == ""     # 被挡的批准不许留痕
+    assert led.data["writing"]["gate"]["int_round"] == 1        # 解读轮照实推进
+    assert led.data["writing"]["gate"]["round"] == 0            # 拒绝放行不占修复环预算
+    assert kb.upserts == [] and kb.deletes == []
+
+
+def test_backtrack_reopens_target_batch_and_keeps_others_as_stale(tmp_path):
+    """裁定 36③：人指向某条用例 ⇒ 该批回优化环重做，其余批次标 stale 且**不静默丢**。"""
+    kb, env, task, _ = _run_to_gate(tmp_path, n=11, script={
+        "case-gate-int-r1": _j({"opinions": [_opinion("cc-0005", ask="拆成三步")],
+                                "resolutions": []})})
+    assert [b["state"] for b in _led(env).data["writing"]["batches"]] == ["done", "done"]
+
+    human = _new_turn("cc-0005 步骤太粗，拆成三步再断言")
+    frames: list[dict] = []
+    turn = _drive(env, human, task, writer=frames.append)
+    _append(human, turn)                     # 指令回写进会话，下一轮才是「图内续跑」
+    led = _led(env)
+    assert (led.cursor["stage"], led.cursor["block"], led.cursor["source"]) \
+        == ("case_opt", "ch-0001-b1", "case_human")
+    assert [b["state"] for b in led.data["writing"]["batches"]] == ["drafted", "stale"]
+    assert led.data["writing"]["stale_batches"] == ["ch-0001-b2"]
+    assert led.status == "active" and led.data["writing"]["status"] == "active"
+    human_ops = [o for o in led.data["writing"]["opinions"] if o["source"] == "case_human"]
+    # 两批的批评审在默认判决下返回空 opinions ⇒ 一本簿都没登记过，门后第一条人审意见必为 op-01
+    assert [(o["ref"], o["block"], o["ask"]) for o in human_ops] \
+        == [("op-01", "ch-0001-b1", "拆成三步")]
+    assert "human-case-ch-0001-b1-in-r0.json" in turn["messages"][-1].content
+    assert (env.cases_dir() / "ch-0001-b2.json").is_file()      # 旧稿原样留着，等人重算
+    assert _end_text(frames) == ""
+
+    _write(env.reviews_dir / "human-case-ch-0001-b1-fix-r0.json",
+           {"dispositions": [{"ref": "op-01", "status": "fixed", "note": "已拆步"}]})
+    frames = []
+    turn = _drive(env, human, task, writer=frames.append)       # 复审 r1 → b1 收口 → b2 重算 → 末门
+    led = _led(env)
+    assert task.call_ids()[-2:] == ["case-ch-0001-b1-r1", "case-ch-0001-b2-r1"]
+    assert led.data["writing"]["stale_batches"] == []           # 重算完即从待重算清单消失
+    assert [b["state"] for b in led.data["writing"]["batches"]] == ["done", "done"]
+    assert turn["case"]["route"] == "end"
+    assert "用例交付物已生成" in _end_text(frames)               # 重算后二次呈递
+    assert led.data["writing"]["status"] == "awaiting_review"
+    stale_section = env.delivery_path.read_text(encoding="utf-8").split(
+        "## 失效待重算批次")[1].split("## 意见落点对照表")[0]
+    assert "ch-0001-b2" not in stale_section and "- 无" in stale_section   # 重算完即从交付物消失
+    assert kb.upserts == [] and kb.deletes == []
+
+
+def test_explicit_approval_closes_without_any_kb_write(tmp_path):
+    kb, env, task, _ = _run_to_gate(tmp_path, n=3,
+                                    script={"case-gate-int-r1": _j({"opinions": [],
+                                                                    "resolutions": []})})
+    frames: list[dict] = []
+    _drive(env, _new_turn("通过"), task, writer=frames.append)
+    led = _led(env)
+    assert led.status == "done" and led.data["writing"]["status"] == "done"
+    assert led.data["writing"]["gate"]["approved_at"]
+    assert led.data["writing"]["gate"]["unclear"] == 0
+    assert "用例交付确认完成" in _end_text(frames)
+    assert kb.upserts == [] and kb.deletes == []                # 末门批准 ≠ 回写授权（裁定 35）
+
+
+def test_broken_batch_blocks_presentation_even_when_coverage_looks_clean(tmp_path):
+    """坏批 fail-closed：正文交不回认领 ⇒ 记 broken 并**照常计入该批分母**（零用例=全漏测）。
+
+    形状刻意做成「链路级覆盖看起来是干净的」：门后有人把 b1 加了一条认领 pt-0011 的用例、
+    同时把 b2 正文掏空——按链路合并分母后 hard 为空，但 b2 仍然是读不出认领的坏批。
+    只看 hard 就呈递 = 把「一批正文已经作废」说成「全部落实」，正是假完整。
+    """
+    _, env, task, _ = _run_to_gate(tmp_path, n=11)
+    b1 = env.cases_dir() / "ch-0001-b1.json"
+    raw = json.loads(b1.read_text(encoding="utf-8"))
+    raw["cases"].append({"case_id": "cc-0100", "title": "用例·跨批认领", "covers": ["pt-0011"],
+                         "preconditions": "账号已登录且购物车有一件可售商品",
+                         "steps": ["提交订单"], "expected": ["订单金额按该点场景的规则计算"],
+                         "priority": "P1", "note": ""})
+    _write(b1, raw)
+    b2 = env.cases_dir() / "ch-0001-b2.json"
+    broken = json.loads(b2.read_text(encoding="utf-8"))
+    broken["cases"] = []                                          # 形状合法、内容空手
+    _write(b2, broken)
+    _reopen_gate(env)
+
+    frames: list[dict] = []
+    turn = _drive(env, _new_turn("继续"), task, writer=frames.append)
+    assert turn["case"]["route"] == "agent"                       # 只有 broken 也绝不呈递
+    issues = json.loads((env.reviews_dir / "case-gate-issues-r1.json").read_text(encoding="utf-8"))
+    assert issues["hard"] == []                                   # 覆盖看起来确实清零了
+    assert issues["broken"] == [{"batch": "ch-0001-b2", "chain": "ch-0001",
+                                 "errors": ["cases 必须是非空数组（本批一条都没有 = 没做事，不是空批）"]}]
+    assert "批次正文不可解析" in turn["messages"][-1].content
+    assert "用例交付物已生成" not in _end_text(frames)
+    # 交付物照当前实测重渲染（未落实 0 个），但坏批写在清单上、呈递被挡：机器账不止漏测一条腿
+    assert "未落实点 0 个" in env.delivery_path.read_text(encoding="utf-8")
+    led = _led(env)
+    assert led.status == "active"                                 # 呈递被挡：还在自己的修复环里
+    # writing["status"] 留着上一次呈递的值，而 `_boot` 的分流先认 led.status ⇒ 修复环里说
+    # 「通过」绝不会被路由进末门解读：批准必须在门真的呈递之后说（裁定 36 fail-closed）。
+    assert led.data["writing"]["status"] == "awaiting_review"
+
+    frames = []
+    turn = _drive(env, _new_turn("通过"), task, writer=frames.append)
+    assert turn["case"]["route"] == "agent"                       # 不解读、不放行，只重发修复指令
+    assert "用例交付确认完成" not in _end_text(frames)
+    assert _led(env).data["writing"]["gate"]["approved_at"] == ""
+
+
+def test_unresolved_row_renders_with_its_ask_and_chain(tmp_path):
+    """C-22d：`writing["unresolved"]` 只存 block/refs/cause/note——交付物的「未消化项」必须
+    按 ref 回意见簿取到 `ask`、按批回账本取到 `chain`；映射丢了就是静默渲成空串。"""
+    _, env, task, _ = _run_to_gate(tmp_path, n=3)
+    led = _led(env)
+    led.data["writing"]["opinions"].append(
+        {"ref": "op-01", "key": "node:cc-0001:颗粒度", "source": "case_block",
+         "block": "ch-0001-b1", "target": {"type": "node", "value": "cc-0001"},
+         "kind": "颗粒度", "ask": "把断言写成可核对的金额", "evidence": "批评审 r1",
+         "resolved": False, "escalated": True, "disposition": "unresolved",
+         "note": "本轮造不出数据"})
+    led.data["writing"]["unresolved"].append(
+        {"block": "ch-0001-b1", "refs": ["op-01"], "cause": "评审分歧", "note": "反复不收敛"})
+    led.save()
+    _reopen_gate(env)
+
+    frames: list[dict] = []
+    turn = _drive(env, _new_turn("继续"), task, writer=frames.append)
+    assert turn["case"]["route"] == "end"
+    text = env.delivery_path.read_text(encoding="utf-8")
+    section = text[text.index("## 未消化项"):text.index("## 失效待重算批次")]
+    assert "把断言写成可核对的金额" in section
+    assert "[ch-0001/op-01]" in section and "评审分歧" in section and "反复不收敛" in section
+    assert "- 无" not in section
+    # 同一条意见在「意见落点对照表」里也必须带 chain/ref/ask 与状态中文（人看的是同一本簿）
+    disp = text[text.index("## 意见落点对照表"):]
+    assert "[ch-0001] op-01" in disp and "把断言写成可核对的金额" in disp and "未消化" in disp
+
+
+def test_repeated_undecided_turns_never_guess_approval(tmp_path):
+    """裁定 36：批准只认明示。连续待决照实计数，用尽即 halted——绝不猜批准、零放行零 KB 写。"""
+    kb, env, task, _ = _run_to_gate(tmp_path, n=3)
+    for i in range(1, NUDGE_CAP + 1):
+        frames: list[dict] = []
+        turn = _drive(env, _new_turn("看着还行"), task, writer=frames.append)
+        assert turn["case"]["route"] == "agent"
+        assert "待决" in turn["messages"][-1].content and "用例交付物已生成" not in _end_text(frames)
+        gate = _led(env).data["writing"]["gate"]
+        assert (gate["unclear"], gate["int_round"]) == (i, i)
+        assert gate["approved_at"] == "" and gate["round"] == 0
+        led = _led(env)
+        assert led.status == "awaiting_review" \
+            and led.data["writing"]["status"] == "awaiting_review"
+
+    frames = []
+    _drive(env, _new_turn("看着还行"), task, writer=frames.append)
+    led = _led(env)
+    assert led.status == "halted" and led.data["writing"]["gate"]["unclear"] == NUDGE_CAP + 1
+    assert "用例交付门连续未给出可执行意见也未明示批准" in _end_text(frames)
+    assert kb.upserts == [] and kb.deletes == []
+
+
+def test_gate_opinion_that_maps_to_no_batch_only_relays(tmp_path):
+    """指向不明的一条也不静默丢：登记在簿（block 空）但一个批状态都不动、不二次呈递。"""
+    kb, env, task, _ = _run_to_gate(tmp_path, n=3, script={
+        "case-gate-int-r1": _j({"opinions": [_opinion("st-0001")], "resolutions": []})})
+    frames: list[dict] = []
+    turn = _drive(env, _new_turn("st-0001 那条太粗"), task, writer=frames.append)
+    assert turn["case"]["route"] == "agent" and _end_text(frames) == ""
+    assert "指向不明" in turn["messages"][-1].content
+    led = _led(env)
+    assert [(o["ref"], o["block"], o["source"]) for o in led.data["writing"]["opinions"]] \
+        == [("op-01", "", "case_human")]
+    assert [b["state"] for b in led.data["writing"]["batches"]] == ["done"]
+    assert led.data["writing"]["stale_batches"] == []
+    assert led.status == "awaiting_review" and led.data["writing"]["status"] == "awaiting_review"
+    assert not list(env.reviews_dir.glob("human-case-*-in-r*.json"))   # 没派优化环就不落清单
+    assert kb.upserts == []
+
+
+def test_design_gate_reentry_still_routes_to_gate_interpret(tmp_path):
+    """`_boot` 的分流只认编写环状态：设计侧 awaiting_review（writing.status 为 ""）
+    仍走大纲门解读——末门不许把三层的人审续步抢走。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask())                                  # 三层首建到大纲门
+    assert _led(env).data["writing"]["status"] == ""
+    frames: list[dict] = []
+    _drive(env, _new_turn("通过"), task=ScriptTask(), writer=frames.append)
+    assert "回写完成" in _end_text(frames)
+    assert _led(env).status == "done"
+
+
+def test_gate_interpret_brief_literals_pass_review_schema(tmp_path):
+    """走查三 W3-1 教训制度化：末门解读简报 advertise 的每个字面量都必须真能过 ReviewOut
+    （简报给了 `"opinions": []` 这类占位而环本身允许出意见 ⇒ 真机回行人无法解析必 halted）。"""
+    _, env, task, _ = _run_to_gate(tmp_path, n=3, script={
+        "case-gate-int-r1": _j({"opinions": [_opinion("cc-0001")], "resolutions": []})})
+    _drive(env, _new_turn("cc-0001 步骤太粗"), task, writer=lambda e: None)
+
+    brief = next(c["brief"] for c in task.calls if c["call_id"] == "case-gate-int-r1")
+    types = re.search(r'"type": "([^"]+)"', brief).group(1).split("|")
+    kinds = re.search(r'"kind": "([^"]+)"', brief).group(1).split("|")
+    assert types == ["node", "seam", "outside"] and len(kinds) == 5
+    for t in types:
+        for kind in kinds:
+            ReviewOut.model_validate({"opinions": [
+                {"target": {"type": t, "value": "cc-0001"}, "kind": kind,
+                 "ask": "怎么改", "evidence": "人审原话"}], "resolutions": []})
+    for field in ('"target"', '"value"', '"ask"', '"evidence"', '"resolutions"'):
+        assert field in brief                                     # 必填字段与条目形状逐字给出
+    assert "cc-" in brief and "pt-" in brief and "ch-" in brief    # 三种合法指向都advertise 到
+
+
+def test_gate_interpret_brief_rejects_out_of_enum_literals(tmp_path):
+    """打错字必须即红：简报枚举之外的 type/kind 值一律过不了 schema（否则真机 halted）。"""
+    from pydantic import ValidationError
+
+    _, env, task, _ = _run_to_gate(tmp_path, n=3, script={
+        "case-gate-int-r1": _j({"opinions": [_opinion("cc-0001")], "resolutions": []})})
+    _drive(env, _new_turn("cc-0001 步骤太粗"), task, writer=lambda e: None)
+    brief = next(c["brief"] for c in task.calls if c["call_id"] == "case-gate-int-r1")
+    types = re.search(r'"type": "([^"]+)"', brief).group(1).split("|")
+    kinds = re.search(r'"kind": "([^"]+)"', brief).group(1).split("|")
+    for t in types:
+        with pytest.raises(ValidationError):
+            ReviewOut.model_validate({"opinions": [
+                {"target": {"type": t + "X", "value": "cc-0001"}, "kind": kinds[0],
+                 "ask": "a", "evidence": "b"}], "resolutions": []})
+    for kind in kinds:
+        with pytest.raises(ValidationError):
+            ReviewOut.model_validate({"opinions": [
+                {"target": {"type": types[0], "value": "cc-0001"}, "kind": kind + "X",
+                 "ask": "a", "evidence": "b"}], "resolutions": []})
+
+
+def test_case_gate_fix_instruction_names_both_hard_codes():
+    """枚举同源钉桩（与 `_CAUSES` 那条同纪律）：末门清单里可能出现的每个 code 都必须在
+    修复指令里被点名并给出改法——指令不许写「请自行修复」。"""
+    from aitester.case_design.instructions import case_gate_fix_instruction
+
+    text = case_gate_fix_instruction(issues_path="design/reviews/case-gate-issues-r1.json",
+                                     round_no=1)
+    assert "design/reviews/case-gate-issues-r1.json" in text and "第 1 轮" in text
+    for code in _HARD_CODES:
+        assert code in text
+    assert "design/cases/" in text

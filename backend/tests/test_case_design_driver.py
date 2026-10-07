@@ -166,6 +166,20 @@ def _append(state, turn) -> None:
     state["case"] = turn["case"]
 
 
+def _cases_payload(chain: str, batch: str, points: list[str]) -> dict:
+    """一条点一条用例（1:1 是合法比例之一，裁定 38）；id 留空串交给驱动补号。
+
+    编写环挂具的默认正文生成器与用例现场必须是同一份代码（抄第二份就是「重复逻辑」红线：
+    两份一旦漂开，仿真写的批与断言吃的批就不是同一形状），故定义在挂具文件里。
+    """
+    return {"chain": chain, "batch": batch, "cases": [
+        {"case_id": "", "title": f"用例·{pid}", "covers": [pid],
+         "preconditions": "账号已登录且购物车有一件可售商品",
+         "steps": ["登录并进入下单页", "提交订单"],
+         "expected": ["订单金额按该点场景的规则计算"],
+         "priority": "P1", "note": ""} for pid in points]}
+
+
 def simulate(env: CaseDesignEnv, *, plan=None, gen_nodes=None, gate_fix=None,
              opt_fix=None) -> None:
     """按账本 cursor 仿真主智能体写制品（drain 循环里承担 agent 节点角色）。"""
@@ -219,6 +233,27 @@ def simulate(env: CaseDesignEnv, *, plan=None, gen_nodes=None, gate_fix=None,
     if stage == "attribute":
         name = f"attr-{layer}-{block or 'layer'}-r{cur['round']}.json"
         _write(env.attribution_dir / name, {"cause": "评审分歧", "note": "反复意见不收敛"})
+        return
+    # ---- 第四层编写环：与三层同名分支逐条对齐；批 id 在游标 block、链路在 layer（挂具不猜，读账本）。
+    # case_opt 的文件名前缀走 `_case_opt_prefix` 的同一套规则（case- / human-case-），
+    # 坏文件、坏处置表一律由用例自己直接落盘复现——挂具只负责「顺从的主智能体」。----
+    if stage == "case_gen":
+        raw = json.loads((env.manifests_dir / f"case-{block}.json").read_text(encoding="utf-8"))
+        _write(env.cases_dir() / f"{block}.json",
+               _cases_payload(cur["layer"], block, [str(p["id"]) for p in raw["points"]]))
+        return
+    if stage == "case_opt":
+        r = cur["round"]
+        prefix = "human-case" if cur["source"] == "case_human" else "case"
+        refs = json.loads((env.reviews_dir / f"{prefix}-{block}-in-r{r}.json")
+                          .read_text(encoding="utf-8"))["refs"]
+        _write(env.reviews_dir / f"{prefix}-{block}-fix-r{r}.json",
+               {"dispositions": [{"ref": item["ref"], "status": "fixed", "note": "已改"}
+                                 for item in refs]})
+        return
+    if stage == "case_attribute":
+        _write(env.attribution_dir / f"attr-case-{block}-r{cur['round']}.json",
+               {"cause": "评审分歧", "note": "反复意见不收敛"})
         return
     if stage == "gate":
         if gate_fix is None:
