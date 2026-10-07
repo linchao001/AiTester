@@ -128,3 +128,30 @@ def case_gen_instruction(*, chain: str, batch: str, manifest_path: str,
         "case_id 留空串，由系统分配，priority 取 P0/P1/P2。\n"
         "6) 写完只回一句确认，不要复述用例正文。"
     )
+
+
+def case_opt_instruction(chain: str, batch: str, round_no: int, *, cases_path: str,
+                         opinions_path: str, fix_path: str) -> str:
+    return "\n".join([
+        f"【编排·用例优化·链路 {chain}·批次 {batch}·第 {round_no} 轮】（批评审意见）",
+        f"意见清单（含编号）在 {opinions_path}。逐条消化：",
+        f"- 需要改的：直接改进 {cases_path}（改正文、拆条、合并、删掉无用例都行，covers 要跟着改准）。",
+        "- 复核确认本版已覆盖的：不算未消化，但要写进处置表。",
+        "- 新增用例的 case_id 留空串（由编排层分配）；covers 只许填本批分母清单里的 pt- 四位数字 id。",
+        f"产出两件：① 更新后的 {cases_path}；② 处置表 {fix_path}，形状：",
+        '{"dispositions": [{"ref": "op-01", "status": "fixed|covered|unresolved", '
+        '"note": "改了什么 / 为何已覆盖 / 为何仍未消化"}]}',
+        "每条意见都必须有去向，不允许静默忽略；unresolved 只能用于你判定无法在本轮消化的意见并说明理由。",
+        "本批每个测试点都必须仍有用例认领：删用例前先把它认领的点交给别的用例，否则会被判漏测。",
+        "写完即停。",
+    ])
+
+
+def case_attribute_instruction(batch: str, *, opinions_path: str, out_path: str) -> str:
+    return "\n".join([
+        f"【编排·用例轮次用尽·批次 {batch}】评审轮次已达上限，仍有未消化意见（清单在 {opinions_path}）。",
+        f"请给出不收敛归因，写入 {out_path}：",
+        '{"cause": "业务信息不足|契约冲突|评审分歧|成本超限", "note": "一句说明"}',
+        "cause 只能取上面四个值之一，note 不得为空。",
+        "写完即停。",
+    ])

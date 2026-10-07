@@ -33,8 +33,9 @@ from aitester.case_design.constants import (
     PLAN_NAME, POINT, ROUND_CAP, STORY, TYPE_PREFIX, WRITEBACK_FIX_CAP,
 )
 from aitester.case_design.instructions import (
-    attribute_instruction, case_gen_instruction, gate_fix_instruction, gen_instruction,
-    opt_instruction, plan_instruction,
+    attribute_instruction, case_attribute_instruction, case_gen_instruction,
+    case_opt_instruction, gate_fix_instruction, gen_instruction, opt_instruction,
+    plan_instruction,
 )
 from aitester.case_design.kb import KbClient, KbClientError
 from aitester.case_design.ledger import Ledger
@@ -46,9 +47,9 @@ from aitester.case_design.plan import (
 from aitester.case_design.reviewers import run_reviewer
 from aitester.case_design.schema import (
     ClaimsOut, CompareOut, EnumeratorOut, MatrixOut, Opinion, OpinionTarget, ReviewOut,
-    parse_draft_file,
+    parse_case_file, parse_draft_file,
 )
-from aitester.case_design.writing import plan_case_targets
+from aitester.case_design.writing import plan_case_targets, run_case_checks
 
 logger = logging.getLogger(__name__)
 
@@ -556,14 +557,230 @@ def h_case_plan(ctx: Ctx) -> Any:
     if first is None:                              # 兜底：_case_ready_or_block 已挡，理论不达
         raise _Halt("编写环计划里没有任何可执行批次")
     _go(ctx, "case_gen", layer=first["chain"], block=first["id"])
-    # 首批指令由计划侧下发（一次激活把「准备 + 派活」做完），游标已指向 case_gen，
-    # 重入即落批环；后续批次与重试由 h_case_gen 用同一个 case_gen_instruction 发（T21）。
-    # batch_no 由 first 在 batches 里的下标推（计划侧下发时首批恒 index 0 → 1，不写死）。
-    return ctx.instr(case_gen_instruction(
-        chain=first["chain"], batch=first["id"],
-        manifest_path=ctx.rel(ctx.env.manifests_dir / f"case-{first['id']}.json"),
-        points=_case_batch_points(ctx, first["id"]),
-        batch_no=batches.index(first) + 1, batch_total=len(batches)))
+    # 首批指令与批环重试共用同一取数壳（_case_gen_text：批序/清单路径/应落实点全从账本读）。
+    return ctx.instr(_case_gen_text(ctx, first["chain"], first["id"]))
+
+
+# ---- 第四层编写环：批环（裁定 39：批内自检在评审之前；裁定 36②：批内评审必是子智能体）----
+
+def _cases_file(ctx: Ctx, batch: str) -> Path:
+    return ctx.env.cases_dir() / f"{batch}.json"
+
+
+def _case_manifest(ctx: Ctx, batch: str) -> dict:
+    return _read_json(ctx.env.manifests_dir / f"case-{batch}.json") or {}
+
+
+def _case_batch_entry(ctx: Ctx, chain: str, batch: str) -> dict:
+    for entry in ctx.led.data["writing"]["batches"]:
+        if entry["id"] == batch:
+            return entry
+    entry = {"id": batch, "chain": chain, "state": "todo", "round": 0}
+    ctx.led.data["writing"]["batches"].append(entry)
+    return entry
+
+
+def _case_gen_text(ctx: Ctx, chain: str, batch: str) -> str:
+    """批生成指令的取数单点：批序、清单路径、应落实点全部从账本读，不靠调用方拼。"""
+    batches = ctx.led.data["writing"]["batches"]
+    idx = next((i for i, b in enumerate(batches) if b["id"] == batch), 0)
+    return case_gen_instruction(
+        chain=chain, batch=batch,
+        manifest_path=ctx.rel(ctx.env.manifests_dir / f"case-{batch}.json"),
+        points=_case_batch_points(ctx, batch), batch_no=idx + 1, batch_total=len(batches))
+
+
+def _patch_case_ids(ctx: Ctx, batch: str) -> None:
+    """新用例留空 case_id：按账本序补号并就地改写文件（与 `_patch_ids` 同款，不走 TYPE_PREFIX）。"""
+    path = _cases_file(ctx, batch)
+    raw = _read_json(path)
+    if not isinstance(raw, dict):
+        return
+    changed = False
+    for item in raw.get("cases") or []:
+        if isinstance(item, dict) and not str(item.get("case_id") or ""):
+            item["case_id"] = ctx.led.next_case_seq()
+            changed = True
+    if changed:
+        _write_json(path, raw)
+
+
+def _case_review_brief(ctx: Ctx, chain: str, batch: str, round_no: int) -> str:
+    points = _case_batch_points(ctx, batch)
+    open_ops = _w_open_of(ctx, block=batch)
+    lines = [
+        f"【批评审·用例·链路 {chain}·批次 {batch}·第 {round_no} 轮】",
+        f"请只读审阅用例文件 {ctx.rel(_cases_file(ctx, batch))}"
+        f"（本批分母清单 {ctx.rel(ctx.env.manifests_dir / f'case-{batch}.json')}"
+        f"，本批应落实点 {('、'.join(points)) or '（无）'}），给出本判决：",
+        '{"opinions": [{"target": {"type": "node", "value": "cc-用例 id 或 pt-测试点 id"}, '
+        '"kind": "漏测|颗粒度|边界归属|命名漂移|失效", "ask": "怎么改", "evidence": "依据"}], '
+        '"resolutions": [{"ref": "op-01", "resolved": true, "note": "为何已消化"}]}',
+        "kind 只能取上面列出的五个值之一；target 与 ask 不得省略；"
+        "没有意见就两个数组都返回空数组。",
+        "看什么：步骤是否可执行、断言是否硬、前置是否自造数据、covers 认领是否属实"
+        "（认领了这个点但正文没落实它，同样算漏测）、有没有为凑数写的无用例。",
+    ]
+    if open_ops:
+        lines.append("上一轮尚未销账的意见（逐条给 resolutions 回执）：")
+        lines += [f"- {o['ref']}: {o['ask']}" for o in open_ops]
+    lines.append("意见要可执行、可核对；不复述用例正文。")
+    return "\n".join(lines)
+
+
+def _after_case_batch(ctx: Ctx) -> None:
+    """批次串行推进：下一批（入账顺序即链路顺序，天然「逐链路、链路内逐批」）→ 批齐进末门。"""
+    batches = ctx.led.data["writing"]["batches"]
+    idx = next((i for i, b in enumerate(batches) if b["id"] == ctx.cur["block"]), len(batches) - 1)
+    nxt = next((b for b in batches[idx + 1:] if b["state"] != "done"), None)
+    if nxt is None:
+        _go(ctx, "case_gate")
+        return
+    _go(ctx, "case_gen", layer=nxt["chain"], block=nxt["id"])
+
+
+def _run_case_review(ctx: Ctx, chain: str, batch: str) -> None:
+    """批评审一轮（内联驱动，与块评审同纪律）：无在途意见即批收口；有意见交优化环；轮次用尽转归因。"""
+    entry = _case_batch_entry(ctx, chain, batch)
+    round_no = int(entry["round"])
+    call_id = f"case-{batch}-r{round_no}"
+    out, raw = run_reviewer(
+        ctx.task_tool, CASE_REVIEW_AGENT_ID, _case_review_brief(ctx, chain, batch, round_no),
+        model_cls=ReviewOut, call_id=call_id,
+        title=f"批评审·用例·{batch}·r{round_no}", config=ctx.config,
+        archive=lambda cid, text: _archive_review(ctx, cid, text))
+    _archive_review(ctx, call_id, raw)
+    _apply_resolutions(ctx, out.resolutions)
+    _w_register(ctx, [{"opinion": op, "key": f"{op.target.type}:{op.target.value}:{op.kind}"}
+                      for op in out.opinions], block=batch)
+    open_ops = _w_open_of(ctx, block=batch)
+    if not open_ops:
+        entry["state"] = "done"
+        _after_case_batch(ctx)
+        return
+    if round_no >= ctx.round_cap():
+        _go(ctx, "case_attribute", layer=chain, block=batch, round=round_no, source="case_block")
+        return
+    _write_in_file(ctx.env.reviews_dir / f"case-{batch}-in-r{round_no}.json", open_ops)
+    _go(ctx, "case_opt", layer=chain, block=batch, round=round_no, source="case_block")
+
+
+def h_case_gen(ctx: Ctx) -> Any:
+    """批生成：文件到达 → schema 拒收 → 归属核对 → 批内确定性自检 → 补号 → 批评审 r0。
+
+    自检排在评审之前：漏点是机器可证的，重问比派一次付费评审便宜（裁定 39）；补号也在自检之后，
+    免得坏批白烧序号。归属核对（裁定 38）：schema 只验过自报 chain/batch「存在」，而交付表按
+    账本归属、文件头给人看——两处分裂等于交付表与正文拆成两张皮，坏归属的文件不得进自检/补号/评审。
+    """
+    chain, batch = ctx.cur["layer"], ctx.cur["block"]
+    cases, errors = parse_case_file(_cases_file(ctx, batch))
+    if errors:
+        return ctx.ask(_case_gen_text(ctx, chain, batch) + _errors_block(errors), cap=NUDGE_CAP)
+    raw = _read_json(_cases_file(ctx, batch)) or {}
+    mismatched: list[str] = []
+    if str(raw.get("chain") or "") != chain:
+        mismatched.append(f"文件自报链路「{raw.get('chain')}」与本批账本归属「{chain}」不符："
+                          "用例必须写在所属链路的批次文件里，根对象 chain 须填该链路 id")
+    if str(raw.get("batch") or "") != batch:
+        mismatched.append(f"文件自报批次「{raw.get('batch')}」与当前游标批次「{batch}」不符："
+                          "文件名与根对象 batch 必须同为该批 id")
+    if mismatched:
+        return ctx.ask(_case_gen_text(ctx, chain, batch)
+                       + _errors_block(mismatched), cap=NUDGE_CAP)
+    hard = run_case_checks(_case_manifest(ctx, batch).get("points") or [], cases)["hard"]
+    if hard:
+        return ctx.ask(_case_gen_text(ctx, chain, batch)
+                       + _errors_block([h["detail"] for h in hard]), cap=NUDGE_CAP)
+    _patch_case_ids(ctx, batch)
+    _case_batch_entry(ctx, chain, batch)["state"] = "drafted"
+    _run_case_review(ctx, chain, batch)
+    return None
+
+
+def _case_opt_prefix(batch: str, source: str) -> str:
+    """在途/处置文件前缀按来源分流（与三层 `_opt_prefix` 同型）：批评审与门后回溯两套文件不得互踩。"""
+    return f"human-case-{batch}" if source == "case_human" else f"case-{batch}"
+
+
+def h_case_opt(ctx: Ctx) -> Any:
+    """用例优化：等「更新后的用例文件 + 处置表」→ 校验/销账 → 复审回环（与 `h_opt` 同纪律）。
+
+    意见簿在 `writing["opinions"]`、未消化项在 `writing["unresolved"]`：字段与三层逐字同形，
+    末门与交付物因此只需要换取桶路径（裁定 39 复用纪律）。
+    """
+    chain, batch = ctx.cur["layer"], ctx.cur["block"]
+    round_no, source = int(ctx.cur["round"]), ctx.cur["source"]
+    prefix = _case_opt_prefix(batch, source)
+    cases_rel = ctx.rel(_cases_file(ctx, batch))
+    in_rel = ctx.rel(ctx.env.reviews_dir / f"{prefix}-in-r{round_no}.json")
+    fix_rel = ctx.rel(ctx.env.reviews_dir / f"{prefix}-fix-r{round_no}.json")
+    text = case_opt_instruction(chain, batch, round_no, cases_path=cases_rel,
+                                opinions_path=in_rel, fix_path=fix_rel)
+    raw = _read_json(ctx.env.reviews_dir / f"{prefix}-fix-r{round_no}.json")
+    all_ops = {op["ref"]: op for op in ctx.led.data["writing"]["opinions"]}
+    if raw is None and not ctx.cur.get("asked"):
+        return ctx.ask(text, cap=FIX_CAP)           # 首派：等主智能体交回「用例文件 + 处置表」
+    errors: list[str] = []
+    if not isinstance(raw, dict) or not isinstance(raw.get("dispositions"), list):
+        errors.append("处置表缺失或形状不对（须为 JSON 对象且含 dispositions 数组）")
+    else:
+        for i, row in enumerate(raw["dispositions"]):
+            if not isinstance(row, dict) or str(row.get("ref") or "") not in all_ops:
+                errors.append(f"dispositions[{i}]: ref 不在意见簿中")
+            elif str(row.get("status") or "") not in ("fixed", "covered", "unresolved"):
+                errors.append(f"dispositions[{i}]: status 须为 fixed|covered|unresolved")
+    if not errors:
+        _, errs = parse_case_file(_cases_file(ctx, batch))
+        errors = errs
+    if errors:
+        return ctx.ask(text + _errors_block(errors), cap=FIX_CAP)
+    _patch_case_ids(ctx, batch)                     # 本轮新增用例补号
+    for row in raw["dispositions"]:
+        op = all_ops[str(row["ref"])]
+        status, note = str(row["status"]), str(row.get("note") or "")
+        op["disposition"] = status
+        if op["note"] and note:
+            # 裁定 28 同款：处置说明不得顶掉既有轨迹，新说明以「处置：」缀在复审回执之后。
+            op["note"] = f"{op['note']}；处置：{note}"
+        else:
+            op["note"] = note or op["note"]
+        if status in ("fixed", "covered"):
+            op["resolved"] = True                   # 声称已消化；复审再犯即重新出现在途
+        else:
+            op["escalated"] = True
+            ctx.led.data["writing"]["unresolved"].append(
+                {"block": batch, "refs": [op["ref"]], "cause": "评审分歧",
+                 "note": note or "主智能体判定本轮无法消化"})
+    _case_batch_entry(ctx, chain, batch)["round"] = round_no + 1
+    _run_case_review(ctx, chain, batch)             # 复审 inline；下一轮 call_id 自然新鲜
+    return None
+
+
+def h_case_attribute(ctx: Ctx) -> Any:
+    """用例归因：批轮次用尽仍有在途意见 → 四选一归因 → 批带账收口（不阻塞其他批与末门）。"""
+    chain, batch = ctx.cur["layer"], ctx.cur["block"]
+    round_no = int(ctx.cur["round"])
+    open_ops = _w_open_of(ctx, block=batch)
+    open_path = ctx.env.attribution_dir / f"open-case-{batch}-r{round_no}.json"
+    out_path = ctx.env.attribution_dir / f"attr-case-{batch}-r{round_no}.json"
+    text = case_attribute_instruction(batch, opinions_path=ctx.rel(open_path),
+                                      out_path=ctx.rel(out_path))
+    raw = _read_json(out_path)
+    if raw is None:
+        if not open_path.is_file():
+            _write_in_file(open_path, open_ops)
+        return ctx.ask(text, cap=FIX_CAP)
+    cause, note = str(raw.get("cause") or ""), str(raw.get("note") or "").strip()
+    if cause not in _CAUSES or not note:
+        return ctx.ask(text + _errors_block([f"cause 须为 {'|'.join(_CAUSES)} 之一且 note 非空"]),
+                       cap=FIX_CAP)
+    ctx.led.data["writing"]["unresolved"].append(
+        {"block": batch, "refs": [o["ref"] for o in open_ops], "cause": cause, "note": note})
+    for op in open_ops:
+        op["escalated"] = True                      # 带账离开在途集：不再触发优化环
+    _case_batch_entry(ctx, chain, batch)["state"] = "done"
+    _after_case_batch(ctx)
+    return None
 
 
 def h_plan(ctx: Ctx) -> Any:
@@ -708,25 +925,52 @@ def _open_of(ctx: Ctx, layer: str, *, source: str | None = None,
     return out
 
 
-def _register(ctx: Ctx, layer: str, entries: list[dict], *, source: str,
-              block: str) -> None:
-    """登记意见：同（source,key）仍有在途条目则复用其 ref，否则分配新 ref。
+def _register_ops(ctx: Ctx, ops: list[dict], entries: list[dict], *, source: str,
+                  block: str) -> None:
+    """登记意见（簿本无关内核）：同（source,key）仍有在途条目则复用其 ref，否则分配新 ref。
 
     复用而不是新增，是为了让「主智能体声称已改、评审子若再犯」表现为同一 ref 重新出现
     （销账后被再发即为新一轮条目），而不是同一条意见无限复制。
     """
-    st = ctx.led.layer(layer)
     for entry in entries:
         op, key = entry["opinion"], entry["key"]
-        if any(o["source"] == source and o["key"] == key and not _settled(o)
-               for o in st["opinions"]):
+        if any(o["source"] == source and o["key"] == key and not _settled(o) for o in ops):
             continue
-        st["opinions"].append({
+        ops.append({
             "ref": _next_ref(ctx), "key": key, "source": source, "block": block,
             "target": op.target.model_dump(), "kind": op.kind, "ask": op.ask,
             "evidence": op.evidence, "resolved": False, "escalated": False,
             "disposition": "", "note": "",
         })
+
+
+def _register(ctx: Ctx, layer: str, entries: list[dict], *, source: str, block: str) -> None:
+    """三层意见簿：登记到 `layers.<layer>.opinions`。"""
+    _register_ops(ctx, ctx.led.layer(layer)["opinions"], entries, source=source, block=block)
+
+
+def _w_register(ctx: Ctx, entries: list[dict], *, block: str,
+                source: str = "case_block") -> None:
+    """第四层意见簿与三层同名键同形（裁定 39 复用纪律）：只换桶与 source，不换字段。"""
+    _register_ops(ctx, ctx.led.data["writing"]["opinions"], entries,
+                  source=source, block=block)
+
+
+def _w_open_of(ctx: Ctx, *, block: str, source: str | None = None) -> list[dict]:
+    out = []
+    for op in ctx.led.data["writing"]["opinions"]:
+        if _settled(op) or op["block"] != block:
+            continue
+        if source is not None and op["source"] != source:
+            continue
+        out.append(op)
+    return out
+
+
+def _op_buckets(ctx: Ctx) -> list[list[dict]]:
+    """意见簿全集：三层各一本 + 编写环一本。ref 全局唯一，所以销账可以跨簿查。"""
+    return [ctx.led.layer(layer)["opinions"] for layer in LAYERS] \
+        + [ctx.led.data["writing"]["opinions"]]
 
 
 def _apply_resolutions(ctx: Ctx, resolutions: list) -> None:
@@ -736,16 +980,17 @@ def _apply_resolutions(ctx: Ctx, resolutions: list) -> None:
     无条件顶掉它——两处都有时处置说明在前、回执说明以「复审：」缀在后。
     """
     for r in resolutions:
-        for st in ctx.led.data["layers"].values():
-            for op in st["opinions"]:
-                if op["ref"] == r.ref:
-                    if r.resolved:
-                        op["resolved"] = True
-                    if op["note"] and r.note:
-                        # 全链路累积（有界于 ROUND_CAP）：唯一人审门要看得懂整条处置轨迹，故意不截断。
-                        op["note"] = f"{op['note']}；复审：{r.note}"
-                    else:
-                        op["note"] = r.note or op["note"]
+        for ops in _op_buckets(ctx):
+            for op in ops:
+                if op["ref"] != r.ref:
+                    continue
+                if r.resolved:
+                    op["resolved"] = True
+                if op["note"] and r.note:
+                    # 全链路累积（有界于 ROUND_CAP）：唯一人审门要看得懂整条处置轨迹，故意不截断。
+                    op["note"] = f"{op['note']}；复审：{r.note}"
+                else:
+                    op["note"] = r.note or op["note"]
 
 
 def _close_missing(ctx: Ctx, layer: str, source: str, issued_keys: set[str]) -> None:
@@ -1767,7 +2012,8 @@ _STAGE_HANDLERS: dict[str, Any] = {
     "plan": h_plan, "gen": h_gen, "opt": h_opt, "attribute": h_attribute,
     "audit": h_audit, "gate": h_gate, "gate_interpret": h_gate_interpret,
     "writeback": h_writeback,
-    "case_plan": h_case_plan,
+    "case_plan": h_case_plan, "case_gen": h_case_gen, "case_opt": h_case_opt,
+    "case_attribute": h_case_attribute,
 }
 
 

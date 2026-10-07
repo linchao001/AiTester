@@ -4,17 +4,20 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
+import pytest
 from langchain_core.messages import HumanMessage
 
 from aitester.case_design import stages
 from aitester.case_design.constants import CASE_BATCH_CAP, LAYER_CN
 from aitester.case_design.ledger import Ledger
+from aitester.case_design.schema import ReviewOut
 from aitester.case_design.stages import _writing_enabled
 
 from test_case_design_driver import (  # 复用既有挂具，不抄第二份
-    ScriptTask, StubKb, _append, _drive, _end_text, _env, _write, drain,
+    ScriptTask, StubKb, _append, _drive, _end_text, _env, _j, _write, drain,
 )
 
 
@@ -325,3 +328,285 @@ def test_second_task_does_not_see_prior_case_surface(tmp_path):
     assert (env.cases_dir() / "ch-0001-b1.json").exists() is False   # 被归档搬走
     assert turn["case"]["route"] == "agent"                           # 新任务向用户索要计划
     assert len(list((env.design / "archive").rglob("ch-0001-b1.json"))) == 1
+
+
+# ---- T21 批环：收草稿、补号、评审、转下一批（裁定 36②/39）----
+
+def _kb_with_many_points(tmp_path: Path, n: int = 11) -> StubKb:
+    """一条链路 + 一个故事 + n 个测试点：n>CASE_BATCH_CAP ⇒ 天然切成两批。
+
+    夹具一律留第二批（11 点 ⇒ 两批）：case_gate 要到 T22 才注册，最后一个批次收口会
+    _go("case_gate") 撞 KeyError 收敛成 halted——本任务不许为此加防御分支。
+    """
+    return StubKb(layers={
+        "chain": [{"id": "ch-0001", "type": "chain", "level": 1, "parent": "",
+                   "name": "下单链路", "business_scope": "下单", "priority": "P1"}],
+        "story": [{"id": "st-0001", "type": "story", "chains": ["ch-0001"], "actor": "客户",
+                   "preconditions": "账号已注册", "trigger": "提交下单", "expected": "下单成功",
+                   "name": "正常下单", "priority": "P1"}],
+        "point": [{"id": f"pt-{i:04d}", "type": "point", "story": "st-0001",
+                   "name": f"点{i:02d}", "scenario": f"场景{i:02d}", "entities": ["订单"],
+                   "directions": ["正向"], "priority": "P1"} for i in range(1, n + 1)],
+    }, root=tmp_path / "kb")
+
+
+def _manifest_points(env, batch: str) -> list[str]:
+    raw = json.loads((env.manifests_dir / f"case-{batch}.json").read_text(encoding="utf-8"))
+    return [str(p["id"]) for p in raw["points"]]
+
+
+def _cases_payload(chain: str, batch: str, points: list[str]) -> dict:
+    """一条点一条用例（1:1 是合法比例之一，裁定 38）；id 留空串交给驱动补号。"""
+    return {"chain": chain, "batch": batch, "cases": [
+        {"case_id": "", "title": f"用例·{pid}", "covers": [pid],
+         "preconditions": "账号已登录且购物车有一件可售商品",
+         "steps": ["登录并进入下单页", "提交订单"],
+         "expected": ["订单金额按该点场景的规则计算"],
+         "priority": "P1", "note": ""} for pid in points]}
+
+
+def _opinion(value: str, kind: str = "颗粒度", ask: str = "拆成两步再断言") -> dict:
+    return {"target": {"type": "node", "value": value}, "kind": kind,
+            "ask": ask, "evidence": "步骤合并，失败难定位"}
+
+
+def _boot_to_first_batch(env, state, task, frames):
+    """两段开环：驱动①索要计划（此时账本已在盘上，plan 落盘不会被归档）→ 落 plan →
+    驱动②（h_plan→case_plan→首批指令）。返回累加后的现场供各批环用例复用。"""
+    _append(state, _drive(env, state, task, writer=frames.append))      # ① 索要计划
+    _write(env.design / "plan.json", _CASE_ONLY_PLAN)
+    turn = _drive(env, state, task, writer=frames.append)               # ② 首批指令
+    _append(state, turn)
+    return turn
+
+
+def test_case_batch_r0_closes_and_dispatches_next_batch(tmp_path):
+    kb = _kb_with_many_points(tmp_path, n=11)          # 11 点 ⇒ b1 十点 + b2 一点
+    env = _env(tmp_path, kb)
+    task = ScriptTask()                                # 默认判决 REV_CLEAN：无意见
+    state = {"messages": [HumanMessage(content="给下单链路生成用例")], "case": {}}
+    frames: list[dict] = []
+
+    turn = _boot_to_first_batch(env, state, task, frames)
+    assert "ch-0001-b1" in turn["messages"][-1].content
+    assert task.calls == []                            # 还没读过草稿，评审子一次都不许派
+
+    b1 = _manifest_points(env, "ch-0001-b1")
+    assert len(b1) == CASE_BATCH_CAP
+    _write(env.cases_dir() / "ch-0001-b1.json", _cases_payload("ch-0001", "ch-0001-b1", b1))
+
+    turn = _drive(env, state, task, writer=frames.append)     # ③ 收草稿→r0→下一批
+    assert task.call_ids() == ["case-ch-0001-b1-r0"]
+    assert task.calls[0]["agent"] == "case_review"            # 裁定 36②：批内评审必是子智能体
+    led = _led(env)
+    assert led.data["writing"]["batches"][0]["state"] == "done"
+    assert led.data["writing"]["batches"][1]["state"] == "todo"
+    assert (led.cursor["stage"], led.cursor["layer"], led.cursor["block"]) \
+        == ("case_gen", "ch-0001", "ch-0001-b2")
+    assert "第 2/2 批" in turn["messages"][-1].content
+    saved = json.loads((env.cases_dir() / "ch-0001-b1.json").read_text(encoding="utf-8"))
+    assert [c["case_id"] for c in saved["cases"]] == [f"cc-{i:04d}" for i in range(1, 11)]
+    assert led.data["counters"]["case"] == 10                 # 序号只由账本推进
+    assert kb.upserts == [] and kb.deletes == []              # 裁定 35：第四层零 KB 写
+
+
+def test_uncovered_batch_is_reasked_before_paying_for_review(tmp_path):
+    """批内自检（确定性）在评审之前：漏点当场重问，一次评审子调用都不烧（裁定 39 的省钱面）。"""
+    kb = _kb_with_many_points(tmp_path, n=11)
+    env = _env(tmp_path, kb)
+    task = ScriptTask()
+    state = {"messages": [HumanMessage(content="给下单链路生成用例")], "case": {}}
+    frames: list[dict] = []
+    _boot_to_first_batch(env, state, task, frames)
+
+    b1 = _manifest_points(env, "ch-0001-b1")
+    _write(env.cases_dir() / "ch-0001-b1.json",
+           _cases_payload("ch-0001", "ch-0001-b1", b1[: len(b1) - 1]))   # 少写最后一条
+    turn = _drive(env, state, task, writer=frames.append)
+    assert task.calls == []                            # ← 硬防线：坏批不进付费评审
+    text = turn["messages"][-1].content
+    assert "没有任何用例认领" in text and b1[-1] in text
+    assert _led(env).cursor["block"] == "ch-0001-b1"   # 原地重问，不转场
+
+
+def test_case_gen_mismatched_batch_selfreport_is_reasked(tmp_path):
+    """批文件自报批次与游标不符 ⇒ 原地重问：交付表按账本归属，文件头按自报——
+    两处分裂即裁定 38 的保护前提，坏归属的批不得进补号与付费评审。"""
+    kb = _kb_with_many_points(tmp_path, n=11)
+    env = _env(tmp_path, kb)
+    task = ScriptTask()
+    state = {"messages": [HumanMessage(content="给下单链路生成用例")], "case": {}}
+    frames: list[dict] = []
+    _boot_to_first_batch(env, state, task, frames)
+
+    b1 = _manifest_points(env, "ch-0001-b1")
+    _write(env.cases_dir() / "ch-0001-b1.json",
+           _cases_payload("ch-0001", "ch-0001-b2", b1))     # b1 文件头写着 b2
+    turn = _drive(env, state, task, writer=frames.append)
+    text = turn["messages"][-1].content
+    assert "ch-0001-b2" in text and "ch-0001-b1" in text    # 期望值与实际值都要给人看
+    assert task.calls == []                                 # 未达评审
+    assert not (env.reviews_dir / "case-ch-0001-b1-r0.review.md").exists()
+    led = _led(env)
+    assert led.data["writing"]["batches"][0]["state"] == "todo"    # 没进 "drafted"
+    assert led.data["counters"]["case"] == 0                       # 没烧任何 cc- 序号
+    saved = json.loads((env.cases_dir() / "ch-0001-b1.json").read_text(encoding="utf-8"))
+    assert [c["case_id"] for c in saved["cases"]] == [""] * len(b1)  # 文件原样未被补号改写
+
+
+def test_case_gen_mismatched_chain_selfreport_is_reasked(tmp_path):
+    """批文件自报链路归属错（写错链）⇒ 同样原地重问，链路腿与批次腿共用同一条归属核对。"""
+    kb = _kb_with_many_points(tmp_path, n=11)
+    env = _env(tmp_path, kb)
+    task = ScriptTask()
+    state = {"messages": [HumanMessage(content="给下单链路生成用例")], "case": {}}
+    frames: list[dict] = []
+    _boot_to_first_batch(env, state, task, frames)
+
+    b1 = _manifest_points(env, "ch-0001-b1")
+    _write(env.cases_dir() / "ch-0001-b1.json",
+           _cases_payload("ch-0002", "ch-0001-b1", b1))    # 链路写成另一条
+    turn = _drive(env, state, task, writer=frames.append)
+    text = turn["messages"][-1].content
+    assert "ch-0002" in text and "ch-0001" in text
+    assert task.calls == []
+    led = _led(env)
+    assert led.data["writing"]["batches"][0]["state"] == "todo"
+    assert led.cursor["block"] == "ch-0001-b1"
+
+
+# ---- T21 意见环：开环 / 处置销账 / unresolved / 归因 / 简报形状纪律 ----
+
+def _to_case_opt(tmp_path: Path):
+    """把一条 11 点链路推到「b1 出意见、驱动正在等处置表」的现场。"""
+    kb = _kb_with_many_points(tmp_path, n=11)
+    env = _env(tmp_path, kb)
+    task = ScriptTask(script={"case-*-r0": _j({"opinions": [_opinion("cc-0001")],
+                                               "resolutions": []})})
+    state = {"messages": [HumanMessage(content="给下单链路生成用例")], "case": {}}
+    frames: list[dict] = []
+    _boot_to_first_batch(env, state, task, frames)                       # 首批指令就位
+    b1 = _manifest_points(env, "ch-0001-b1")
+    _write(env.cases_dir() / "ch-0001-b1.json", _cases_payload("ch-0001", "ch-0001-b1", b1))
+    turn = _drive(env, state, task, writer=frames.append)                # r0 出意见 → 优化指令
+    return env, task, state, frames, turn
+
+
+def test_batch_opinion_opens_opt_ring(tmp_path):
+    env, task, state, frames, turn = _to_case_opt(tmp_path)
+    led = _led(env)
+    assert (led.cursor["stage"], int(led.cursor["round"]), led.cursor["source"]) \
+        == ("case_opt", 0, "case_block")
+    assert led.data["writing"]["batches"][0]["state"] == "drafted"       # 没收口
+    op = led.data["writing"]["opinions"][0]
+    assert (op["ref"], op["source"], op["block"], op["resolved"], op["disposition"]) \
+        == ("op-01", "case_block", "ch-0001-b1", False, "")
+    assert task.calls[0]["call_id"] == "case-ch-0001-b1-r0"
+    text = turn["messages"][-1].content
+    assert "case-ch-0001-b1-in-r0.json" in text and "case-ch-0001-b1-fix-r0.json" in text
+    assert "fixed|covered|unresolved" in text                            # 枚举逐字下发
+
+
+def test_disposition_then_clean_re_review_closes_batch(tmp_path):
+    env, task, state, frames, _ = _to_case_opt(tmp_path)
+    _write(env.reviews_dir / "case-ch-0001-b1-fix-r0.json",
+           {"dispositions": [{"ref": "op-01", "status": "fixed", "note": "已拆两步并补断言"}]})
+    _drive(env, state, task, writer=frames.append)
+    led = _led(env)
+    assert task.call_ids() == ["case-ch-0001-b1-r0", "case-ch-0001-b1-r1"]
+    op = led.data["writing"]["opinions"][0]
+    assert op["resolved"] is True and op["disposition"] == "fixed"
+    assert "已拆两步并补断言" in op["note"]
+    assert led.data["writing"]["batches"][0]["state"] == "done"
+    assert led.cursor["block"] == "ch-0001-b2"          # 串行：下一批（第二批刻意留着，见夹具说明）
+
+
+def test_unresolved_disposition_books_writing_unresolved(tmp_path):
+    """主智能体判定消化不了 → 带账离开在途集（escalated），未消化项进 `writing["unresolved"]`。"""
+    env, task, state, frames, _ = _to_case_opt(tmp_path)
+    _write(env.reviews_dir / "case-ch-0001-b1-fix-r0.json",
+           {"dispositions": [{"ref": "op-01", "status": "unresolved", "note": "本轮造不出数据"}]})
+    _drive(env, state, task, writer=frames.append)
+    led = _led(env)
+    assert led.data["writing"]["opinions"][0]["escalated"] is True
+    assert led.data["writing"]["unresolved"] == [
+        {"block": "ch-0001-b1", "refs": ["op-01"], "cause": "评审分歧", "note": "本轮造不出数据"}]
+    assert led.data["writing"]["batches"][0]["state"] == "done"
+
+
+def test_bad_disposition_is_reasked_not_booked(tmp_path):
+    """处置表形状错（ref 不在簿 / status 越枚举）⇒ 重问，绝不计入轮次、绝不销账。"""
+    env, task, state, frames, _ = _to_case_opt(tmp_path)
+    _write(env.reviews_dir / "case-ch-0001-b1-fix-r0.json",
+           {"dispositions": [{"ref": "op-99", "status": "fixed", "note": "x"},
+                             {"ref": "op-01", "status": "done", "note": "y"}]})
+    turn = _drive(env, state, task, writer=frames.append)
+    text = turn["messages"][-1].content
+    assert "ref 不在意见簿中" in text and "status 须为 fixed|covered|unresolved" in text
+    assert task.call_ids() == ["case-ch-0001-b1-r0"]    # 一次也没复审
+    led = _led(env)
+    assert led.data["writing"]["opinions"][0]["resolved"] is False
+    assert led.cursor["stage"] == "case_opt"            # 原地重问，不转场
+
+
+def test_case_attribute_books_cause_and_closes(tmp_path):
+    env, task, state, frames, _ = _to_case_opt(tmp_path)
+    led = _led(env)
+    led.cursor.update({"stage": "case_attribute", "round": 5})   # 复现「轮次用尽」现场
+    led.save()
+    turn = _drive(env, state, task, writer=frames.append)        # 首派归因
+    assert "attr-case-ch-0001-b1-r5.json" in turn["messages"][-1].content
+    assert (env.attribution_dir / "open-case-ch-0001-b1-r5.json").is_file()
+
+    _write(env.attribution_dir / "attr-case-ch-0001-b1-r5.json",
+           {"cause": "成本超限", "note": "评审与生成反复不一致，再跑只烧钱"})
+    _drive(env, state, task, writer=frames.append)
+    led = _led(env)
+    assert led.data["writing"]["unresolved"][0]["cause"] == "成本超限"
+    assert led.data["writing"]["unresolved"][0]["refs"] == ["op-01"]
+    assert led.data["writing"]["batches"][0]["state"] == "done"
+    assert led.cursor["block"] == "ch-0001-b2"
+
+
+def test_batch_review_brief_literals_pass_review_schema(tmp_path):
+    """走查三 W3-1 教训制度化：简报 advertise 的每个字面量都必须真能过 ReviewOut。"""
+    kb = _kb_with_many_points(tmp_path, n=11)              # 留第二批：末批收口会撞未注册的 case_gate
+    env = _env(tmp_path, kb)
+    task = ScriptTask()
+    state = {"messages": [HumanMessage(content="给下单链路生成用例")], "case": {}}
+    frames: list[dict] = []
+    _boot_to_first_batch(env, state, task, frames)
+    _write(env.cases_dir() / "ch-0001-b1.json",
+           _cases_payload("ch-0001", "ch-0001-b1", _manifest_points(env, "ch-0001-b1")))
+    _drive(env, state, task, writer=frames.append)
+
+    brief = task.calls[0]["brief"]
+    kinds = re.search(r'"kind": "([^"]+)"', brief).group(1).split("|")
+    types = re.search(r'"type": "([^"]+)"', brief).group(1).split("|")
+    assert len(kinds) == 5 and types == ["node"]
+    for kind in kinds:
+        ReviewOut.model_validate({"opinions": [
+            {"target": {"type": types[0], "value": "cc-0001"}, "kind": kind,
+             "ask": "怎么改", "evidence": "依据"}], "resolutions": []})
+    assert '"resolutions"' in brief and '"ref": "op-01"' in brief and '"resolved": true' in brief
+
+
+def test_batch_review_brief_rejects_out_of_enum_kind(tmp_path):
+    """打错字必须即红：简报给出的枚举之外任何值都过不了 schema（否则真机会 halted）。"""
+    kb = _kb_with_many_points(tmp_path, n=11)              # 同上一条：刻意留第二批
+    env = _env(tmp_path, kb)
+    task = ScriptTask()
+    state = {"messages": [HumanMessage(content="给下单链路生成用例")], "case": {}}
+    _append(state, _drive(env, state, task, writer=lambda e: None))
+    _write(env.design / "plan.json", _CASE_ONLY_PLAN)
+    _append(state, _drive(env, state, task, writer=lambda e: None))
+    _write(env.cases_dir() / "ch-0001-b1.json",
+           _cases_payload("ch-0001", "ch-0001-b1", _manifest_points(env, "ch-0001-b1")))
+    _drive(env, state, task, writer=lambda e: None)
+    kinds = re.search(r'"kind": "([^"]+)"', task.calls[0]["brief"]).group(1).split("|")
+    from pydantic import ValidationError
+    for kind in kinds:
+        with pytest.raises(ValidationError):
+            ReviewOut.model_validate({"opinions": [
+                {"target": {"type": "node", "value": "cc-0001"}, "kind": kind + "X",
+                 "ask": "a", "evidence": "b"}], "resolutions": []})
