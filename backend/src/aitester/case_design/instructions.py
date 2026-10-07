@@ -21,7 +21,8 @@ def plan_instruction() -> str:
         "逐个确认存在后列入 source_files（项目相对路径）；不要列 design/ 工作稿，"
         "也不要列知识库里的文件（知识库业务资料由编排层另行装载）。\n"
         "2) 范围归一化：把指令拆成「入口层 / 目标子树 / 终止层」——task_kind 取 "
-        "design（测试设计）/ mixed（设计+用例混杂，本期只做设计侧）/ case_only（纯用例任务，本期只做设计部分）；"
+        "design（测试设计）/ mixed（设计+用例，先做设计侧、过门回写后同轮续编写环）/ "
+        "case_only（纯用例任务：三层只读当分母，本 run 不改三层，只产 design/cases/ 里的用例正文）；"
         "entry_layer 与 terminal_layer 取 chain|story|point；target_subtree 只接受链路（ch-）id——"
         "「只针对某条链路」这类窄指令填该链路 id，指向用户故事或测试点时"
         "填其所属链路 id，全量任务留空串。\n"
@@ -103,3 +104,27 @@ def gate_fix_instruction(*, issues_path: str, round_no: int) -> str:
         "- empty_chain / empty_story：范围内链路必须有故事认领、范围内故事必须有测试点（在对应层草稿补节点）。",
         "不要做与问题无关的改动；修完即停，编排层会重新检查。",
     ])
+
+
+def case_gen_instruction(*, chain: str, batch: str, manifest_path: str,
+                         points: list[str], batch_no: int, batch_total: int) -> str:
+    """第四层批生成指令：一个批次一文件、逐点认领，纪律写死在指令里（裁定 37/38）。"""
+    return (
+        f"第四层用例编写：第 {batch_no}/{batch_total} 批（链路 {chain}，批次 {batch}）。\n"
+        f"1) 先读分母清单 {manifest_path}：每个点自带 scenario/entities/directions 与所属故事的 "
+        f"actor/preconditions/trigger/expected，写用例所需信息全在里面，不必再翻知识库。\n"
+        f"2) 用例正文落 design/cases/{batch}.json，根对象与每条用例的字段逐字如下（多余的键不要加）：\n"
+        '   {"chain": "' + chain + '", "batch": "' + batch + '", "cases": ['
+        '{"case_id": "", "title": "…", "covers": ["pt-0000"], "preconditions": "…", '
+        '"steps": ["…"], "expected": ["…"], "priority": "P1", "note": ""}]}\n'
+        f"3) 认领纪律：本批必须落实的点 = {'、'.join(points)}。每个点至少被一条用例的 covers 点名；"
+        "covers 只许填这些 pt-四位数字 id，填界外的点会被判假完整。\n"
+        "4) 点与用例数量不固定：一个点可拆多条（换账号/换数据），多个点也可合一条。"
+        "禁止为凑数写无用例，也禁止拿「用例数 ≥ 点数」自证完整——核对只看 covers。\n"
+        "5) 正文纪律：steps 每步是可执行动作（不写「进行操作」这类空话）；expected 是硬断言"
+        "（可核对的具体结果，禁止「正常」「正确」「符合预期」「没有问题」「成功即可」）；"
+        "preconditions 只写本用例自己造的前置，禁止拿环境存量当条件"
+        "（「已有」「已存在」「存量数据」「库中已有」「环境中已」这类写法一律拒收）；"
+        "case_id 留空串，由系统分配，priority 取 P0/P1/P2。\n"
+        "6) 写完只回一句确认，不要复述用例正文。"
+    )

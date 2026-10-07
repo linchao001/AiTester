@@ -165,6 +165,16 @@ def test_instructions_carry_paths_and_schema():
     assert "业务信息不足" in a and "成本超限" in a
 
 
+def test_plan_instruction_opens_the_writing_ring_for_case_kinds():
+    """task_kind 的两种用例侧语义必须在指令里逐字可见：`plan.py:13 _TASK_KINDS` 早就认
+    `case_only`/`mixed`，但旧文案写着「本期只做设计侧／本期只做设计部分」——模型照文案走，
+    永远不会把纯用例任务选成编写环入口，第四层的门就形同虚设。本片升级文案，这条用例钉住。"""
+    text = plan_instruction()
+    assert "本期只做设计" not in text
+    assert "同轮续编写环" in text                      # mixed：设计侧之后接手
+    assert "design/cases/" in text                    # case_only：产出物点名到目录
+
+
 def test_gen_instruction_update_requires_kb_manifest_path():
     """F3：更新态缺清单路径要响亮失败——否则把字面 None 写进模型指令，
     在生成阶段诱导一次幻觉读文件（付费轮次）并污染待校验草稿。"""

@@ -28,13 +28,13 @@ from langgraph.errors import GraphBubbleUp
 
 from aitester.case_design.checks import build_universe, run_checks
 from aitester.case_design.constants import (
-    CASE_REVIEW_AGENT_ID, CASE_REVIEW_BLIND_AGENT_ID, CHAIN, FIX_CAP, LAYERS, LAYER_CN,
-    MAX_TRANSITIONS, NUDGE_CAP, OUTLINE_NAME, PLAN_NAME, POINT, ROUND_CAP, STORY,
+    CASE_BATCH_CAP, CASE_REVIEW_AGENT_ID, CASE_REVIEW_BLIND_AGENT_ID, CHAIN, FIX_CAP, LAYERS,
+    LAYER_CN, MAX_TRANSITIONS, NUDGE_CAP, OUTLINE_NAME, PLAN_NAME, POINT, ROUND_CAP, STORY,
     TYPE_PREFIX, WRITEBACK_FIX_CAP,
 )
 from aitester.case_design.instructions import (
-    attribute_instruction, gate_fix_instruction, gen_instruction, opt_instruction,
-    plan_instruction,
+    attribute_instruction, case_gen_instruction, gate_fix_instruction, gen_instruction,
+    opt_instruction, plan_instruction,
 )
 from aitester.case_design.kb import KbClient, KbClientError
 from aitester.case_design.ledger import Ledger
@@ -48,6 +48,7 @@ from aitester.case_design.schema import (
     ClaimsOut, CompareOut, EnumeratorOut, MatrixOut, Opinion, OpinionTarget, ReviewOut,
     parse_draft_file,
 )
+from aitester.case_design.writing import plan_case_targets
 
 logger = logging.getLogger(__name__)
 
@@ -196,14 +197,34 @@ def _go(ctx: Ctx, stage: str, *, layer: str = "", block: str = "", round: int = 
                 "source": source, "nudge": 0, "asked": False})
 
 
+def _prior_surface_exists(env: Any) -> bool:
+    """design/ 里是否真有上一任务的工作面制品（归档判据）。
+
+    旧判据 `any(design.iterdir())` 在专属 loop 里恒为真：`ensure_dirs()` 先建好空骨架目录，
+    首启必归档——落账本前写入的准备制品（编写环的 plan.json 就是这一形状）会被连锅端走，
+    h_plan 只能重发计划指令，编写环永远开不了账。现在只认真实文件：大纲与各工作点子目录
+    里的落盘制品；光杆 plan.json 不算工作面——它是新任务的入口制品本身。
+    """
+    design = Path(env.design)
+    if not design.exists():
+        return False
+    for name in _ARCHIVE_ITEMS:
+        if name == PLAN_NAME:
+            continue
+        p = design / name
+        if p.is_file() or (p.is_dir() and any(x.is_file() for x in p.rglob("*"))):
+            return True
+    return False
+
+
 def _boot(ctx: Ctx, fresh: bool) -> None:
     """载入/初始化账本；fresh（新用户回合）时按旧状态决定新任务 / 续拼人审 / 重试回写。"""
     env, led = ctx.env, Ledger.load(ctx.env.design)
     loaded = led is not None
     if led is None:
         led = Ledger.fresh(ctx.env.design)
-        if env.design.exists() and any(env.design.iterdir()):
-            _archive(env)                      # 无账本但有旧工作面：先归位再开新账
+        if _prior_surface_exists(env):              # 无账本但有旧工作面：先归位再开新账
+            _archive(env)
     ctx.led = led
     if fresh:
         if led.status in ("done", "halted"):
@@ -434,6 +455,120 @@ def _archive_review(ctx: Ctx, call_id: str, raw: str) -> None:
     path.write_text(raw or "", encoding="utf-8")
 
 
+# ---- 第四层编写环：计划侧（裁定 40）----
+
+_CASE_WRITING_KINDS = ("case_only", "mixed")
+
+
+def _writing_enabled(ctx: Ctx) -> bool:
+    """编写环是否参与本 run——只吃账本里的 task_kind 事实，不从对话猜。"""
+    kind = str(((ctx.led.data.get("task") or {}).get("descriptor") or {}).get("task_kind") or "")
+    return kind in _CASE_WRITING_KINDS
+
+
+def _case_targets(ctx: Ctx) -> list[dict]:
+    """编写环的取数单点：活宇宙 = KB 存量 ∪ 本 run 草稿，范围走 `in_scope_targets`（与三层同源）。
+
+    mixed 的同一轮里 `ctx.kb_rows` 缓存的是**回写前**的存量，只用它会漏掉本 run 刚过审的点；
+    `_rows_of` 把草稿拼在后面，配合 `denominator_points` 的同 id 后到为准，分母就是回写后的现稿。
+    """
+    descriptor = (ctx.led.data.get("task") or {}).get("descriptor") or {}
+    chains, stories, points = (_rows_of(ctx, CHAIN), _rows_of(ctx, STORY), _rows_of(ctx, POINT))
+    scope = in_scope_targets(descriptor, chains, stories)
+    return plan_case_targets(chains, stories, points, scope)
+
+
+def _case_ready_or_block(ctx: Ctx) -> str:
+    """编写环前置（裁定 40）：三层已维护 + 无失效待重算 + 分母点数 > 0。
+
+    返回空串 = 可开工；非空 = 给人看的拒因。不满足时**明示边界停在设计侧**，不静默重生成三层
+    （那会把已过审的制品按旧口径再烧一遍），也不 halted（这是合法的业务状态，不是程序故障）。
+    """
+    led = ctx.led.data
+    probe = ((led.get("task") or {}).get("probe") or {})
+    # 事实源以 carried_stale 为主：layers.*.state 会被 init_task 按 modes 覆写（case_only 全成
+    # skipped），只读它就永远看不见上一轮留下的失效层。两处取并集，本 run 内标的失效也认。
+    stale = {*(led.get("carried_stale") or [])} | {
+        layer for layer in LAYERS if ctx.led.layer(layer)["state"] == "stale_pending"}
+    if stale:
+        return ("、".join(LAYER_CN[l] for l in LAYERS if l in stale)
+                + "层标了失效待重算，请先跑一次测试设计任务把它们重做")
+    if not all(probe.get(layer, {}).get("maintained") for layer in LAYERS):
+        missing = "、".join(LAYER_CN[l] for l in LAYERS if not probe.get(l, {}).get("maintained"))
+        return f"知识库缺少{missing}，用例没有可落实的设计分母，请先跑一次测试设计任务"
+    targets = _case_targets(ctx)
+    if not any(t["batches"] for t in targets):
+        return "本次范围内没有任何测试点可作分母（链路/故事/点齐备但点数为 0），用例任务无从开工"
+    return ""
+
+
+def _materialize_case_batches(ctx: Ctx, targets: list[dict]) -> None:
+    """批次入账 + 分母清单落盘：清单自带故事上下文，生成侧不必再翻 KB（消费对称性）。"""
+    story_rows = {str(r.get("id") or ""): r for r in _rows_of(ctx, STORY)}
+    point_rows = {str(r.get("id") or ""): r for r in _rows_of(ctx, POINT)}
+    chain_rows = {str(r.get("id") or ""): r for r in _rows_of(ctx, CHAIN)}
+    batches: list[dict] = []
+    for target in targets:
+        cid = str(target["chain"])
+        for batch in target["batches"] or []:
+            items = []
+            for pid in batch["points"]:
+                point = dict(point_rows.get(pid) or {"id": pid})
+                story = story_rows.get(str(point.get("story") or "")) or {}
+                items.append({
+                    "id": pid, "name": str(point.get("name") or ""),
+                    "story": str(point.get("story") or ""),
+                    "story_name": str(story.get("name") or ""),
+                    "scenario": str(point.get("scenario") or ""),
+                    "entities": list(point.get("entities") or []),
+                    "directions": list(point.get("directions") or []),
+                    "priority": str(point.get("priority") or "P1"),
+                    "actor": str(story.get("actor") or ""),
+                    "preconditions": str(story.get("preconditions") or ""),
+                    "trigger": str(story.get("trigger") or ""),
+                    "expected": str(story.get("expected") or ""),
+                })
+            _write_json(ctx.env.manifests_dir / f"case-{batch['id']}.json",
+                        {"chain": cid,
+                         "chain_name": str((chain_rows.get(cid) or {}).get("name") or ""),
+                         "batch": batch["id"], "cases_cap": CASE_BATCH_CAP, "points": items})
+            batches.append({"id": batch["id"], "chain": cid, "state": "todo", "round": 0})
+    ctx.led.data["writing"]["batches"] = batches
+
+
+def _case_batch_points(ctx: Ctx, batch: str) -> list[str]:
+    for target in ctx.led.data["writing"].get("targets") or []:
+        for item in target.get("batches") or []:
+            if item.get("id") == batch:
+                return [str(p) for p in item.get("points") or []]
+    return []
+
+
+def h_case_plan(ctx: Ctx) -> Any:
+    """编写环开账：前置满足 → 物化 targets/batches 并下发首批生成指令；不满足 → 明示边界、零写入、正常收尾。"""
+    reason = _case_ready_or_block(ctx)
+    led = ctx.led
+    if reason:
+        led.data["writing"]["note"] = reason
+        led.status = "done"
+        return ctx.end("用例任务未开工：" + reason + "。本轮不生成用例、不写知识库。")
+    targets = _case_targets(ctx)
+    led.data["writing"]["targets"] = targets
+    led.data["writing"]["status"] = "active"
+    _materialize_case_batches(ctx, targets)
+    batches = led.data["writing"]["batches"]
+    first = next((b for b in batches if b["state"] == "todo"), None)
+    if first is None:                              # 兜底：_case_ready_or_block 已挡，理论不达
+        raise _Halt("编写环计划里没有任何可执行批次")
+    _go(ctx, "case_gen", layer=first["chain"], block=first["id"])
+    # 首批指令由计划侧下发（一次激活把「准备 + 派活」做完），游标已指向 case_gen，
+    # 重入即落批环；后续批次与重试由 h_case_gen 用同一个 case_gen_instruction 发（T21）。
+    return ctx.instr(case_gen_instruction(
+        chain=first["chain"], batch=first["id"],
+        manifest_path=ctx.rel(ctx.env.manifests_dir / f"case-{first['id']}.json"),
+        points=_case_batch_points(ctx, first["id"]), batch_no=1, batch_total=len(batches)))
+
+
 def h_plan(ctx: Ctx) -> Any:
     """计划阶段：design/plan.json 到达并校验 → 探测/层判定/建账/物化清单 → 进首活层。"""
     plan_path = ctx.env.design / PLAN_NAME
@@ -446,6 +581,9 @@ def h_plan(ctx: Ctx) -> Any:
     probe = {layer: summarize_probe(layer, ctx.kb_rows(layer)) for layer in LAYERS}
     stale = {str(x) for x in (ctx.led.data.get("carried_stale") or [])}
     modes = plan_layers(descriptor, probe, stale)
+    if descriptor["task_kind"] == "case_only":
+        # case_only：三层全 skipped —— 三层内容只作只读上下文经 kb_rows 使用，本 run 不写它们。
+        modes = {layer: "skipped" for layer in LAYERS}
     if descriptor["target_subtree"]:
         owner = _layer_of_id(descriptor["target_subtree"])
         if owner is not None:
@@ -461,6 +599,10 @@ def h_plan(ctx: Ctx) -> Any:
     _write_manifests(ctx, descriptor)
     entry = _first_live(descriptor["entry_layer"], descriptor["terminal_layer"], modes)
     if entry is None:
+        if _writing_enabled(ctx):
+            # 裁定 40：case_only 的三层一律 skipped（只读上下文），空窗不是故障而是交接点。
+            _go(ctx, "case_plan")
+            return None
         raise _Halt("计划窗口内没有任何需要生成的层")
     _enter_layer(ctx, entry)
     return None
@@ -1114,6 +1256,7 @@ def _after_layer(ctx: Ctx, layer: str) -> None:
         if ctx.led.layer(nxt)["state"] == "pending":
             _enter_layer(ctx, nxt)
             return
+    # mixed 的设计侧仍走大纲门（三层质量内核不因带用例而缩）；编写环在回写成功后接手，见 h_writeback。
     _go(ctx, "gate")
 
 
@@ -1611,6 +1754,12 @@ def h_writeback(ctx: Ctx) -> Any:
         if led.layer(layer)["state"] == "audited":
             led.layer(layer)["state"] = "done"
     wb["done"] = True
+    if _writing_enabled(ctx) and not led.data["writing"].get("targets"):
+        # 裁定 40：mixed 在同一任务内续跑编写环。设计侧不回终帧（回写事实写进 writing["note"]，
+        # 末门交付物的「前置判定」段呈递）——done 状态会把工作区归档，若在此收尾用例环就没了。
+        led.data["writing"]["note"] = f"设计侧回写完成 @{_now()}"
+        _go(ctx, "case_plan")
+        return None
     led.status = "done"
     # 等值判定的单点在 step（裁定 30）：这里不作第二次比较，只把「几个节点其实没被触碰」如实呈递。
     tail = f"（{untouched} 个节点内容与库内一致，未重写。）" if untouched else ""
@@ -1621,6 +1770,7 @@ _STAGE_HANDLERS: dict[str, Any] = {
     "plan": h_plan, "gen": h_gen, "opt": h_opt, "attribute": h_attribute,
     "audit": h_audit, "gate": h_gate, "gate_interpret": h_gate_interpret,
     "writeback": h_writeback,
+    "case_plan": h_case_plan,
 }
 
 
