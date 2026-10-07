@@ -20,8 +20,10 @@ from aitester.case_design.env import CaseDesignEnv
 from aitester.case_design.kb import KbClientError
 from aitester.case_design.ledger import Ledger
 from aitester.case_design.outline import compose_outline
+from aitester.case_design.reviewers import _RETRY_HINT
+from aitester.case_design.schema import ClaimsOut, parse_json_fence
 from aitester.case_design.stages import (
-    Ctx, _collect_writeback_items, _drafts_errors, _drop_out_of_window_hards,
+    Ctx, _claims_brief, _collect_writeback_items, _drafts_errors, _drop_out_of_window_hards,
     _layer_audited, _open_of, _outline_extras, _patch_ids, _rescan_claims, drive_turn,
     h_writeback,
 )
@@ -1638,3 +1640,78 @@ def test_unparseable_draft_breaks_retry_budget_and_says_writeback_not_run(tmp_pa
     assert "回写未执行" in text and "不可解析" in text
     assert "知识库暂不可写" not in text
     assert led.status == "writeback_failed"
+
+
+# ---- 走查三修复（W3-1）：② 声称核对简报补齐 opinions 条目形状 ----
+# 真机增量在 _claims_story → run_reviewer 连败两次落 halted：模型写的 opinion 条目缺
+# target/ask、kind 自造（ClaimsOut 9 条 ValidationError）。根因在简报——旧串只写
+# "opinions": [] 未给条目形状，而评审子提示明写「形状随简报给定」。schema 不放宽，
+# 补的是简报；本节前 3 条钉简报形状与 ClaimsOut 对齐，第 4 条钉重试提示的字段纠偏面。
+
+_CLAIMS_BRIEF_ROWS = [{"ref": "st-0001-a1", "claim": "该场景由 pt-0001 覆盖"}]
+
+
+def _claims_brief_text(register: bool) -> str:
+    # ctx 不参与简报文本生成（只吃 block/rows/register），None 直调即可。
+    return _claims_brief(None, "ch-0001", _CLAIMS_BRIEF_ROWS, register=register)
+
+
+def test_claims_brief_advertises_opinion_item_shape():
+    """断言①：register=True 简报同时给出 "target"、"ask" 与 kind 五枚举——本次修复的承重面。"""
+    brief = _claims_brief_text(True)
+    assert '"target"' in brief
+    assert '"ask"' in brief
+    assert "漏测|颗粒度|边界归属|命名漂移|失效" in brief
+    # claims 段逐字不动（原两行拼接后的完整原文）；register=True 尾句逐字不动。
+    assert ('输出一个 JSON：{"claims": [{"ref": "...", "verdict": "covered|unclaimed", '
+            '"owner": "覆盖它的故事 id 或空", "note": ""}], ') in brief
+    assert "unclaimed 表示没有任何节点认领这个声称（会被登记为接缝漏测意见）。" in brief
+
+
+def test_opinion_built_from_brief_enums_validates_through_claimssout():
+    """断言②：从简报串现取 target.type 与 kind 枚举造合法 opinions，ClaimsOut 必须收。
+
+    防「简报与 schema 二次漂移」——简报把枚举改坏（或 schema 收紧到不认简报给的形状）
+    时 model_validate 当场红。走查三拒收的正是这条面：简报说的形状≠schema 认的形状。
+    """
+    brief = _claims_brief_text(True)
+    m_types = re.search(r'"type": "([^"]+)"', brief)
+    m_kinds = re.search(r'"kind": "([^"]+)"', brief)
+    assert m_types, f"简报未给出 target.type 枚举：{brief}"
+    assert m_kinds, f"简报未给出 kind 枚举：{brief}"
+    types = m_types.group(1).split("|")
+    kinds = m_kinds.group(1).split("|")
+    payload = {
+        "claims": [{"ref": "st-0001-a1", "verdict": "unclaimed", "owner": "", "note": ""}],
+        "opinions": [
+            {"target": {"type": types[0], "value": "pt-0001"}, "kind": kinds[0],
+             "ask": "补一个认领该声称的测试点", "evidence": "声称核对 r1"},
+            {"target": {"type": types[2], "value": "树外遗漏项"}, "kind": kinds[4],
+             "ask": "删除失效归属", "evidence": "存量对照"},
+        ],
+    }
+    out = ClaimsOut.model_validate(parse_json_fence(_j(payload)))
+    assert [o.kind for o in out.opinions] == [kinds[0], kinds[4]]
+    assert out.opinions[0].target.type == types[0] and out.opinions[0].ask
+
+
+def test_rescan_claims_brief_keeps_blank_opinions_without_item_shape():
+    """断言③（裁定 32）：回扫简报不 advertise 条目形状，保留「不登记意见／必须留空」，
+    旧空数组形状串与回扫尾句逐字在场。"""
+    brief = _claims_brief_text(False)
+    for shape_word in ("颗粒度", "边界归属", "命名漂移", '"target"', '"ask"', '"kind"'):
+        assert shape_word not in brief                     # 不出现条目形状字样
+    assert "不登记意见" in brief
+    assert "必须留空" in brief
+    assert '"opinions": []}' in brief                      # 原形状串逐字保留
+    assert "本轮回扫只补认结论，不登记意见、不重开任何环。" in brief
+    assert "会被登记为接缝漏测意见" not in brief            # 与 T15 节 F-5 负断言同向
+
+
+def test_retry_hint_corrects_fields_not_only_fence():
+    """断言④：重试提示补上字段纠偏面——真机两次栽在同一形状上，只纠围栏第二次白烧。"""
+    assert "字段名与枚举值必须与简报给定的形状逐字一致" in _RETRY_HINT
+    assert "不得自造字段或自造枚举值" in _RETRY_HINT
+    # 围栏那句逐字保留（改动只补字段面，不改围栏口径）。
+    assert ("上一轮输出无法按约定解析（需要恰好一个 ```json 代码块、块外无其它内容）。"
+            in _RETRY_HINT)

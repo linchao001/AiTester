@@ -877,6 +877,16 @@ def _cmp_chain(ctx: Ctx, round_no: int) -> None:
     _close_missing(ctx, CHAIN, "audit", issued | {e["key"] for e in entries})
 
 
+# ② 声称核对简报的 opinions 条目形状（口径与 _block_review_brief 一致）：走查三真机两次
+# 输出被 ClaimsOut 拒收，根因是旧简报只写 "opinions": [] 却只字未提条目形状与 kind 枚举，
+# 模型只能自造字段。schema 不放宽，补的是简报——形状必须逐字下发到模型可见文案。
+_CLAIMS_SHAPE_OPEN = (
+    '"opinions": [{"target": {"type": "node|seam|outside", "value": "节点 id 或 声称 id"}, '
+    '"kind": "漏测|颗粒度|边界归属|命名漂移|失效", "ask": "怎么改", "evidence": "依据"}]}\n'
+    "opinions 没有就写空数组；kind 只能取上面列出的五个值之一，target 与 ask 不得省略。"
+)
+
+
 def _claims_brief(ctx: Ctx, block: str, rows: list[dict], *, register: bool = True) -> str:
     # F-5：尾句必须与本轮语境一致——回扫不登记任何意见，沿用「会被登记为接缝漏测意见」
     # 就是对模型可见文案说谎；其余文案一字不动。
@@ -888,10 +898,13 @@ def _claims_brief(ctx: Ctx, block: str, rows: list[dict], *, register: bool = Tr
         "待核对声称（ref 原样回填）：",
         json.dumps(rows, ensure_ascii=False),
         "故事与测试点的存量清单见 design/manifests/kb-story.json 与 design/drafts/。",
+        # 裁定 32：register=False（点层回扫）只给空数组字面量，不 advertise 条目形状，
+        # 否则回扫会开始产意见。
         '输出一个 JSON：{"claims": [{"ref": "...", "verdict": "covered|unclaimed", '
-        '"owner": "覆盖它的故事 id 或空", "note": ""}], "opinions": []}',
+        '"owner": "覆盖它的故事 id 或空", "note": ""}], '
+        + (_CLAIMS_SHAPE_OPEN if register else '"opinions": []}'),
         tail,
-    ])
+    ] + ([] if register else ['opinions 必须留空数组：回扫不产意见。']))
 
 
 def _claims_story(ctx: Ctx, round_no: int) -> None:
