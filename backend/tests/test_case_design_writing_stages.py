@@ -1281,3 +1281,48 @@ def test_case_gate_fix_instruction_names_both_hard_codes():
     for code in _HARD_CODES:
         assert code in text
     assert "design/cases/" in text
+
+
+def test_undecided_round_refreshes_delivery(tmp_path):
+    """T22 复审残余 ①：待决轮也是「答复人的一轮」，读物必须跟着当前实测刷新。
+
+    复审实测「删掉 `stages.py` 待决分支那次渲染仍全绿」——这条口径原本没有测试挡着。
+    呈递后人把正文改坏（`pt-0003` 失去认领），说一句既不含意见也不含批准的话：状态照旧待决、
+    计数照旧推进、批状态一字不动，但纸面已经能看见「未落实点 1 个」。
+    """
+    kb, env, task, _ = _run_to_gate(tmp_path, n=3)
+    assert "未落实点 0 个" in env.delivery_path.read_text(encoding="utf-8")
+    before = env.delivery_path.read_bytes()
+    _break_first_batch(env, keep=2)
+
+    frames: list[dict] = []
+    turn = _drive(env, _new_turn("看着还行"), task, writer=frames.append)
+    assert turn["case"]["route"] == "agent" and "待决" in turn["messages"][-1].content
+    text = env.delivery_path.read_text(encoding="utf-8")
+    assert "未落实点 1 个" in text and "未落实点 0 个" not in text
+    assert env.delivery_path.read_bytes() != before
+    led = _led(env)
+    assert led.data["writing"]["gate"]["unclear"] == 1
+    assert led.data["writing"]["gate"]["approved_at"] == ""
+    assert [b["state"] for b in led.data["writing"]["batches"]] == ["done"]     # 渲染只写文件
+    assert kb.upserts == [] and kb.deletes == []
+
+
+def test_unmapped_opinion_round_refreshes_delivery(tmp_path):
+    """T22 复审残余 ②：「指向不明」只转述、不动批状态，但它同样答复了人——读物不许滞后。"""
+    kb, env, task, _ = _run_to_gate(tmp_path, n=3, script={
+        "case-gate-int-r1": _j({"opinions": [_opinion("st-0001")], "resolutions": []})})
+    assert "未落实点 0 个" in env.delivery_path.read_text(encoding="utf-8")
+    before = env.delivery_path.read_bytes()
+    _break_first_batch(env, keep=2)
+
+    frames: list[dict] = []
+    turn = _drive(env, _new_turn("st-0001 那条太粗"), task, writer=frames.append)
+    assert turn["case"]["route"] == "agent" and "指向不明" in turn["messages"][-1].content
+    text = env.delivery_path.read_text(encoding="utf-8")
+    assert "未落实点 1 个" in text and env.delivery_path.read_bytes() != before
+    led = _led(env)
+    assert [b["state"] for b in led.data["writing"]["batches"]] == ["done"]
+    assert led.data["writing"]["stale_batches"] == []
+    assert led.data["writing"]["gate"]["round"] == 0                            # 不占修复环预算
+    assert kb.upserts == [] and kb.deletes == []
