@@ -1361,8 +1361,16 @@ def test_first_build_no_change_draft_is_loud_in_opt_and_writeback(tmp_path):
 
         errors = _drafts_errors(ctx, "chain", "ALL")
         if mode == "update":
-            assert errors == [], mode
-            assert _collect_writeback_items(ctx) == [], mode
+            # F-3（R-52）翻转契约：update 采信 no_change 必须双条件——update 模式 **且**
+            # 本 run 的 h_gen 记过账；无账 ⇒ 响亮（与首建同方向不静默）。
+            assert errors == ["ALL.json: 本块草稿标记为无变化但账本无本轮判定记录："
+                              "请重新判定本块（不许静默跳过）"], mode
+            try:
+                _collect_writeback_items(ctx)
+            except KbClientError as exc:
+                assert "本块草稿标记为无变化但账本无本轮判定记录" in str(exc), mode
+            else:
+                raise AssertionError(f"update 无账 no_change 草稿被静默跳过：{mode}")
             continue
         assert errors == ["ALL.json: nodes 必须是非空数组"], mode
         try:
@@ -1429,6 +1437,9 @@ def test_rescan_sends_only_residual_rows_to_one_bounded_pass(tmp_path):
     # 只喂残余行：确定性可翻的 a1 不许出现在复核简报里
     assert "st-0001-a2" in rescan_calls[0]["brief"]
     assert "st-0001-a1" not in rescan_calls[0]["brief"]
+    # F-5：回扫语境下不登记任何意见——简报尾句不许再说「会被登记为接缝漏测意见」
+    assert "会被登记为接缝漏测意见" not in rescan_calls[0]["brief"]
+    assert "不登记意见" in rescan_calls[0]["brief"]
     assert _open_of(ctx, "story", source="audit") == []     # 不登记意见
     assert ctx.led.layer("story")["state"] == "audited"     # 没被回扫重开
     rows = {r["ref"]: r for r in ctx.led.layer("story")["claims"]}
@@ -1510,3 +1521,120 @@ def test_point_layer_closeout_hook_fires_the_rescan(tmp_path):
     assert len(task.calls) == calls_before                  # ② 收口路径里不许冒模型调用
     assert ctx.led.layer("story")["state"] == "audited"     # ③ 回扫没重开故事层
     assert _open_of(ctx, "story", source="audit") == []     # ③ 也没登记任何意见
+
+
+# ---- T16（整片评审收口）：F-1(R-50) / F-2(R-51) / F-3(R-52) / F-4(R-53) / F-6 ----
+
+def test_rescan_count_line_recomputes_from_current_claims_table(tmp_path):
+    """F-1（R-50）：回扫计数行与逐行尾注同源——从本张 claims 表现算，不读账本旧计数。
+
+    门退回→重走故事层后 `st["claims"]` 整表重建（`_claims_story:920`），表内零行带
+    rescanned；此时大纲不许再出「回扫补认：确定性 N 条／复核 M 条」——那行数字无法被
+    同一份表反证（裁定 34）。
+    """
+    _, _, ctx = _rescan_ctx(
+        tmp_path, [_unclaimed("st-0001-a1", "该场景由 pt-0002 覆盖")],
+        point_nodes=[{"op": "upsert", "type": "point", "id": "pt-0002",
+                      "story": "st-0001", "directions": ["正向"]}])
+    _rescan_claims(ctx)
+    assert ctx.led.layer("story")["claims_rescan"]["deterministic"] == 1   # 账本记过 1
+    # 模拟故事层重建：换一批无标记的新行（claims_rescan 不重建，仍留在账本里）
+    new_rows = [_unclaimed("st-0009-a1", "该场景由 pt-0009 覆盖")]
+    new_rows[0].update({"verdict": "covered", "owner": "pt-0009"})
+    ctx.led.layer("story")["claims"] = new_rows
+    report = {"hard": [], "report": {"empty_seam": 0, "matrix_unreasoned": 0,
+                                     "unresolved": 0, "point_missing_directions": 0}}
+    md = compose_outline(ctx.led.data, {}, report, _outline_extras(ctx, {}))
+    assert "回扫补认" not in md
+    assert "（回扫补认·" not in md
+
+
+def test_rescan_cross_notes_attributed_claim_opinion_without_settling(tmp_path):
+    """F-2（R-51）：补认后的旧「声称未认领」归因项——不销账、不重开，只在呈递上交叉标注。
+
+    接缝归属表说「已核对（回扫补认·确定性）」、未消化项逐字列着「声称未认领」——两处
+    口径相反；归因项是人已看过的账（裁定 32 不许回扫登记/重开/销账），只加标注。
+    """
+    _, _, ctx = _rescan_ctx(
+        tmp_path, [_unclaimed("st-0001-a1", "该场景由 pt-0002 覆盖")],
+        point_nodes=[{"op": "upsert", "type": "point", "id": "pt-0002",
+                      "story": "st-0001", "directions": ["正向"]}])
+    story = ctx.led.layer("story")
+    story["opinions"] = [{
+        "ref": "op-01", "key": "claims:st-0001-a1", "source": "audit", "block": "ch-0001",
+        "target": {"type": "seam", "value": "st-0001-a1"}, "kind": "漏测",
+        "ask": "声称未认领：该场景由 pt-0002 覆盖", "evidence": "st-0001",
+        "resolved": False, "escalated": True, "disposition": "", "note": ""}]
+    # unresolved 项形状按 h_attribute:773-775（refs 列表、呈递时逗号拼接）
+    story["unresolved"] = [{"block": "", "refs": ["op-01"], "cause": "评审分歧",
+                            "note": "反复意见不收敛"}]
+    _rescan_claims(ctx)
+    report = {"hard": [], "report": {"empty_seam": 0, "matrix_unreasoned": 0,
+                                     "unresolved": 1, "point_missing_directions": 0}}
+    md = compose_outline(ctx.led.data, {}, report, _outline_extras(ctx, {}))
+    # ① 该行仍在「未消化项」段里（没被删）
+    assert "[story/op-01] 声称未认领：该场景由 pt-0002 覆盖" in md
+    # ② 行尾带上了补认标注（追加在「（归因：…）」之后、不替换它）
+    assert "（归因：评审分歧——反复意见不收敛）（已由回扫补认 owner=pt-0002，此处仍带账供人裁决）" in md
+    # ③ 没销账、没重开
+    assert story["opinions"][0]["resolved"] is False
+    assert story["state"] == "audited"
+
+
+def test_update_booked_no_change_flows_silently_and_lists_in_outline(tmp_path):
+    """F-3 双条件的另一半证据 + F-4（R-53）：记过账 ⇒ 静默放行；大纲措辞与文件系统一致。
+
+    update 模式、账本有本轮 h_gen 记账的 no_change 块 ⇒ `_drafts_errors` 不报错、
+    `_collect_writeback_items` 零节点零写入；大纲「本次无变化块」列出该块与 reason，
+    且说「（本块判定无变化，未下发节点）」——草稿文件确实在，旧串「未产生草稿」相反。
+    """
+    env = _env(tmp_path, StubKb())
+    led = Ledger.fresh(env.design)
+    led.layer("chain")["mode"] = "update"
+    led.layer("chain")["state"] = "audited"
+    led.layer("chain")["blocks"] = [{"id": "ALL", "state": "done", "round": 0}]
+    led.data["no_change"] = [{"layer": "chain", "block": "ALL", "reason": "本块业务规则未变"}]
+    led.save()
+    ctx = Ctx(env=env, task_tool=ScriptTask(), writer=lambda e: None, config={},
+              state_messages=[], led=led)
+    _write(env.drafts_dir("chain") / "ALL.json",
+           {"layer": "chain", "block": "ALL", "nodes": [], "note": "no_change",
+            "reason": "本块业务规则未变"})
+    assert _drafts_errors(ctx, "chain", "ALL") == []
+    assert _collect_writeback_items(ctx) == []                  # 零节点零写入
+    extras = _outline_extras(ctx, {})
+    assert extras["no_change"] == [{"layer": "chain", "block": "ALL",
+                                    "reason": "本块业务规则未变"}]
+    report = {"hard": [], "report": {"empty_seam": 0, "matrix_unreasoned": 0,
+                                     "unresolved": 0, "point_missing_directions": 0}}
+    md = compose_outline(led.data, {}, report, extras)
+    assert "（本块判定无变化，未下发节点）：本块业务规则未变" in md   # F-4 新串在场
+    assert "未产生草稿" not in md                                     # 旧串与文件系统相反
+
+
+def test_unparseable_draft_breaks_retry_budget_and_says_writeback_not_run(tmp_path):
+    """F-6：确定性坏草稿不占重试预算——终帧如实说「回写未执行：{原始事实}」。
+
+    旧路径把坏草稿吞进 3 次重试并说「知识库暂不可写；回复『重试』可再次尝试」——
+    重试必再炸，这句话把人往错方向支。
+    """
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    led = Ledger.fresh(env.design)
+    led.layer("chain")["mode"] = "update"
+    led.layer("chain")["state"] = "audited"
+    led.layer("chain")["blocks"] = [{"id": "ALL", "state": "done", "round": 0}]
+    led.save()
+    frames: list[dict] = []
+    ctx = Ctx(env=env, task_tool=ScriptTask(), writer=frames.append, config={},
+              state_messages=[HumanMessage("通过")], led=led)
+    (env.drafts_dir("chain") / "ALL.json").write_text("{ 不是合法 JSON", encoding="utf-8")
+    turn = h_writeback(ctx)
+    assert turn["case"]["route"] == "end"
+    # ① 没白花重试：零下发写入
+    assert kb.upserts == [] and "case_node_upsert" not in kb.job_names
+    # ② 终帧含「回写未执行」与原始「不可解析」事实、不含「知识库暂不可写」
+    text = _end_text(frames)
+    assert "回写未执行" in text and "不可解析" in text
+    assert "知识库暂不可写" not in text
+    assert led.status == "writeback_failed"

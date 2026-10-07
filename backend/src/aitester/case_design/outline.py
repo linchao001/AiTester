@@ -124,8 +124,13 @@ def compose_outline(ledger_data: dict, nodes_by_layer: dict, report: dict, extra
     if not unresolved:
         lines.append("- 无")
     for u in unresolved:
-        lines.append(f"- [{u.get('layer', '')}/{u.get('ref', '')}] {u.get('ask', '')}"
-                     f"（归因：{u.get('cause', '')}——{u.get('note', '')}）")
+        line = (f"- [{u.get('layer', '')}/{u.get('ref', '')}] {u.get('ask', '')}"
+                f"（归因：{u.get('cause', '')}——{u.get('note', '')}）")
+        # F-2（R-51）：回扫补认后的旧归因项不销账，只在行尾追加交叉标注（在「（归因：…）」
+        # 之后、不替换它）——两处口径相反时给人一条能对上的线索。
+        if u.get("rescan_note"):
+            line += f"（{u['rescan_note']}）"
+        lines.append(line)
     lines += ["", "## 重复标注清单"]
     duplicates = extras.get("duplicates") or []
     if duplicates:
@@ -142,10 +147,14 @@ def compose_outline(ledger_data: dict, nodes_by_layer: dict, report: dict, extra
             lines.append(f"- {c.get('claimant', '')} 声称「{c.get('claim', '')}」→ "
                          f"{'空归属（未消化）' if c.get('verdict') == 'unclaimed' else '已核对'}"
                          f"（owner={c.get('owner', '')}）{tail}")
+        # F-1（R-50）：计数与紧邻其上的逐行尾注同源——从本张 claims 表现算，不读账本
+        # 旧计数（故事层重建后 claims_rescan 不重建，读它会出「0 行带标记却报 1 条」）；
+        # d/r 都为 0 时整行不出，免得「0 条」与「从未回扫」两种意思挤在同一行。
         rescan = extras.get("claims_rescan") or {}
-        if rescan:
-            lines.append(f"- 回扫补认：确定性 {rescan.get('deterministic', 0)} 条／"
-                         f"复核 {rescan.get('reviewer', 0)} 条（{rescan.get('at', '')}）")
+        d = sum(1 for c in claims if c.get("rescanned") == "deterministic")
+        r = sum(1 for c in claims if c.get("rescanned") == "reviewer")
+        if d or r:
+            lines.append(f"- 回扫补认：确定性 {d} 条／复核 {r} 条（{rescan.get('at', '')}）")
     else:
         lines.append("- 无")
     lines += ["", "## 矩阵复核（③「不需要」的业务理由）"]
@@ -182,7 +191,7 @@ def compose_outline(ledger_data: dict, nodes_by_layer: dict, report: dict, extra
             layer_cn = LAYER_CN.get(item.get("layer", ""), item.get("layer", ""))
             reason = str(item.get("reason") or "").strip()
             lines.append(f"- [{layer_cn}] 块 {item.get('block', '')}"
-                         "（智能体判定无变化，未产生草稿）"
+                         "（本块判定无变化，未下发节点）"
                          + (f"：{reason}" if reason else ""))
     else:
         lines.append("- 无")

@@ -266,8 +266,8 @@ def test_update_branch_end_to_end(tmp_path: Path) -> None:
     assert "（更新，P0）" in outline and "（存量，P0）" in outline
     assert "（新增" not in outline                            # 全 update 模式：没有新增标记
     assert "owner=st-0001" in outline                         # 增量 × 存量接缝归属
-    assert "块 ch-0001（智能体判定无变化" in outline
-    assert "块 st-0001（智能体判定无变化" in outline
+    assert "块 ch-0001（本块判定无变化" in outline
+    assert "块 st-0001（本块判定无变化" in outline
 
     provider2 = ScriptedProvider([])
     frames2 = list(stream_graph(build_case_design_graph, provider2, tools,

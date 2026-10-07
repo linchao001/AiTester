@@ -58,6 +58,14 @@ class _Halt(RuntimeError):
     """驱动内的确定性中止（重试超限/轮次用尽/计划空窗）：收敛为 halted + 终帧。"""
 
 
+class DraftUnparseable(KbClientError):
+    """确定性坏草稿（不可解析 / update 无账 no_change）：重试必再炸，不占回写重试预算。
+
+    继承 KbClientError 保证所有既有 `except KbClientError` 语义不变；`h_writeback`
+    单独先捕它——把这种输入说成「知识库暂不可写」会把人往「重试」的错方向支（F-6）。
+    """
+
+
 @dataclass
 class Ctx:
     """一次驱动激活的全部显式依赖（无全局态；env=None 时不构造）。"""
@@ -153,6 +161,12 @@ def _is_no_change(raw: Any) -> bool:
     """
     return (isinstance(raw, dict) and not raw.get("nodes")
             and str(raw.get("note") or "") == "no_change")
+
+
+def _no_change_booked(ctx: Ctx, layer: str, block: str) -> bool:
+    """无变化块的采信单点：本 run 的 h_gen 记过账才算「判定过」（R-52，与首建同方向不静默）。"""
+    return any(str(e.get("layer")) == layer and str(e.get("block")) == block
+               for e in (ctx.led.data.get("no_change") or []))
 
 
 def _now() -> str:
@@ -737,14 +751,19 @@ def _drafts_errors(ctx: Ctx, layer: str, block: str) -> list[str]:
 
     no_change 块（空 nodes + note 标记）是合法终态，跳过——否则混合层走层环优化时
     会被空草稿绊住，重问到 FIX_CAP 后错误中止（见 _is_no_change）。
-    跳过只在 update 模式生效：首建模式的无变化块是漏做，必须在这里也报成坏草稿。
+    采信是双条件（R-52）：update 模式 **且** 本 run 的 h_gen 记过账（_no_change_booked）；
+    内容像 no_change 但无账 ⇒ 与首建同方向走响亮路径，不许静默跳过。
     """
     blocks = [block] if block else [str(e["id"]) for e in ctx.led.layer(layer)["blocks"]]
     errors: list[str] = []
-    skip_no_change = str(ctx.led.layer(layer)["mode"]) == "update"
+    update_mode = str(ctx.led.layer(layer)["mode"]) == "update"
     for bid in blocks:
         path = ctx.env.drafts_dir(layer) / f"{bid}.json"
-        if skip_no_change and _is_no_change(_read_json(path)):
+        if update_mode and _is_no_change(_read_json(path)):
+            if _no_change_booked(ctx, layer, bid):
+                continue
+            errors.append(f"{bid}.json: 本块草稿标记为无变化但账本无本轮判定记录："
+                          "请重新判定本块（不许静默跳过）")
             continue
         _, errs = parse_draft_file(layer, path)
         errors += [f"{bid}.json: {e}" for e in errs]
@@ -858,7 +877,11 @@ def _cmp_chain(ctx: Ctx, round_no: int) -> None:
     _close_missing(ctx, CHAIN, "audit", issued | {e["key"] for e in entries})
 
 
-def _claims_brief(ctx: Ctx, block: str, rows: list[dict]) -> str:
+def _claims_brief(ctx: Ctx, block: str, rows: list[dict], *, register: bool = True) -> str:
+    # F-5：尾句必须与本轮语境一致——回扫不登记任何意见，沿用「会被登记为接缝漏测意见」
+    # 就是对模型可见文案说谎；其余文案一字不动。
+    tail = ("unclaimed 表示没有任何节点认领这个声称（会被登记为接缝漏测意见）。" if register
+            else "本轮回扫只补认结论，不登记意见、不重开任何环。")
     return "\n".join([
         f"【声称核对·块 {block}·第 X 轮】用户故事对「由谁覆盖」有一个或多个声称（assumptions）。"
         "请逐条核对每个声称在树内是否真的被覆盖。",
@@ -867,7 +890,7 @@ def _claims_brief(ctx: Ctx, block: str, rows: list[dict]) -> str:
         "故事与测试点的存量清单见 design/manifests/kb-story.json 与 design/drafts/。",
         '输出一个 JSON：{"claims": [{"ref": "...", "verdict": "covered|unclaimed", '
         '"owner": "覆盖它的故事 id 或空", "note": ""}], "opinions": []}',
-        "unclaimed 表示没有任何节点认领这个声称（会被登记为接缝漏测意见）。",
+        tail,
     ])
 
 
@@ -962,7 +985,8 @@ def _rescan_claims(ctx: Ctx) -> None:
     if still and "claims_rescan" not in st:        # 复核每 run 至多一次（R-46）
         call_id = f"claims-rescan-r{int(ctx.led.layer(POINT).get('audit_round') or 0)}"
         out, raw = run_reviewer(ctx.task_tool, CASE_REVIEW_AGENT_ID,
-                                _claims_brief(ctx, "回扫", still), model_cls=ClaimsOut,
+                                _claims_brief(ctx, "回扫", still, register=False),
+                                model_cls=ClaimsOut,
                                 call_id=call_id, title="声称核对·点层回扫", config=ctx.config,
                                 archive=lambda cid, text: _archive_review(ctx, cid, text))
         _archive_review(ctx, call_id, raw)
@@ -1166,15 +1190,33 @@ def _duplicate_groups(nodes_by_layer: dict) -> list[list[str]]:
 def _outline_extras(ctx: Ctx, nodes_by_layer: dict) -> dict:
     """大纲附加段（全部确定性组装）：dispositions=意见落点对照表、enumeration=① 对照等。"""
     layers = ctx.led.data["layers"]
+    # F-2（R-51）：回扫补认后的旧「声称未认领」归因项——不销账、不重开（裁定 32），
+    # 只在呈递侧交叉标注。映射在这份 extras 里现算（不改账本、不新增账本键）：
+    # 故事层 opinions 中 key 以 claims: 开头、且对应 claims 行现在 verdict==covered 的
+    # op ref → owner；精确 join（op["key"] == f"claims:{row['ref']}"），不拿 ask 文本模糊匹配。
+    claims_rows = layers[STORY].get("claims") or []
+    rescan_owner_by_op: dict[str, str] = {}
+    for op in layers[STORY]["opinions"]:
+        key = str(op.get("key") or "")
+        if not key.startswith("claims:"):
+            continue
+        for row in claims_rows:
+            if key == f"claims:{row.get('ref')}" and str(row.get("verdict") or "") == "covered":
+                rescan_owner_by_op[str(op["ref"])] = str(row.get("owner") or "")
     unresolved: list[dict] = []
     dispositions: list[dict] = []
     for layer in LAYERS:
         asks = {op["ref"]: op["ask"] for op in layers[layer]["opinions"]}
         for u in layers[layer]["unresolved"]:
             refs = [str(r) for r in (u.get("refs") or [])]
-            unresolved.append({"layer": layer, "ref": ",".join(refs),
-                               "ask": "；".join(asks.get(r, r) for r in refs),
-                               "cause": u.get("cause", ""), "note": u.get("note", "")})
+            item = {"layer": layer, "ref": ",".join(refs),
+                    "ask": "；".join(asks.get(r, r) for r in refs),
+                    "cause": u.get("cause", ""), "note": u.get("note", "")}
+            notes = [f"已由回扫补认 owner={rescan_owner_by_op[r]}，此处仍带账供人裁决"
+                     for r in refs if r in rescan_owner_by_op]
+            if notes:
+                item["rescan_note"] = "；".join(notes)
+            unresolved.append(item)
         for op in layers[layer]["opinions"]:
             status = ("已销账" if op["resolved"] else
                       "未消化（已归因）" if op["escalated"] else "在途")
@@ -1465,10 +1507,16 @@ def _collect_writeback_items(ctx: Ctx) -> list[tuple[str, str, dict | None]]:
         skip_no_change = str(ctx.led.layer(layer)["mode"]) == "update"
         for path in sorted(ctx.env.drafts_dir(layer).glob("*.json")):
             if skip_no_change and _is_no_change(_read_json(path)):
-                continue                   # 无变化块：零节点零写入（合法终态）
+                # 采信双条件（R-52）：update 模式 **且** 本 run 记过账才零节点零写入；
+                # 无账 ⇒ 响亮（DraftUnparseable，不占重试预算——重试必再炸）。
+                if _no_change_booked(ctx, layer, path.stem):
+                    continue               # 无变化块：零节点零写入（合法终态）
+                raise DraftUnparseable(
+                    f"{layer}/{path.name} 本块草稿标记为无变化但账本无本轮判定记录："
+                    "请重新判定本块（不许静默跳过）")
             nodes, errors = parse_draft_file(layer, path)
             if errors:
-                raise KbClientError(f"{layer}/{path.name} 不可解析：{errors[0]}")
+                raise DraftUnparseable(f"{layer}/{path.name} 不可解析：{errors[0]}")
             for node in nodes:
                 nid = str(node.id or "")
                 if node.is_delete():
@@ -1506,6 +1554,8 @@ def h_writeback(ctx: Ctx) -> Any:
     kb = KbClient(ctx.env.kb)
     ok = False
     written = untouched = 0
+    # F-6：确定性坏草稿的事实原文（终帧如实报因用）；瞬时错误仍走原 3 次重试预算。
+    draft_error: str | None = None
     # 本轮真下过笔的节点（跨尝试记账）：重试整轮重来时它们必然报 unchanged，
     # 但「未重写」是对人说这一整轮没动过文件——上一尝试写过就不能算未触碰（复审 T14 I-1）。
     rewrote: set[tuple[str, str]] = set()
@@ -1528,12 +1578,20 @@ def h_writeback(ctx: Ctx) -> Any:
             break
         except GraphBubbleUp:
             raise                                # 中断/暂停语义原样上抛，不占回写预算
+        except DraftUnparseable as exc:          # F-6：确定性坏输入不占重试预算——
+            # 重试必再炸；「知识库暂不可写＋回复『重试』」会把人往错方向支。break 出循环、
+            # ok 保持 False、终帧保留原始中文事实；writeback_failed 后人仍可在大纲门退回。
+            wb["log"].append(f"回写未执行：{exc}")
+            draft_error = str(exc)
+            break
         except Exception as exc:                 # 单次失败即整轮重来（upsert 幂等、delete 幂等）；
             # KbClient 只包 TimeoutError，KbUnavailableError 等 manager 侧异常在重试预算内
             # 一并收敛（T6 评审 I-1），不许以未处理异常形式掀翻图。
             wb["log"].append(f"第 {attempt} 次回写失败：{exc}")
     if not ok:
         led.status = "writeback_failed"
+        if draft_error is not None:
+            return ctx.end(f"回写未执行：{draft_error}")
         return ctx.end("回写失败（已自动重试 3 次）：知识库暂不可写；回复「重试」可再次尝试。")
     wb["written"], wb["untouched"] = written, untouched
     for layer in LAYERS:
