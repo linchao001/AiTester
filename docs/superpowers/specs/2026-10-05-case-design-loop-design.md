@@ -253,7 +253,8 @@
   upsert 自建桶的常驻用例（把一次性探针升格为套件资产，钉住真正兜底的那行 `mkdir`）。
 - **契约措辞据实下调（R-31/B-F2）**：`interrupted` 自实现起**从未**作为落盘 status 存在，
   现明确为「瞬时推断态 + `history` 痕迹可查」；「六态可观测」据此降为「五态可作 status + 中断痕迹可查」。
-- **不修（裁定 R-32，逐条给因）**：A-M8 跨三面重构（本期以大纲「hard 豁免」行为准）、
+- **不修（裁定 R-32 + 派发简报，逐条给因）**：A-M5（`in_scope` 缺省两处相反、`_level` 宽容 float/bool：
+  经 `build_universe` 两键恒在，无实害，留作可读性项）、A-M8 跨三面重构（本期以大纲「hard 豁免」行为准）、
   C-Minor-3（`knowledge_search` 在未启用机上仍报 available，根因在所有智能体共用的可用性探针面无 KB 判据）、
   C-Info-1（reme 插件 entry point 需重装 venv，属部署前提）、C-Info-3（`_NoopKbManager` 无 `is_enabled`
   是 A10 双缺省的承重件）、T7 Minor-3（`[object Object]` 工具异常发生于 T7 会话期，与同期 ≥33 次

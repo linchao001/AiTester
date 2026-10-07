@@ -255,7 +255,7 @@ def test_out_of_scope_parent_cycle_does_not_swallow_in_scope_branch():
     assert ("broken_parent", "chain", "ch-0001") in hits
     assert not any(f["where"] in ("ch-9001", "ch-9002") for f in out["hard"])
     detail = next(f["detail"] for f in out["hard"] if f["where"] == "ch-0001")
-    assert "闭合成环" in detail and "无法呈递" in detail
+    assert "闭合成环" in detail and "层级不可信" in detail
 
 
 def test_in_scope_branch_under_a_clean_parent_is_not_reported_as_cycled():

@@ -3536,6 +3536,7 @@ def _go(ctx: Ctx, stage: str, *, layer: str = "", block: str = "", round: int = 
 def _boot(ctx: Ctx, fresh: bool) -> None:
     """载入/初始化账本；fresh（新用户回合）时按旧状态决定新任务 / 续拼人审 / 重试回写。"""
     env, led = ctx.env, Ledger.load(ctx.env.design)
+    loaded = led is not None            # 账本本就存在才算「上一回合没跑完」，防首启假痕迹（B-F2）
     if led is None:
         led = Ledger.fresh(ctx.env.design)
         if env.design.exists() and any(env.design.iterdir()):

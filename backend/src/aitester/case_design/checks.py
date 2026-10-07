@@ -118,7 +118,7 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
     cycle_members = _parent_cycle_members(chains)
     for cid in sorted(cycle_members):
         parent = str(chains[cid].get("parent") or "")
-        add("broken_parent", CHAIN, cid, f"parent「{parent}」与祖先闭合成环，该分支在大纲中无法呈递")
+        add("broken_parent", CHAIN, cid, f"parent「{parent}」与祖先闭合成环，本分支层级不可信")
 
     # I-1：环检测的呈报面不得被 R-13 静音掉「范围内受害方」。若一条**范围内**链路的祖先指针
     # 走入了闭合环（命中 cycle_members 的环体），该分支在大纲里既起不了根也作不了孤儿，会整枝
@@ -138,7 +138,7 @@ def run_checks(universe: dict, claims: list[dict], matrix_cells: list[dict],
             cur = str(chains[cur].get("parent") or "")
         if hit:
             add("broken_parent", CHAIN, cid,
-                f"祖先「{hit}」与更上层闭合成环，本分支在大纲中无法呈递")
+                f"祖先「{hit}」与更上层闭合成环，本分支层级不可信")
 
     for cid in sorted(chains):
         c = chains[cid]
