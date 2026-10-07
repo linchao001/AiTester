@@ -1078,6 +1078,142 @@ def test_gate_opinion_that_maps_to_no_batch_only_relays(tmp_path):
     assert kb.upserts == []
 
 
+def _case_ids_in_file(env, batch: str) -> list[str]:
+    """按成员制读正文里的用例 id（断言不整行相等，C-22b 纪律的同一条缝）。"""
+    raw = json.loads((env.cases_dir() / f"{batch}.json").read_text(encoding="utf-8"))
+    return [str(c.get("case_id") or "") for c in raw["cases"]]
+
+
+def test_gate_fix_ring_new_cases_get_ids_before_delivery(tmp_path):
+    """T22 评审 I-2：修复指令明说新增用例 case_id 留空串、由编排层分配，而补号的两个点
+    （`h_case_gen`/`h_case_opt`）都不在末门修复环的路径上——不补号，交付物「用例清单」按
+    `case_id` 过滤会把新用例整条隐藏、「落实于」渲成空串。末门进门必须先补号再算报告。"""
+    _, env, task, _ = _run_to_gate(tmp_path, n=3)
+    cases_path = env.cases_dir() / "ch-0001-b1.json"
+    _break_first_batch(env)
+    _reopen_gate(env)
+    frames: list[dict] = []
+    _drive(env, _new_turn("继续"), task, writer=frames.append)      # 修复环第 1 轮
+    assert _led(env).data["writing"]["gate"]["round"] == 1
+
+    # 主智能体照指令口径交回：一条点一条用例、case_id 一律空串
+    _write(cases_path, _cases_payload("ch-0001", "ch-0001-b1",
+                                      _manifest_points(env, "ch-0001-b1")))
+    counter_before = int(_led(env).data["counters"]["case"])
+    assert _case_ids_in_file(env, "ch-0001-b1") == ["", "", ""]
+
+    frames = []
+    turn = _drive(env, _new_turn("继续"), task, writer=frames.append)
+    assert turn["case"]["route"] == "end" and "用例交付物已生成" in _end_text(frames)
+    assert int(_led(env).data["counters"]["case"]) > counter_before   # 序号实打实推进了
+    ids = _case_ids_in_file(env, "ch-0001-b1")
+    assert ids == ["cc-0004", "cc-0005", "cc-0006"]                   # 空串已就地补号、顺序不重排
+    text = env.delivery_path.read_text(encoding="utf-8")
+    listed = [int(m) for m in re.findall(r"本链路累计用例 (\d+) 条", text)]
+    assert listed and all(n > 0 for n in listed)                      # 「用例清单」计数不再瞎
+    assert re.search(r"落实于 cc-\d{4}", text)                        # 「落实于」不再是空落点
+
+    _reopen_gate(env)                                                 # 幂等：再进门不重复分配
+    frames = []
+    turn = _drive(env, _new_turn("继续"), task, writer=frames.append)
+    assert turn["case"]["route"] == "end"
+    assert _case_ids_in_file(env, "ch-0001-b1") == ids                # cc id 不漂移
+    assert int(_led(env).data["counters"]["case"]) == counter_before + 3
+
+
+def test_approval_rerenders_delivery_to_match_current_body(tmp_path):
+    """T22 评审 I-1：批准分支原本不重渲染——放行那一瞬人签的纸还停在呈递时的旧实测，
+    「落实于」引用已经不存在的 cc- id。放行判定由重核把关（本测试不动它），这里钉的是读物。"""
+    kb, env, task, _ = _run_to_gate(tmp_path, n=3, script={
+        "case-gate-int-r1": _j({"opinions": [], "resolutions": []})})
+    cases_path = env.cases_dir() / "ch-0001-b1.json"
+    raw = json.loads(cases_path.read_text(encoding="utf-8"))
+    # 人删掉 cc-0002，换一条认领同一个点的**新**用例（新用例按指令留空 id）
+    raw["cases"] = [c for c in raw["cases"] if str(c["case_id"]) != "cc-0002"] + [
+        _cases_payload("ch-0001", "ch-0001-b1", ["pt-0002"])["cases"][0]]
+    _write(cases_path, raw)
+    assert "cc-0002" in env.delivery_path.read_text(encoding="utf-8")  # 呈递时渲的正是旧正文
+
+    frames: list[dict] = []
+    turn = _drive(env, _new_turn("通过"), task, writer=frames.append)
+    assert turn["case"]["route"] == "end" and "用例交付确认完成" in _end_text(frames)
+    led = _led(env)
+    assert led.status == "done" and led.data["writing"]["gate"]["approved_at"]
+    text = env.delivery_path.read_text(encoding="utf-8")
+    assert "cc-0002" not in text                                      # 被删的 id 不再出现在纸上
+    ids = _case_ids_in_file(env, "ch-0001-b1")
+    assert "cc-0002" not in ids
+    added = [i for i in ids if i not in ("cc-0001", "cc-0003")]        # 新用例的 id（补号所得）
+    assert added and all(i in text for i in added)                     # 成员制：纸上有它
+    assert kb.upserts == [] and kb.deletes == []                       # 批准仍然零回写授权
+
+
+def test_refusal_round_refreshes_delivery(tmp_path):
+    """T22 评审 I-1：拒绝放行那一轮文案摆的是**当前**未落实点，读物若滞后在「0 个」上就当场
+    自相矛盾。本轮不占修复环预算、不放行、零 KB 写，但交付物必须按当前实测刷新。"""
+    kb, env, task, _ = _run_to_gate(tmp_path, n=3, script={
+        "case-gate-int-r1": _j({"opinions": [], "resolutions": []})})
+    assert "未落实点 0 个" in env.delivery_path.read_text(encoding="utf-8")
+    _break_first_batch(env, keep=2)                                   # 删掉 pt-0003 的唯一认领
+
+    frames: list[dict] = []
+    turn = _drive(env, _new_turn("通过"), task, writer=frames.append)
+    assert turn["case"]["route"] == "agent"                           # 明示批准被机器账挡下
+    reply = turn["messages"][-1].content
+    assert "不予放行" in reply and "pt-0003" in reply
+    assert _end_text(frames) == ""
+    text = env.delivery_path.read_text(encoding="utf-8")
+    assert "未落实点 1 个" in text                                     # 只有本轮重渲染才看得到
+    assert "pt-0003" in text and "未落实（无用例认领）" in text
+    led = _led(env)
+    assert led.status == "awaiting_review" and led.data["writing"]["gate"]["approved_at"] == ""
+    assert led.data["writing"]["gate"]["round"] == 0                  # 拒绝放行不占修复环预算
+    assert kb.upserts == [] and kb.deletes == []
+
+
+def test_stale_batch_before_target_never_auto_reruns_but_approval_still_closes(tmp_path):
+    """T22 评审 M-1 登记性 pin（本片**不改行为**）：`_after_case_batch` 只向后扫 batches[idx+1:]，
+    所以人指 b2 时前置的 b1 被标 stale 后永不自动重算，只在交付物「失效待重算批次」段呈人裁决；
+    批准也不查 stale_batches ⇒「明确保留旧稿」实际＝批准带 stale 放行（裁定 36③ 的字面）。
+    本测试钉语义、非认可该语义最优。"""
+    kb, env, task, _ = _run_to_gate(tmp_path, n=21, script={
+        "case-gate-int-r1": _j({"opinions": [_opinion("cc-0015", ask="拆成三步")],
+                                "resolutions": []}),
+        "case-gate-int-r2": _j({"opinions": [], "resolutions": []})})
+    assert [b["id"] for b in _led(env).data["writing"]["batches"]] \
+        == ["ch-0001-b1", "ch-0001-b2", "ch-0001-b3"]                 # 21 点 ⇒ 10+10+1 三批
+
+    human = _new_turn("cc-0015 步骤太粗，拆成三步再断言")
+    frames: list[dict] = []
+    turn = _drive(env, human, task, writer=frames.append)
+    _append(human, turn)
+    led = _led(env)
+    assert (turn["case"]["route"], led.cursor["block"]) == ("agent", "ch-0001-b2")
+    assert [b["state"] for b in led.data["writing"]["batches"]] == ["stale", "drafted", "stale"]
+
+    _write(env.reviews_dir / "human-case-ch-0001-b2-fix-r0.json",
+           {"dispositions": [{"ref": "op-01", "status": "fixed", "note": "已拆步"}]})
+    frames = []
+    turn = _drive(env, human, task, writer=frames.append)             # b2 复审 → b3 重算 → 二次呈递
+    assert turn["case"]["route"] == "end" and "用例交付物已生成" in _end_text(frames)
+    led = _led(env)
+    assert [b["state"] for b in led.data["writing"]["batches"]] == ["stale", "done", "done"]
+    assert led.data["writing"]["stale_batches"] == ["ch-0001-b1"]     # 前置位停在 stale
+    assert "case-ch-0001-b1-r1" not in task.call_ids()                # 它的复审从未发生
+    section = env.delivery_path.read_text(encoding="utf-8").split(
+        "## 失效待重算批次")[1].split("## 意见落点对照表")[0]
+    assert "ch-0001-b1" in section                                    # 不静默丢：呈人裁决
+
+    frames = []
+    turn = _drive(env, _new_turn("通过"), task, writer=frames.append)
+    assert turn["case"]["route"] == "end" and "用例交付确认完成" in _end_text(frames)
+    led = _led(env)
+    assert led.status == "done" and led.data["writing"]["gate"]["approved_at"]
+    assert led.data["writing"]["stale_batches"] == ["ch-0001-b1"]     # 批准带 stale 放行
+    assert [b["state"] for b in led.data["writing"]["batches"]] == ["stale", "done", "done"]
+    assert kb.upserts == [] and kb.deletes == []
+
+
 def test_design_gate_reentry_still_routes_to_gate_interpret(tmp_path):
     """`_boot` 的分流只认编写环状态：设计侧 awaiting_review（writing.status 为 ""）
     仍走大纲门解读——末门不许把三层的人审续步抢走。"""

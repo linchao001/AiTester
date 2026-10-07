@@ -830,6 +830,10 @@ def _batch_of_target(ctx: Ctx, value: str) -> str:
 
     返回空串 = 归不了批（人指的是设计侧的东西或没给 id）。调用方绝不许把它塞进随便一个批的
     优化环——那会让「这条意见去哪了」在交付物上撒谎。
+
+    pt- 的取舍（T22 评审 M-4，控制方裁定保持现状）：一点挂两链时按 targets 入账顺序取**第一条
+    链路**的批——该点确在那批分母内，归属为真、确定、可解释；返回 "" 看着更保守，却会把一条真能
+    落地的意见降级成转述，比现状差。人的本意若在另一条链，由那一轮的交付物与下一句意见纠偏。
     """
     value = str(value or "")
     targets = ctx.led.data["writing"].get("targets") or []
@@ -904,6 +908,17 @@ def _case_gate_report(ctx: Ctx) -> dict:
             "hard": hard, "uncovered": sorted(uncovered), "broken": broken}
 
 
+def _patch_batches_case_ids(ctx: Ctx) -> None:
+    """末门进门补号：修复指令明说新增用例的 case_id 留空串、由编排层分配，而批环两个补号点
+    （`h_case_gen`/`h_case_opt`）都不在末门修复环的路径上。不补号，交付物的「用例清单」按
+    `case_id` 过滤会把新用例整条隐藏、「落实于」渲成空串，且空 id 用例在归属表里互相覆写。
+    坏批与非 dict 正文由 `_patch_case_ids` 自己早退（它读不到 dict 就返回），此处不重复判。"""
+    for entry in ctx.led.data["writing"]["batches"]:
+        batch = str(entry.get("id") or "")
+        if batch:
+            _patch_case_ids(ctx, batch)
+
+
 def _op_status_cn(op: dict) -> str:
     if op.get("resolved"):
         return "已销账"
@@ -947,21 +962,23 @@ def _write_case_delivery(ctx: Ctx, report: dict) -> None:
 
 _CASE_GATE_UNDECIDED = (
     "【用例末门·待决】上面这条人审消息既没有可执行的意见（指向 cc- 用例 / pt- 测试点 / ch- 链路），"
-    "也没有明示批准（通过/批准/同意/确认）。本轮不放行、不放回批环，交付物 design/case-delivery.md "
-    "维持原状。请把上述状态转述给人并等待其明确答复，不要代替人给出批准。"
-    "本轮只输出一条面向人的答复，不要改动任何文件。"
+    "也没有明示批准（通过/批准/同意/确认）。本轮不放行、不放回批环，批次状态与游标都不动；"
+    "交付物 design/case-delivery.md 已由编排层按当前实测刷新。请把上述状态转述给人并等待其明确答复，"
+    "不要代替人给出批准。本轮只输出一条面向人的答复，不要改动任何文件。"
 )
 _CASE_GATE_UNRESOLVED = (
     "【用例末门·意见指向不明】人审给了内容，但没有落到具体批次：target 的 value 必须是交付物里"
     "真实存在的 cc- 用例 id、pt- 测试点 id 或 ch- 链路 id（seam/树外遗漏属设计侧，请到测试设计任务里提）。"
-    "请向人确认指向后再说一次；本轮批次状态与交付物维持原状，不要改动任何文件。"
+    "请向人确认指向后再说一次；本轮批次状态与游标都不动，交付物已由编排层按当前实测刷新，"
+    "你不要改动任何文件。"
 )
 
 
 def _case_gate_refusal(report: dict) -> str:
     """拒绝放行的面向人文案：逐条摆机器账，让人知道「批了但没过」到底是哪几条点没落实。"""
     lines = ["【用例末门·不予放行】本轮人话是明示批准，但末门的机器账没有清零——"
-             "批准不能代替实测计数，交付物维持原状、零放行："]
+             "批准不能代替实测计数，批次状态与游标都不动、零放行，"
+             "交付物已由编排层按当前实测刷新："]
     lines += [f"- {h['detail']}" for h in report["hard"][:20]]
     lines += [f"- 批次 {b['batch']} 正文不可解析：{b['errors'][0]}" for b in report["broken"][:20]]
     lines.append("要改：说一句带 cc-/pt-/ch- id 的意见即可退回批环重做；要放行：把正文修好后重新批准。"
@@ -970,7 +987,7 @@ def _case_gate_refusal(report: dict) -> str:
 
 
 def h_case_gate(ctx: Ctx) -> Any:
-    """用例末门：待决不重呈 → 每次进门都重渲染实测 → hard/坏批清零（修复环 ≤round_cap）→ 呈递人审。"""
+    """用例末门：待决不重呈 → 每次进门先补号再重渲染实测 → hard/坏批清零（修复环 ≤round_cap）→ 呈递人审。"""
     led, gate = ctx.led, ctx.led.data["writing"]["gate"]
     if led.status == "awaiting_review":
         # B-F4（比三层更严）：人正在等——待决转述轮、或被机器账拒绝放行的那一轮，游标都还停在
@@ -978,6 +995,7 @@ def h_case_gate(ctx: Ctx) -> Any:
         # 三层用「hard 为空」当守卫条件，是因为它呈递后宇宙不再变；末门的批准拒绝路径会让
         # 「awaiting_review + hard 非零」成为合法现场，条件必须整个去掉。
         return ctx.turn([], "end")
+    _patch_batches_case_ids(ctx)                   # 修复环交回的空 id 用例先补号，报告才认得它们
     report = _case_gate_report(ctx)
     _write_case_delivery(ctx, report)                 # 文件永远对得上当前实测，即使本轮不呈递
     if report["hard"] or report["broken"]:
@@ -999,7 +1017,13 @@ def h_case_gate(ctx: Ctx) -> Any:
 
 
 def h_case_gate_interpret(ctx: Ctx) -> Any:
-    """末门人审续步：解读人话 → 批准还要过机器账 → 意见按目标批回环，其余批标 stale 不静默丢。"""
+    """末门人审续步：解读人话 → 批准还要过机器账 → 意见按目标批回环，其余批标 stale 不静默丢。
+
+    每一条**答复人**的分支（拒绝放行 / 批准完成 / 待决 / 指向不明）都在答复前把交付物按当前
+    实测重渲染一次——唯一人审门上的读物不许说谎（裁定 25/36①）。批准与拒绝复用同一份已算好的
+    `report`，不为渲染再跑第二次核对（C-22a）；只有意见回环不渲染（它不回交付物，下一轮
+    `h_case_gate` 自然重渲染），B-F4 守卫轮照旧零写、零帧、零计数推进。
+    """
     led, writing = ctx.led, ctx.led.data["writing"]
     gate, human_text = writing["gate"], _human_text(ctx.state_messages)
     k = int(gate.get("int_round") or 0) + 1
@@ -1028,17 +1052,22 @@ def h_case_gate_interpret(ctx: Ctx) -> Any:
     if out.opinions:
         gate["unclear"] = 0
     elif _explicit_approval(human_text):
+        _patch_batches_case_ids(ctx)                # 门后人改正文新增的空 id 用例，重核前先补号
         report = _case_gate_report(ctx)            # 批准不豁免机器账：hard 非零就是不能放行
         if report["hard"] or report["broken"]:
             # 拒绝放行是**有决定**的轮次，不占待决计数：每轮都要人重新说一次，成本由人控制。
             led.status = "awaiting_review"
             _go(ctx, "case_gate")
+            # 文案摆的是当前未落实点，读物必须同步刷新成同一份实测——复用刚算好的 report，
+            # 不为渲染再跑一次核对（C-22a：覆盖真相只出自一次 `run_case_checks`）。
+            _write_case_delivery(ctx, report)
             return ctx.ask(_case_gate_refusal(report))
         gate["approved_at"] = _now()
         gate["unclear"] = 0
         writing["status"] = "done"
         led.status = "done"
         # 裁定 35：用例正文不进知识库——批准只是人对交付物的确认，本门零 KB 写、零回写授权。
+        _write_case_delivery(ctx, report)          # 签字那一瞬的纸必须对得上被批准的正文
         return ctx.end("用例交付确认完成：用例正文只落项目空间 design/cases/，本次零知识库写入。")
     else:
         gate["unclear"] = int(gate.get("unclear") or 0) + 1
@@ -1046,6 +1075,8 @@ def h_case_gate_interpret(ctx: Ctx) -> Any:
             raise _Halt("用例交付门连续未给出可执行意见也未明示批准")
         led.status = "awaiting_review"
         _go(ctx, "case_gate")
+        _patch_batches_case_ids(ctx)               # 待决轮没有 report：补号后自取一次（纯本地零付费）
+        _write_case_delivery(ctx, _case_gate_report(ctx))
         return ctx.ask(_CASE_GATE_UNDECIDED)
 
     # 门后回溯（裁定 36③）：先按目标批分组登记，一条也不许静默丢；登记用 source="case_human"，
@@ -1064,6 +1095,8 @@ def h_case_gate_interpret(ctx: Ctx) -> Any:
     if not targeted:                               # 全是指向不明：只转述，一个批状态都不动
         led.status = "awaiting_review"
         _go(ctx, "case_gate")
+        _patch_batches_case_ids(ctx)               # 与待决同款：补号后自取一次报告，只写文件不动账
+        _write_case_delivery(ctx, _case_gate_report(ctx))
         return ctx.ask(_CASE_GATE_UNRESOLVED)
     first = targeted[0]                            # 入账顺序即链路顺序：最早的受害批先重做
     round_no = int(first["round"])
