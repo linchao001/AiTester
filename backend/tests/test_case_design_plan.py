@@ -307,6 +307,41 @@ def test_outline_dedups_same_id_delete_across_blocks():
     assert "- ch-0001 示例链路甲（新增，P0）" in md             # 存活节点照常成树
 
 
+def test_outline_dedups_same_id_upsert_keeping_latest_row():
+    """W3-3（R-58 并入本片）：增量树里同 id 的「存量／更新」并呈时子节点去重。
+
+    `_outline_nodes()`（stages.py）把 KB 存量行（state=存量）与本 run 草稿行（state=更新）**先存后草
+    直接相加**，`_tree_lines` 旧写法只对 delete 去重——走查三实测同一 id 出双行、其子树整体重影
+    （38 行 / 19 唯一 id，pt-0001 出现 4 次）。人审门里这一格必须说清「将被写库的是哪一份」：
+    最后一行（草稿）胜出，父与子各只呈一行。
+    """
+    nodes_by_layer = {
+        "chain": [{"id": "ch-0001", "name": "旧名的链路", "op": "noop", "parent": "",
+                   "state": "存量", "priority": "P2"},
+                  {"id": "ch-0001", "name": "新名的链路", "op": "upsert", "parent": "",
+                   "state": "更新", "priority": "P0"}],
+        "story": [{"id": "st-0001", "name": "旧故事", "op": "noop", "chains": ["ch-0001"],
+                   "state": "存量"},
+                  {"id": "st-0001", "name": "新故事", "op": "upsert", "chains": ["ch-0001"],
+                   "state": "更新"}],
+        "point": [{"id": "pt-0001", "name": "旧点", "op": "noop", "story": "st-0001",
+                   "directions": ["正向"], "entities": ["旧实体"]},
+                  {"id": "pt-0001", "name": "新点", "op": "upsert", "story": "st-0001",
+                   "directions": ["正向", "负向"], "entities": ["新实体"]}],
+    }
+    md = _outline(nodes_by_layer, {"hard": [], "report": {}},
+                  {"claims": [], "matrix_notes": [], "unresolved": [], "duplicates": []})
+    tree = _section(md, "增量树")
+    # 只取链路**自身**那一行：故事行尾的 `chains: ch-0001` 也含父 id，按子串筛会把子行算进父行。
+    assert [line for line in tree if line.startswith("- ch-0001 ")] == [
+        "- ch-0001 新名的链路（更新，P0）"]
+    assert [line for line in tree if "st-0001" in line] == [
+        "  - st-0001 新故事（更新，chains: ch-0001）"]
+    assert [line for line in tree if "pt-0001" in line] == [
+        "    - pt-0001 新点（方向: 正向/负向；实体: 新实体）"]
+    assert "旧名的链路" not in md and "旧故事" not in md and "旧实体" not in md
+
+
 def test_outline_renders_orphan_branch():
     """F2：驱动只把「本次涉及的草稿节点」交给大纲（窄子树任务、父节点被删时上游父节点不在
     输入里）。父引用落空的链路按根起树并递归下钻——否则整条分支（含其下 upsert 的故事与测试点）

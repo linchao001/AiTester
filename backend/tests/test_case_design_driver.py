@@ -24,8 +24,8 @@ from aitester.case_design.reviewers import _RETRY_HINT
 from aitester.case_design.schema import ClaimsOut, parse_json_fence
 from aitester.case_design.stages import (
     Ctx, _claims_brief, _collect_writeback_items, _drafts_errors, _drop_out_of_window_hards,
-    _layer_audited, _open_of, _outline_extras, _patch_ids, _rescan_claims, drive_turn,
-    h_writeback,
+    _explicit_approval, _layer_audited, _open_of, _outline_extras, _patch_ids, _rescan_claims,
+    _writeback_authorized, drive_turn, h_writeback,
 )
 
 REV_CLEAN = '```json\n{"opinions": [], "resolutions": []}\n```'
@@ -1751,3 +1751,36 @@ def test_retry_hint_corrects_fields_not_only_fence():
     # 围栏那句逐字保留（改动只补字段面，不改围栏口径）。
     assert ("上一轮输出无法按约定解析（需要恰好一个 ```json 代码块、块外无其它内容）。"
             in _RETRY_HINT)
+
+
+def test_w3_2_approval_negation_scans_the_clause_not_the_whole_sentence():
+    """W3-2（R-58 并入本片）：否定标记只在**批准措辞所在的分句**内作废批准，不再全句连坐。
+
+    左侧四例是收窄后仍必须成立的 fail-closed 面；右侧两例是走查三呈报的「长句被误杀」面。
+    真值表按分句取意：一个分句里出现批准措辞且**该分句**无否定标记 → 明示批准。
+    """
+    assert _explicit_approval("通过") is True
+    assert _explicit_approval("不通过") is False
+    assert _explicit_approval("先别回写") is False
+    assert _explicit_approval("这条还不够，先不通过") is False
+    assert _explicit_approval("整体看没什么问题，同意通过") is True      # 旧实现：False（「没」连坐）
+    assert _explicit_approval("没问题，批准") is True
+    # 回写再入授权同源：多认一个「重试」，收窄口径必须一致，否则两条门一个宽一个窄。
+    assert _writeback_authorized("有点小疑问，重试") is True
+    assert _writeback_authorized("先别重试") is False
+
+
+def test_w3_2_long_sentence_approval_reaches_writeback(tmp_path):
+    """W3-2 门级证据：收窄必须真的把「长句批准」放行进回写——只测纯函数等于没修。
+
+    取走查三被误杀的那句原话。红在 `led.status == "awaiting_review"` 就是本轮要修的缺陷：
+    人类明示批准却被判待决，零回写。**不许**把断言改成「待决」了事。
+    """
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask())
+    _drive(env, {"messages": [HumanMessage("整体看没什么问题，同意通过")], "case": {}},
+           ScriptTask())
+    led = Ledger.load(env.design)
+    assert led.status == "done" and led.data["gate"]["approved_at"]
+    assert kb.upserts and kb.deletes == []                 # 长句批准同样授权回写

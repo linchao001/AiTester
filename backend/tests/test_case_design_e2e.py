@@ -263,7 +263,10 @@ def test_update_branch_end_to_end(tmp_path: Path) -> None:
     assert kb.upserts == [] and kb.deletes == []
 
     outline = (env.design / "outline.md").read_text(encoding="utf-8")
-    assert "（更新，P0）" in outline and "（存量，P0）" in outline
+    # W3-3 后的口径：同 id 的存量行不再与草稿并呈——将被写库的那一份只有草稿；
+    # 存量仍可见，但只出现在本次没动过的节点上（st-0001 挂在 no_change 块里）。
+    assert "（更新，P0）" in outline and "（存量，chains: ch-0001）" in outline
+    assert "（存量，P0）" not in outline                    # 旧断言钉的正是这条双行并呈缺陷
     assert "（新增" not in outline                            # 全 update 模式：没有新增标记
     assert "owner=st-0001" in outline                         # 增量 × 存量接缝归属
     assert "块 ch-0001（本块判定无变化" in outline

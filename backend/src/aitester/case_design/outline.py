@@ -8,6 +8,27 @@ _LAYER_STATE_CN = {"done": "已定稿", "audited": "已过审", "active": "进�
                    "stale_pending": "失效待重算（下次任务重跑）", "skipped": "本次不动"}
 
 
+def _dedup_latest(rows: list[dict]) -> list[dict]:
+    """同 id 只留**最后一行**：`_outline_nodes()` 的行序是「先 KB 存量、后本 run 草稿」，
+    草稿才是将被写库的那一份（W3-3）。与 `writing.denominator_points` 的 last-row-wins 同源——
+    分母与呈递必须认同一个节点，否则履约表按新版算、大纲按旧版呈。
+
+    出现位置取该 id 的**首次**位置（树形顺序不因去重而漂移），内容取**最后一行**。
+    无 id 的行（异常草稿残留）不参与去重、原样呈递：呈递侧宁可多一行，不可静默少一行。
+    """
+    out: list[dict] = []
+    index: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get("id") or "")
+        if key and key in index:
+            out[index[key]] = row
+            continue
+        if key:
+            index[key] = len(out)
+        out.append(row)
+    return out
+
+
 def _tree_lines(nodes_by_layer: dict, layers: dict) -> list[str]:
     deleted: list[dict] = []
     seen_deleted: set[str] = set()
@@ -20,9 +41,9 @@ def _tree_lines(nodes_by_layer: dict, layers: dict) -> list[str]:
                 continue
             seen_deleted.add(nid)
             deleted.append(n)
-    chains = [n for n in nodes_by_layer.get(CHAIN, []) if n.get("op") != "delete"]
-    stories = [n for n in nodes_by_layer.get(STORY, []) if n.get("op") != "delete"]
-    points = [n for n in nodes_by_layer.get(POINT, []) if n.get("op") != "delete"]
+    chains = _dedup_latest([n for n in nodes_by_layer.get(CHAIN, []) if n.get("op") != "delete"])
+    stories = _dedup_latest([n for n in nodes_by_layer.get(STORY, []) if n.get("op") != "delete"])
+    points = _dedup_latest([n for n in nodes_by_layer.get(POINT, []) if n.get("op") != "delete"])
     lines: list[str] = []
     by_parent: dict[str, list[dict]] = {}
     for c in chains:

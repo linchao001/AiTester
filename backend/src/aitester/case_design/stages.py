@@ -2070,8 +2070,9 @@ _APPROVAL_WORDS: tuple[str, ...] = ("通过", "批准", "同意", "确认", "回
 # 重试措辞：只在「回写失败的续跑」这条路合法（R-27），不进 _APPROVAL_WORDS——
 # 在大纲门说一句「重试」不该触发一次不可逆写。
 _RETRY_WORDS: tuple[str, ...] = ("重试",)
-# 否定/延后标记：全句出现任一即不算明示批准。「不通过」「先别回写」里都含着批准词，字面
-# 匹配会把一句拒绝读成授权——而这条路径的失败代价是不可逆的 KB 写入，方向只能偏保守。
+# 否定/延后标记：批准措辞**所在分句**出现任一即不算明示批准（W3-2 前扫的是全句）。「不通过」
+# 「先别回写」里都含着批准词，字面匹配会把一句拒绝读成授权——而这条路径的失败代价是不可逆的
+# KB 写入，方向只能偏保守。
 _NEGATION_MARKS: tuple[str, ...] = ("不", "未", "别", "暂", "没", "先")
 _GATE_UNDECIDED = (
     "【人审门·待决】上面这条人审消息既没有可执行的意见，也没有明示批准（通过/批准/同意/确认/回写）。"
@@ -2088,27 +2089,41 @@ def _human_text(messages: list[BaseMessage]) -> str:
     return ""
 
 
+def _approval_clause(text: str, words: tuple[str, ...]) -> bool:
+    """是否有一个分句**自己**表了批准：该分句含措辞、且不含任何否定/延后标记。
+
+    W3-2（走查三呈报、R-58 并入本片）：旧写法对全句扫否定标记，「整体看没什么问题，同意通过」
+    里前一句的「没」把后一句的明示批准连坐作废。收窄到批准措辞所在分句后 fail-closed 仍在原地：
+    同一分句里的「不／未／别／暂／没／先」照旧否决（「不通过」「先别回写」都是原句内否定）。
+    残余风险如实登记：末门里「同意通过，但 st-0002 先不合并」这类**批准与保留分句并存**的话，
+    本函数返回 True——它不是漏放行，因为这条路径先走评审子提取意见，`out.opinions` 非空即在
+    优化环里被处置，永不到达 `_explicit_approval`（`gate_interpret` 的 elif 顺序）。
+    """
+    for clause in _CLAUSE_SPLIT_RE.split(text or ""):
+        if not clause or not any(word in clause for word in words):
+            continue
+        if not any(mark in clause for mark in _NEGATION_MARKS):
+            return True
+    return False
+
+
 def _explicit_approval(text: str) -> bool:
-    """本轮人话是否是明示批准：出现批准措辞，且全句没有否定/延后标记。"""
-    if any(mark in text for mark in _NEGATION_MARKS):
-        return False
-    return any(word in text for word in _APPROVAL_WORDS)
+    """本轮人话是否是明示批准：某个分句表了批准，且那个分句里没有否定/延后标记。"""
+    return _approval_clause(text, _APPROVAL_WORDS)
+
+
+# 授权/重试措辞之外的「杂质」剥离面：标点/空白（判裸授权用），同面兼作 W3-2 的分句面。
+_CLAUSE_SPLIT_RE = re.compile(r"[\s，。、！!？?；;：:,.~〜「」『』\"'`（）()]+")
 
 
 def _writeback_authorized(text: str) -> bool:
-    """回写再入授权（R-27）：没有否定/延后标记，且出现批准措辞或「重试」。
+    """回写再入授权（R-27）：某个分句表了批准或给了「重试」，且那个分句没有否定/延后标记。
 
     与 `_explicit_approval` 的差别只多认一个「重试」：那条路是**首次**批准（大纲门），
     措辞必须是批准词；这条路是裁定 19 的续跑支路——人已经在更早的回合过了一次门，
     本轮只需要一个不带否定的重试信号即可把不可逆写接着做完。否定句仍然一律不算授权。
     """
-    if any(mark in text for mark in _NEGATION_MARKS):
-        return False
-    return any(word in text for word in _APPROVAL_WORDS + _RETRY_WORDS)
-
-
-# 授权词之外的「杂质」剥离面：标点/空白（B-F1 判裸授权用）。
-_AUTH_STRIP_RE = re.compile(r"[\s，。、！!？?；;：:,.~〜「」『』\"'`（）()]+")
+    return _approval_clause(text, _APPROVAL_WORDS + _RETRY_WORDS)
 
 
 def _is_bare_authorization(text: str) -> bool:
@@ -2120,7 +2135,7 @@ def _is_bare_authorization(text: str) -> bool:
     """
     if not text:
         return False
-    rest = _AUTH_STRIP_RE.sub("", text)
+    rest = _CLAUSE_SPLIT_RE.sub("", text)
     for word in _APPROVAL_WORDS + _RETRY_WORDS:
         rest = rest.replace(word, "")
     return not rest
