@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from aitester.case_design.constants import (
@@ -12,7 +13,7 @@ from aitester.case_design.constants import (
     ENV_PRECONDITION_MARKS, ID_RE, VAGUE_ASSERTION_MARKS,
 )
 from aitester.case_design.env import CaseDesignEnv
-from aitester.case_design.ledger import Ledger
+from aitester.case_design.ledger import Ledger, _fresh_data
 
 
 def test_case_id_constants():
@@ -65,3 +66,52 @@ def test_next_case_seq_four_digit_and_bounded(tmp_path: Path):
         assert "上限" in str(exc)
     else:
         raise AssertionError("序号到 9999 后必须响亮失败，不许静默产 cc-10000")
+
+
+def test_load_backfills_writing_section_for_legacy_ledger(tmp_path: Path):
+    """本片之前写的 design/ledger.json 没有 writing 节与 counters.case：load 必须补位。
+
+    T19–T22 无条件硬读 led.data["writing"]，旧账本不补会在驱动层泛捕获里炸成
+    「测试设计任务中止（内部错误）」——续跑环对存量项目直接不可用。
+    """
+    design_dir = tmp_path / "design"
+    design_dir.mkdir()
+    # 手工写旧形态 JSON（不是 _fresh_data() 现搭的），模拟本片之前落盘的账本
+    legacy = {
+        "version": 1,
+        "status": "active",
+        "task": {},
+        "cursor": {"stage": "plan", "layer": "", "block": "", "round": 0,
+                   "source": "block", "nudge": 0},
+        "layers": {layer: {"state": "pending", "mode": "", "blocks": [],
+                           "audit_round": 0, "unresolved": [], "opinions": []}
+                   for layer in ("chain", "story", "point")},
+        "counters": {"chain": 3, "story": 5, "point": 7},
+        "gate": {"round": 0, "approved_at": ""},
+        "writeback": {"done": False, "log": []},
+        "history": [],
+    }
+    (design_dir / "ledger.json").write_text(
+        json.dumps(legacy, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    led = Ledger.load(design_dir)
+    assert led is not None
+    assert led.data["writing"] == _fresh_data()["writing"]
+    assert led.data["counters"]["case"] == 0
+    # 补位不吞旧值：三层计数原样保留
+    assert led.data["counters"]["point"] == 7
+    assert led.data["counters"]["chain"] == 3
+    assert led.next_case_seq() == "cc-0001"
+
+
+def test_load_keeps_existing_writing_section(tmp_path: Path):
+    """背填是填空不是覆盖：现账本里已推进的 writing 状态 reload 后必须原样在。"""
+    design_dir = tmp_path / "design"
+    design_dir.mkdir()
+    led = Ledger.fresh(design_dir)
+    led.data["writing"]["status"] = "active"
+    led.save()
+
+    reloaded = Ledger.load(design_dir)
+    assert reloaded is not None
+    assert reloaded.data["writing"]["status"] == "active"

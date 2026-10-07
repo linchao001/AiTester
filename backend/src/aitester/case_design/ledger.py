@@ -38,6 +38,15 @@ def _fresh_data() -> dict[str, Any]:
     }
 
 
+def _backfill_fourth_slice(data: dict[str, Any]) -> None:
+    """旧账本（本片之前写的）没有 writing 节与 counters.case：只补这两位，缺别的键说明文件真坏了。"""
+    if "writing" not in data:
+        data["writing"] = _fresh_data()["writing"]
+    counters = data.get("counters")
+    if isinstance(counters, dict) and "case" not in counters:
+        counters["case"] = 0
+
+
 @dataclass
 class Ledger:
     path: Path
@@ -59,6 +68,7 @@ class Ledger:
                 f"ledger.corrupt-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.json")
             os.replace(path, corrupt)
             return None
+        _backfill_fourth_slice(data)
         return cls(path=path, data=data)
 
     @classmethod

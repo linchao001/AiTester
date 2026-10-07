@@ -9,7 +9,7 @@ from aitester.case_design.constants import (
 from aitester.case_design.env import CaseDesignEnv
 from aitester.case_design.ledger import Ledger
 from aitester.case_design.schema import (
-    CaseDraft, DraftNode, MatrixOut, Opinion, ReviewOut, parse_case_file, parse_json_fence,
+    DraftNode, MatrixOut, Opinion, ReviewOut, parse_case_file, parse_json_fence,
     validate_cases, validate_drafts,
 )
 
