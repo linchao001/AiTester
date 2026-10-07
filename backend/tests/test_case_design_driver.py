@@ -1681,18 +1681,19 @@ def test_opinion_built_from_brief_enums_validates_through_claimssout():
     assert m_kinds, f"简报未给出 kind 枚举：{brief}"
     types = m_types.group(1).split("|")
     kinds = m_kinds.group(1).split("|")
+    # 简报 advertise 的每一个字面量都要能过 schema：只测首尾的话，中间四个枚举打错字仍绿
     payload = {
         "claims": [{"ref": "st-0001-a1", "verdict": "unclaimed", "owner": "", "note": ""}],
         "opinions": [
-            {"target": {"type": types[0], "value": "pt-0001"}, "kind": kinds[0],
-             "ask": "补一个认领该声称的测试点", "evidence": "声称核对 r1"},
-            {"target": {"type": types[2], "value": "树外遗漏项"}, "kind": kinds[4],
-             "ask": "删除失效归属", "evidence": "存量对照"},
+            {"target": {"type": types[i % len(types)], "value": f"pt-000{i + 1}"},
+             "kind": kind, "ask": f"补一个认领该声称的测试点（{kind}）", "evidence": "声称核对 r1"}
+            for i, kind in enumerate(kinds)
         ],
     }
     out = ClaimsOut.model_validate(parse_json_fence(_j(payload)))
-    assert [o.kind for o in out.opinions] == [kinds[0], kinds[4]]
-    assert out.opinions[0].target.type == types[0] and out.opinions[0].ask
+    assert [o.kind for o in out.opinions] == kinds
+    assert {o.target.type for o in out.opinions} == set(types)
+    assert out.opinions[0].ask
 
 
 def test_rescan_claims_brief_keeps_blank_opinions_without_item_shape():
