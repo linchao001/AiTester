@@ -205,10 +205,11 @@ def test_plan_case_targets_story_chain_membership_decides_ownership():
     assert by_chain == {"ch-0001": ["pt-0001", "pt-0002"], "ch-0002": ["pt-0002"]}
 
 
-def test_duplicate_point_rows_dedup_and_last_row_wins():
-    """mixed 的分母取 `_rows_of(POINT)`（KB 存量在前、本 run 草稿在后）：同 id 两行必须并一行、取后者。
+def test_duplicate_point_rows_without_signals_fall_back_to_last_row():
+    """降级形状专用：两行都没有 state/op 时 `is_draft_row` 辨不出来源，只能后见覆盖。
 
-    不去重会把同一点切进两个批次 ⇒ 末门「未落实点」虚增（假漏测）；取错行会拿回写前的旧内容当分母。
+    真机行序（`_rows_of(POINT)` 把 KB 存量排前、本 run 草稿排后）见下一条——那条才钉业务口径。
+    本条只兜底钉「辨不出来源时不崩、仍并成一行」。
     """
     rows = [{"id": "pt-0001", "story": "st-0001", "name": "旧名"},
             {"id": "pt-0001", "story": "st-0001", "name": "新名"}]
@@ -217,6 +218,22 @@ def test_duplicate_point_rows_dedup_and_last_row_wins():
     assert [p["id"] for p in got] == ["pt-0001"] and got[0]["name"] == "新名"
     targets = plan_case_targets([{"id": "ch-0001"}], stories, rows, {})
     assert [b["points"] for b in targets[0]["batches"]] == [["pt-0001"]]
+
+
+def test_duplicate_point_rows_dedup_keeping_the_row_writeback_would_write():
+    """R-59/R-60：真机行序下取**将被写库的那一份**——草稿压存量、草稿之间先见者留。
+
+    三行同源一次 mixed 运行：KB 存量在前，本 run 两块草稿在后（`sorted(drafts.glob)` 序）。
+    取错行 = 末门拿写库前的旧内容当分母；不去重 = 同一点切进两批、未落实点虚增（假漏测）。
+    """
+    rows = [{"id": "pt-0001", "story": "st-0001", "name": "存量名", "state": "存量"},
+            {"id": "pt-0001", "story": "st-0001", "name": "先见的草稿", "state": "更新"},
+            {"id": "pt-0001", "story": "st-0001", "name": "后见的草稿", "state": "更新"}]
+    stories = [{"id": "st-0001", "chains": ["ch-0001"]}]
+    got = denominator_points(rows, {}, "ch-0001", stories)
+    assert [p["name"] for p in got] == ["先见的草稿"]
+    # 只有存量行（本 run 没动这个点）时兜底呈存量，且不丢点
+    assert [p["name"] for p in denominator_points(rows[:1], {}, "ch-0001", stories)] == ["存量名"]
 
 
 def _case(cid, covers, *, expected=None, pre="账号已登录", steps=("提交下单",), title="用例"):

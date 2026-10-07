@@ -691,3 +691,29 @@ def test_hard_list_order_does_not_follow_universe_insertion_order():
     assert got == _EXPECTED_ORDER
     assert [(f["code"], f["layer"], f["where"]) for f in
             run_checks(reversed_, claims=[], matrix_cells=[], unresolved={})["hard"]] == _EXPECTED_ORDER
+
+
+def test_universe_same_id_drafts_keep_the_row_writeback_would_write():
+    """R-60：同 id 草稿并呈时，宇宙必须留**先出现**的那一条——与写库侧 `seen` 首见即留同口径。
+
+    旧写法 `uni[bucket][nid] = item` 是无条件 dict 覆盖：草稿压 KB 存量（方向对），但草稿之间
+    后见覆盖 ⇒ ④ 门判的是永远不会入库的那一行。门与呈递/分母三处必须认同一个节点。
+    红在 `name` 等于「后见的草稿」就是本轮要修的缺陷；**不许**把断言改成反的。
+    """
+    kb = {"chain": [{"id": "ch-0001", "type": "chain", "level": 1, "parent": "",
+                     "priority": "P1", "name": "存量名"}],
+          "story": [], "point": []}
+    draft = {
+        "chain": [{"id": "ch-0001", "type": "chain", "level": 1, "parent": "",
+                   "priority": "P1", "name": "先见的草稿", "op": "upsert"},
+                  {"id": "ch-0001", "type": "chain", "level": 1, "parent": "",
+                   "priority": "P1", "name": "后见的草稿", "op": "upsert"}],
+        "story": [], "point": [],
+    }
+    uni = build_universe(draft, kb, {"chains": set(), "stories": set()})
+    assert uni["chains"]["ch-0001"]["name"] == "先见的草稿"      # 旧实现：后见的草稿
+    assert uni["chains"]["ch-0001"]["in_scope"] is True          # 草稿恒在范围，不受收窄影响
+    # 只有一行草稿时，草稿仍然压过 KB 存量（覆盖方向不许跟着收窄一起漂）
+    single = build_universe({**draft, "chain": draft["chain"][:1]}, kb,
+                            {"chains": set(), "stories": set()})
+    assert single["chains"]["ch-0001"]["name"] == "先见的草稿"
