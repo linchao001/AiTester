@@ -24,7 +24,8 @@ AGENT_CATALOG: tuple[AgentSpec, ...] = (
         id="case_design",
         icon="📋",
         name="用例设计智能体",
-        desc="拆解业务链路、用户故事、测试点三层测试设计，产出增量测试大纲，人工审核通过后维护回知识库。",
+        desc="拆解业务链路、用户故事、测试点三层测试设计，产出增量测试大纲并人工审核后回写知识库；"
+             "再按子链路分批编写第四层用例正文，用例只落项目空间、经末门人工确认后交付，不写知识库。",
         prompt=_load_prompt("case_design"),
         default_tool_ids=(
             "read",

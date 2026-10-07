@@ -17,7 +17,8 @@ def test_catalog_has_exactly_one_readable_id_agent() -> None:
     assert spec.icon == "📋"
     assert spec.name == "用例设计智能体"
     assert spec.desc == (
-        "拆解业务链路、用户故事、测试点三层测试设计，产出增量测试大纲，人工审核通过后维护回知识库。"
+        "拆解业务链路、用户故事、测试点三层测试设计，产出增量测试大纲并人工审核后回写知识库；"
+        "再按子链路分批编写第四层用例正文，用例只落项目空间、经末门人工确认后交付，不写知识库。"
     )
     assert spec.graph_builder == "case_design_loop"
     assert isinstance(spec.default_tool_ids, tuple)
@@ -30,7 +31,10 @@ def test_prompt_is_loaded_verbatim_from_md_file() -> None:
     assert spec.prompt == text                       # md 文件是唯一真相，目录条目逐字等于它
     assert "## 职责" in text and "## 委派" in text
     for marker in ("业务链路", "用户故事", "测试点"):
-        assert marker in text                        # 三层概念必须在（本次重写的目的）
+        assert marker in text                        # 三层概念必须在（T10 重写的目的）
+    for marker in ("用例编写环", "covers", "design/cases/", "case-delivery.md"):
+        assert marker in text                        # 第四片：第四层口径必须落到提示词里
+    assert "只做设计部分并明示边界" not in text        # 旧边界句必须删除，否则主智能体会拒绝用例侧任务
     assert "同步用例平台" not in text                 # 2026-10-05 裁定：描述与提示词都不再提平台对接
 
 
