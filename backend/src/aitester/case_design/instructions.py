@@ -110,7 +110,7 @@ def case_gen_instruction(*, chain: str, batch: str, manifest_path: str,
                          points: list[str], batch_no: int, batch_total: int) -> str:
     """第四层批生成指令：一个批次一文件、逐点认领，纪律写死在指令里（裁定 37/38）。"""
     return (
-        f"第四层用例编写：第 {batch_no}/{batch_total} 批（链路 {chain}，批次 {batch}）。\n"
+        f"【编排·用例批次生成·链路 {chain}·批次 {batch}·第 {batch_no}/{batch_total} 批】\n"
         f"1) 先读分母清单 {manifest_path}：每个点自带 scenario/entities/directions 与所属故事的 "
         f"actor/preconditions/trigger/expected，写用例所需信息全在里面，不必再翻知识库。\n"
         f"2) 用例正文落 design/cases/{batch}.json，根对象与每条用例的字段逐字如下（多余的键不要加）：\n"

@@ -9,6 +9,21 @@ from aitester.agents import (
     find_agent,
 )
 from aitester.agents.catalog import PROMPTS_DIR, _load_prompt
+from aitester.case_design.instructions import (
+    attribute_instruction,
+    case_attribute_instruction,
+    case_gate_fix_instruction,
+    case_gen_instruction,
+    case_opt_instruction,
+    gate_fix_instruction,
+    gen_instruction,
+    opt_instruction,
+    plan_instruction,
+)
+
+
+def first_line(text: str) -> str:
+    return text.splitlines()[0]
 
 
 def test_catalog_has_exactly_one_readable_id_agent() -> None:
@@ -36,6 +51,41 @@ def test_prompt_is_loaded_verbatim_from_md_file() -> None:
         assert marker in text                        # 第四片：第四层口径必须落到提示词里
     assert "只做设计部分并明示边界" not in text        # 旧边界句必须删除，否则主智能体会拒绝用例侧任务
     assert "同步用例平台" not in text                 # 2026-10-05 裁定：描述与提示词都不再提平台对接
+    # 提示词不许再自相矛盾地只承认一道人类门（评审 I-2：`:10` 与 `:38` 曾经打脸）
+    assert "人审门是唯一的人类裁决点" not in text
+    assert "人类裁决点只有两道门" in text
+
+
+def test_orchestration_instruction_heads_all_marked() -> None:
+    # 九个编排角色的指令头必须全部以「【编排·」开头——`:21/:22` 的文件纪律只在命中该标记时绑定
+    heads = [first_line(fn(*a, **kw)) for fn, a, kw in [
+        (plan_instruction, (), {}),
+        (gen_instruction, ("point", "ch-0001"),
+         dict(draft_path="design/drafts/point-ch-0001.json", ref_hint="读业务信息")),
+        (opt_instruction, ("point", "ch-0001", 1),
+         dict(draft_path="design/drafts/point-ch-0001.json",
+              opinions_path="design/opinions/point-ch-0001.json",
+              fix_path="design/fixes/point-ch-0001.json", source_cn="评审")),
+        (attribute_instruction, ("point", "ch-0001"),
+         dict(opinions_path="design/opinions/point-ch-0001.json",
+              out_path="design/attributions/point-ch-0001.json")),
+        (gate_fix_instruction, (), dict(issues_path="design/issues.json", round_no=1)),
+        (case_gen_instruction, (),
+         dict(chain="ch-0001", batch="ch-0001-b1",
+              manifest_path="design/manifests/case-ch-0001-b1.json",
+              points=["pt-0001"], batch_no=1, batch_total=1)),
+        (case_opt_instruction, ("ch-0001", "ch-0001-b1", 1),
+         dict(cases_path="design/cases/ch-0001-b1.json",
+              opinions_path="design/case-opinions/ch-0001-b1.json",
+              fix_path="design/case-fixes/ch-0001-b1.json")),
+        (case_attribute_instruction, ("ch-0001-b1",),
+         dict(opinions_path="design/case-opinions/ch-0001-b1.json",
+              out_path="design/case-attributions/ch-0001-b1.json")),
+        (case_gate_fix_instruction, (), dict(issues_path="design/case-issues.json", round_no=1)),
+    ]]
+    assert len(heads) == 9
+    for head in heads:
+        assert head.startswith("【编排·"), head
 
 
 def test_default_agent_state_is_derived_from_catalog() -> None:
