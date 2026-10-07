@@ -45,6 +45,7 @@ def denominator_points(point_rows: list[dict], scope: dict[str, set[str]], chain
         if story_rows is None:
             # story_rows 缺席（调用方只给了点）时退化为按点所属故事判定范围；scope 也没给 stories
             # 就无从反查链路归属——不许把全量点白送进任意一条链路的分母，fail-closed 归空
+            # 降级分支提醒：此处 chain 参数不参与筛选，直接空分母（fail-closed）；调用方必须带 story_rows
             if scope_stories is None or sid not in scope_stories:
                 continue
         else:
@@ -146,11 +147,6 @@ def run_case_checks(points: list[dict], cases: list[CaseDraft]) -> dict:
             "fulfillment": fulfillment}
 
 
-_SECTION_ORDER = ("前置判定", "用例清单", "履约差异表", "规范校验表（呈递项）",
-                  "未消化项（含不收敛归因）", "失效待重算批次",
-                  "意见落点对照表（每条意见的去向）")
-
-
 def compose_case_delivery(ledger_data: dict, targets: list[dict],
                           checks_by_chain: dict[str, dict], extras: dict) -> str:
     """末门唯一可视对象（裁定 36）：实测计数 + 逐点去向 + 呈递线索，全部确定性组装。"""
@@ -168,9 +164,9 @@ def compose_case_delivery(ledger_data: dict, targets: list[dict],
         lines.append(f"- 设计侧留痕：{writing['note']}")
     lines += ["", "## 用例清单"]
     for t in targets:
+        cases = (extras.get("cases_by_chain") or {}).get(t.get("chain", ""), [])
+        mine = [c for c in cases if c.case_id]
         for b in t.get("batches") or []:
-            cases = (extras.get("cases_by_chain") or {}).get(t["chain"], [])
-            mine = [c for c in cases if c.case_id]
             lines.append(f"- 批次 {b.get('id', '')}（应落实点 {len(b.get('points') or [])} 个）："
                          f"本链路累计用例 {len(mine)} 条，文件 design/cases/{b.get('id', '')}.json")
     lines += ["", "## 履约差异表（逐点去向，实测）"]
@@ -188,7 +184,11 @@ def compose_case_delivery(ledger_data: dict, targets: list[dict],
     lines += ["", "## 规范校验表（呈递项）"]
     notes = extras.get("notes") or []
     for n in notes:
-        lines.append(f"- {n.get('where', '')}（{n.get('kind', '')}）：{n.get('detail', '')}")
+        kind = n.get("kind", "")
+        detail = n.get("detail", "")
+        # detail 结尾已自带「（类别）」尾注（核对测试按 detail 断言），呈递行不再重复冠一次
+        label = "" if not kind or detail.endswith(f"（{kind}）") else f"（{kind}）"
+        lines.append(f"- {n.get('where', '')}{label}：{detail}")
     if not notes:
         lines.append("- 无")
     lines += ["", "## 未消化项（含不收敛归因）"]

@@ -181,7 +181,13 @@ def test_chain_without_points_gets_no_batches():
     assert targets[0]["batches"] == []
 
 
-def test_denominator_points_scope_empty_means_all():
+def test_denominator_points_empty_scope_needs_story_table_else_fail_closed():
+    """「范围空 = 全量」要靠 story 表分支才成立；story_rows 缺席的降级分支只会 fail-closed 归空。
+
+    两句都走降级分支（chain 参数不参与筛选）：第一句 scope 没给 stories ⇒ 空分母；
+    第二句只因 scope 给了 stories 才把范围内的两点全放行。真正的空 scope 全量行为在
+    `test_plan_case_targets_story_chain_membership_decides_ownership`（带 story 表、scope 为 {}）。
+    """
     rows = [_pt("pt-0001", "st-0001"), _pt("pt-0002", "st-0009")]
     assert denominator_points(rows, {}, "ch-0001") == []      # 链路归属由 story 表反查，见下一条
     got = denominator_points(rows, {"stories": {"st-0001", "st-0009"}}, "ch-0001")
@@ -312,6 +318,8 @@ def test_delivery_marks_stale_batches_and_note():
 def test_delivery_lists_advisory_notes_as_presented_items():
     text = _delivery_fixture()
     assert "含糊断言" in text and "cc-0001" in text
+    # 呈递行不许把类别冠两遍：detail 自带尾注，renderer 不再重复 `（kind）`
+    assert next(line for line in text.splitlines() if "含糊断言" in line).count("含糊断言") == 1
 
 
 def test_shared_point_counted_once_in_measured_line():
