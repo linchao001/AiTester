@@ -187,7 +187,7 @@ git commit -m "feat(case-design): 块级「无变化」第四终态上移生产�
 - Consumes: `render_node_markdown(layer, node) -> str`（字段顺序固定，`updated_at` 恒为 frontmatter 最后一行）；`_atomic_write`；`StubKb.run_job_sync`。
 - Produces: `strip_updated_at(text: str) -> str`（**新公开名**，等值判定唯一口径）；`case_node_upsert` 的 `response.metadata` 新增 **`unchanged: bool`**，`answer` 在未变时为 `f"unchanged {node_id}"`；`KbClient.upsert_node(layer, node) -> dict[str, Any]`（**返回类型由 `str` 改为 metadata dict**，全仓唯一调用点 `stages.py:1440`）；账本 `writeback` 节新增 **`written: int` / `untouched: int`**。
 
-- [ ] **Step 1: 先写 step 层用例（红）**
+- [x] **Step 1: 先写 step 层用例（红）**
 
 `backend/tests/test_kb_nodes_step.py` 末尾追加（沿用该文件既有 `_seed_kb` / `_settings` / `CHAIN_NODE` 挂具与 `mgr.run_job_sync("case_node_upsert", layer=..., node=...)` 调法）：
 
@@ -217,7 +217,7 @@ def test_body_containing_updated_at_literal_is_not_false_equal(tmp_path):
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_kb_nodes_step.py -q` → 新用例 FAIL。
 
-- [ ] **Step 2: 实现 `strip_updated_at` 与 upsert 幂等**
+- [x] **Step 2: 实现 `strip_updated_at` 与 upsert 幂等**
 
 `steps.py` 在 `render_node_markdown` 之后新增（`re` 该文件已导入；若未导入则补 `import re`）：
 
@@ -254,7 +254,7 @@ def strip_updated_at(text: str) -> str:
             response.answer = f"unchanged {node_id}" if unchanged else f"upserted {node_id}"
 ```
 
-- [ ] **Step 3: `KbClient.upsert_node` 透出 metadata**
+- [x] **Step 3: `KbClient.upsert_node` 透出 metadata**
 
 `kb.py:39-40` 改为：
 
@@ -267,7 +267,7 @@ def strip_updated_at(text: str) -> str:
 
 同步 `backend/tests/test_case_design_kb.py:48` 处对返回值的用法（改为取 `meta["path"]`），并核对该文件其余 `upsert_node` 断言。
 
-- [ ] **Step 4: 回写计数与终帧尾句（先写用例，红）**
+- [x] **Step 4: 回写计数与终帧尾句（先写用例，红）**
 
 `test_case_design_driver.py`（或 e2e，就近于既有回写用例）追加：
 
@@ -292,7 +292,7 @@ def test_writeback_counts_untouched_nodes_and_says_it(tmp_path):
 
 （`__init__` 增形参 `unchanged=False` 并存字段。）
 
-- [ ] **Step 5: 实现 `h_writeback` 计数**
+- [x] **Step 5: 实现 `h_writeback` 计数**
 
 `:1432-1457` 的重试块改为（**每次尝试内重置计数**——重试整轮重来，跨尝试累加会虚报）：
 
@@ -330,12 +330,12 @@ def test_writeback_counts_untouched_nodes_and_says_it(tmp_path):
 
 **硬约束**：基句逐字不许改（裁定 31）；`untouched == 0` 时终帧与现状**逐字节相同**。
 
-- [ ] **Step 6: 全量门禁**
+- [x] **Step 6: 全量门禁**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest -q`
 Expected: 0 failed；`grep -rn "回写完成：本次过审节点已写入知识库。" tests/` 命中的既有逐字断言**必须全部仍绿**（那是基句未变的证据）。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add backend/src/aitester/services/kb/steps.py backend/src/aitester/case_design/kb.py backend/src/aitester/case_design/stages.py backend/tests/test_kb_nodes_step.py backend/tests/test_case_design_kb.py backend/tests/test_case_design_driver.py backend/tests/test_case_design_e2e.py
@@ -356,7 +356,7 @@ git commit -m "feat(case-design): KB 节点写幂等——内容等值不重写�
 - Consumes: `ctx.kb_rows(layer) -> list[dict]`（KB 存量行，含 id）；`_draft_nodes(ctx, layer)`；`run_reviewer(ctx.task_tool, CASE_REVIEW_AGENT_ID, brief, model_cls=ClaimsOut, call_id=..., title=..., config=..., archive=...) -> (out, raw)`；`_archive_review(ctx, call_id, text)`；账本 `led.layer(STORY)["claims"]`（行含 `ref/claimant/claim/verdict/owner/note`）。
 - Produces: `_rescan_claims(ctx) -> None`；claim 行新增可选键 **`rescanned ∈ {"deterministic","reviewer"}`**；账本 `led.layer(STORY)` 新增 **`claims_rescan = {"deterministic": int, "reviewer": int, "at": str}`**。`checks.run_checks` 签名与 `empty_seam` 的 report 归属**不变**。
 
-- [ ] **Step 1: 先写确定性回扫用例（红）**
+- [x] **Step 1: 先写确定性回扫用例（红）**
 
 `backend/tests/test_case_design_driver.py` 追加（建境沿用 `_claims_story` 相关既有用例，先读它照搬）：
 
@@ -387,7 +387,7 @@ def test_rescan_sends_only_residual_rows_to_one_bounded_pass(tmp_path):
 
 Run: `... -m pytest tests/test_case_design_driver.py -q` → FAIL（`_rescan_claims` 不存在）。
 
-- [ ] **Step 2: 实现 `_rescan_claims`**
+- [x] **Step 2: 实现 `_rescan_claims`**
 
 `stages.py` 在 `_claims_story` 之后新增（`re` 已导入）：
 
@@ -448,7 +448,7 @@ def _rescan_claims(ctx: Ctx) -> None:
 
 **不许做**：把 `out.opinions` 登记进任何层（`_register`）；改 `run_checks` 的签名或把 `empty_seam` 加进 hard。
 
-- [ ] **Step 3: 挂在点层收口（一次性，不在 gate 里）**
+- [x] **Step 3: 挂在点层收口（一次性，不在 gate 里）**
 
 ```python
 def _layer_audited(ctx: Ctx, layer: str) -> None:
@@ -458,7 +458,7 @@ def _layer_audited(ctx: Ctx, layer: str) -> None:
     _after_layer(ctx, layer)
 ```
 
-- [ ] **Step 4: 大纲口径与可见性**
+- [x] **Step 4: 大纲口径与可见性**
 
 `outline.py:119-120` 的 report 行在「剩余空归属」后加括注（口径落在那道门上，不只在文档里）：
 
@@ -482,7 +482,7 @@ def _layer_audited(ctx: Ctx, layer: str) -> None:
 
 （`extras["claims"]` 已由 `stages.py:1120` 供行数；把 `claims_rescan` 一并放进 extras 并在 `stages.py` 的 extras 组装处加一键。）
 
-- [ ] **Step 5: 判据勘误落文档**
+- [x] **Step 5: 判据勘误落文档**
 
 在 `docs/superpowers/plans/2026-10-05-case-design-loop.md` 里 T12「空归属 = 0」判据所在行**原样保留**，紧随其后加一条勘误注（不改历史读数，只标口径）：
 
@@ -492,12 +492,12 @@ def _layer_audited(ctx: Ctx, layer: str) -> None:
 > spec 文末裁定 32/33；走查三按「呈递 + 回扫补认数」验收，不再要求 =0。
 ```
 
-- [ ] **Step 6: 全量门禁**
+- [x] **Step 6: 全量门禁**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest -q`
 Expected: 0 failed；`test_case_design_checks.py` 对 `empty_seam` 的既有用例**必须不动仍绿**（那是「没升成 hard、没改判据」的证据）。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add backend/src/aitester/case_design/stages.py backend/src/aitester/case_design/outline.py backend/tests/test_case_design_driver.py backend/tests/test_case_design_checks.py docs/superpowers/plans/2026-10-05-case-design-loop.md
