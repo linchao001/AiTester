@@ -2178,6 +2178,20 @@ def _writeback_authorized(text: str) -> bool:
     return _approval_clause(text, _APPROVAL_WORDS + _RETRY_WORDS)
 
 
+# 重开措辞（裁定 46）：销毁现场是不可逆动作，判据与批准同一条形状——某分句含措辞且该分句无否定/延后标记。
+_RESTART_WORDS: tuple[str, ...] = ("重开", "重新开始", "从头开始", "从零开始", "作废",
+                                   "放弃这次", "放弃本次", "开新任务", "换新任务")
+
+
+def _wants_restart(text: str) -> bool:
+    """本轮人话是否明示「作废这次工作、开新任务」。未命中一律续跑——方向偏「少销毁」。
+
+    与批准共用 `_approval_clause`（裁定 19／R-27／W3-2 同族）：一条措辞规则只有一个实现处。
+    误判面如实登记：「重开」在无关语境里出现会被判成重开（真值表钉住），走查五实测第 ④ 判据。
+    """
+    return _approval_clause(text, _RESTART_WORDS)
+
+
 def _is_bare_authorization(text: str) -> bool:
     """本轮人话是否是**裸授权**：剥掉标点与批准/重试措辞后不剩任何内容。
 

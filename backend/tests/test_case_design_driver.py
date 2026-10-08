@@ -1838,3 +1838,26 @@ def test_halt_kind_validation_fails_loud():
     with pytest.raises(ValueError):
         _Halt("某句原因", "not_a_kind")
     assert _Halt("某句原因", "transient").kind == "transient"
+
+
+def test_wants_restart_truth_table():
+    """裁定 46：重开＝销毁现场，判据只许偏「少销毁」。分句规则复用批准那一族，不写第二份。"""
+    from aitester.case_design.stages import _wants_restart
+    for text, expected in (
+        ("重开任务", True),
+        ("作废这次，重新按新需求来", True),
+        ("从头开始跑一遍", True),
+        ("换新任务，按 notes.md 来", True),
+        ("放弃本次", True),
+        ("别重开", False), ("先不重开", False), ("未重开的意思", False),
+        ("整体看没什么问题，重开就不必了", False),        # 后半分句自带「不」→ 整条否决
+        ("继续", False), ("同意通过", False), ("", False),
+        ("这条链路重开了新市场", True),                   # 已登记的误判面（裁定 46）：钉住现状
+    ):
+        assert _wants_restart(text) is expected, text
+
+
+def test_wants_restart_negation_only_kills_the_matching_clause():
+    """W3-2 的教训反向复用：前一分句的「没」不许连坐后一分句的明示重开。"""
+    from aitester.case_design.stages import _wants_restart
+    assert _wants_restart("没什么问题，重开任务吧") is True
