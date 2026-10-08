@@ -40,8 +40,8 @@
 | `ctx.cur` **就是** `led.data["cursor"]` ⇒ 断点位置早就在盘上，续跑无须新增游标 | `stages.py:88-90`、`ledger.py:94-96` |
 | `_go` 转场会 `clear()` 整张游标 ⇒ 用它续跑即自动复位 `nudge/asked`，`round` 须由调用方原样传回 | `stages.py:193-199` |
 | halt 时只写 `status="halted"`，**原因与游标快照都没落盘** | `stages.py:2449-2457` |
-| `_Halt` 抛点全集（10 处）：`124`（ask 重试超限）、`383/390/392`（`_phantom_subtree_halt`）、`522`、`572`、`904`、`1030`、`1102`、`1183`、`2073`、`2229`、`2446` | 见左 |
-| 族属归属（裁定 43）：`124`→`artifact_retry`；`1102/2229`→`human_wait`；`2446`＋泛异常→`transient`；`383/390/392/522/572/904/1030/1183/2073`→`needs_input` | — |
+| `_Halt` 抛点全集（**11 处** raise/return）：`124`（ask 重试超限）、`390/392`（`_phantom_subtree_halt`，定义在 `:383`）、`522`、`572`、`904`、`1030`、`1102`、`1183`、`2073`、`2229`、`2446` | `grep -n "_Halt(" stages.py` 实测 |
+| 族属归属（裁定 43）：`124`→`artifact_retry`；`1102/2229`→`human_wait`；`2446`＋泛异常→`transient`；`390/392/522/572/904/1030/1183/2073`→`needs_input` | — |
 | 轮次用尽**不抛** `_Halt`：转 `attribute` 后 `_after_block`／`_layer_audited` 前进 | `stages.py:1430-1432`、`1549-1553` |
 | `human_wait` 抛点处游标是 `gate_interpret`／`case_gate_interinterpret`… **实测：`gate_interpret`／`case_gate_interpret`**（raise 发生在 `_go(...,"gate")` **之前**） | `stages.py:2229`（在 `:2233 _go` 之前）、`:1102`（在 `:1104` 之前） |
 | 两道门的待决计数分居 `gate["unclear"]` 与 `writing["gate"]["unclear"]` | `stages.py:2227`、`:1100` |
@@ -119,7 +119,7 @@ def _fresh_halt() -> dict[str, Any]:
     return {"kind": "", "reason": "", "stage": "", "layer": "", "block": "",
             "round": 0, "at": "", "count": 0, "resume_note": ""}
 ```
-`_fresh_data()` 里 `"writeback"` 之前插入 `"halt": _fresh_halt(),`；把 `_backfill_fourth_slice` **改名**为 `_backfill_ledger_slices`（它现在补的是两个片的缺节，旧名对新来者说谎），并加一行 `if "halt" not in data: data["halt"] = _fresh_halt()`；`Ledger.load` 的调用点同步改名。**不做深合并**（F1 口径原样保留，注释也在）。
+`_fresh_data()` 里 `"writeback"` 之前插入 `"halt": _fresh_halt(),`；把 `_backfill_fourth_slice` **改名**为 `_backfill_ledger_slices`（它现在补的是两个片的缺节，旧名对新来者说谎），并加一行 `if "halt" not in data: data["halt"] = _fresh_halt()`；`Ledger.load` 的调用点同步改名。**不做深合并**（F1 口径原样保留，注释也在）。改名面实测：全仓只有 `test_case_design_writing.py:128` 的 **docstring** 提到旧名（无 import），一并改成 `_backfill_ledger_slices`——旧名留在测试说明里就是说谎。
 
 - [ ] **Step 5: 跑绿 + 全量门禁** — `pytest -q` 相关文件后跑 `-q` 全量，读数只增不减。
 - [ ] **Step 6: 提交**
@@ -131,7 +131,7 @@ git commit -m "feat(case-design): halt 现场成节落账——HALT_KINDS 与账
 
 ---
 
-### Task T28: `_Halt` 带族属 + 十个抛点自标 + `_book_halt` 单点记账
+### Task T28: `_Halt` 带族属 + 十一处抛点自标 + `_book_halt` 单点记账
 
 **Files:**
 - Modify: `backend/src/aitester/case_design/stages.py`（`_Halt` 类、`Ctx.ask`、`_phantom_subtree_halt`、`:522/:572/:904/:1030/:1102/:1183/:2073/:2229/:2446` 各 raise、两处 `except`）
@@ -162,23 +162,6 @@ def test_halt_books_cursor_snapshot_and_kind(tmp_path):
     assert halt["reason"].startswith("plan/-/- 重试超限") and halt["at"]
 
 
-def test_halt_count_tracks_same_spot(tmp_path):
-    """同一处停两次，count 必须说真话——终帧那句「第 N 次」是给人的成本读数（裁定 18 可见性同族）。"""
-    kb = StubKb()
-    env = _env(tmp_path, kb)
-    state = {"messages": [HumanMessage("生成测试设计")], "case": {}}
-    bad = {"task_kind": "x", "entry_layer": "chain", "terminal_layer": "point",
-           "target_subtree": "", "source_files": [], "note": ""}
-    for _ in range(2):                                   # 两整轮「重问到超限」
-        for _ in range(4):
-            _append(state, _drive(env, state, ScriptTask()))
-            simulate(env, plan=bad)
-        _append(state, _drive(env, state, ScriptTask()))    # → halted
-        state = {"messages": [HumanMessage("再试一次")], "case": {}}   # 新回合＝续跑（T30 前会是归档）
-    halt = Ledger.load(env.design).data["halt"]
-    assert halt["kind"] == "artifact_retry" and halt["count"] == 2
-
-
 def test_halt_kind_validation_fails_loud():
     """新抛点漏标族属必须响亮失败：默认值会把未知族属洗成某一族的续跑策略（比不分类更坏）。"""
     from aitester.case_design.stages import _Halt
@@ -188,7 +171,9 @@ def test_halt_kind_validation_fails_loud():
     assert _Halt("某句原因", "transient").kind == "transient"
 ```
 
-> 注：`test_halt_count_tracks_same_spot` 在 T28 落地但**行为要到 T30 才正确**（T28 提交时 `_boot` 仍归档重来，count 恒 1）。若 T28 阶段该测试无法通过，**不许改断言迁就**：把它记进报告并留在 T30 的修复切片里转绿——红证归属要写清楚。
+> 计划缺陷更正（控制方拆计划期自查，裁定 24 同族）：本任务原本还带一条 `test_halt_count_tracks_same_spot`，
+> 它断言的是「续跑保住账本 ⇒ 同一处第二次 halt 时 count==2」，而那要到 T30 的分流才成立——留在 T28 就是
+> 「提交时全量必红」，与门禁只增不减直接冲突。该测试**移入 T30 Step 1**，红证归属随之写清。
 
 - [ ] **Step 2: 跑红**（`-k halt_kind or halt_books or halt_count`）。
 - [ ] **Step 3: `_Halt` 带 kind**（替换 `stages.py:60-61`）
@@ -205,7 +190,7 @@ class _Halt(RuntimeError):
         self.kind = kind
 ```
 
-- [ ] **Step 4: 十个抛点逐点标族**（只加第二个实参，**文案一字不动**——`artifact_retry` 那句 reason 被 graph 测试逐字吃着）
+- [ ] **Step 4: 十一处抛点逐点标族**（只加第二个实参，**文案一字不动**——`artifact_retry` 那句 reason 被 graph 测试逐字吃着）
   - `:124` `Ctx.ask` → `"artifact_retry"`
   - `_phantom_subtree_halt` 两条 `return _Halt(...)` → `"needs_input"`
   - `:522`、`:572`、`:904`、`:1183` → `"needs_input"`
@@ -416,9 +401,27 @@ def test_needs_input_halt_refuses_and_costs_nothing(tmp_path):
     led2 = Ledger.load(env.design)
     assert led2.status == "halted" and led2.data["halt"]["count"] == 2  # 拒绝不改状态、只说实话
     assert not (env.design / "archive").exists()
+
+
+def test_halt_count_tracks_same_spot(tmp_path):
+    """同一处停两次，count 必须说真话——终帧那句「第 N 次」是给人的成本读数（裁定 18 可见性同族）。
+    本条从 T28 移来：只有续跑真的保住账本（T30），第二次 halt 才会落在同一处（红证归属见 T28 注）。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    state = {"messages": [HumanMessage("生成测试设计")], "case": {}}
+    bad = {"task_kind": "x", "entry_layer": "chain", "terminal_layer": "point",
+           "target_subtree": "", "source_files": [], "note": ""}
+    for _ in range(2):                                   # 两整轮「重问到超限」
+        for _ in range(4):
+            _append(state, _drive(env, state, ScriptTask()))
+            simulate(env, plan=bad)
+        _append(state, _drive(env, state, ScriptTask()))    # → halted
+        state = {"messages": [HumanMessage("再试一次")], "case": {}}   # 新回合＝续跑（本任务前是归档）
+    halt = Ledger.load(env.design).data["halt"]
+    assert halt["kind"] == "artifact_retry" and halt["count"] == 2
 ```
 
-- [ ] **Step 2: 跑红**（四条同时红；记录每条的红证形态进报告）。
+- [ ] **Step 2: 跑红**（五条同时红；记录每条的红证形态进报告）。
 - [ ] **Step 3: `Ctx` 加字段**（`stages.py:84` `transitions: int = 0` 之后）
 
 ```python
@@ -685,11 +688,30 @@ def test_e2e_gate_halt_then_resume_closes_without_reburn(tmp_path):
 
 
 def test_e2e_needs_input_refuse_then_restart_replans(tmp_path):
-    """拒绝轮零调用，重开轮才重新计划——两句话的区别必须由账本说话，不是靠文案。"""
-    ...  # 用 StubKb(layers={"chain":[{"id":"ch-0001",...}]}) + target_subtree="ch-9999"
-```
-（第二条断言：拒绝轮 `len(task.calls)` 与 `kb.upserts` 均不变；随后发「重开任务」⇒ `archive` 出现、新账本 `task == {}`、再 drain 到门能正常跑完。）
+    """拒绝轮零调用，重开轮才重新计划——两句话的区别必须由账本说话，不是靠文案（判据 ①④ 离线同型）。"""
+    kb = StubKb(layers={"chain": [{"id": "ch-0001", "type": "chain", "parent": "", "level": 1}],
+                        "story": [], "point": []})
+    env = _env(tmp_path, kb)
+    task = ScriptTask()
+    state = {"messages": [HumanMessage("只更新 ch-9999")], "case": {}}
+    _append(state, _drive(env, state, task))
+    simulate(env, plan={"task_kind": "design", "entry_layer": "story", "terminal_layer": "point",
+                        "target_subtree": "ch-9999", "source_files": [], "note": "窄任务"})
+    frames: list[dict] = []
+    _append(state, _drive(env, state, task, writer=frames.append))
+    led = Ledger.load(env.design)
+    assert led.status == "halted" and led.data["halt"]["kind"] == "needs_input"
+    calls = len(task.calls)
 
+    _drive(env, {"messages": [HumanMessage("继续")], "case": {}}, task)             # 拒绝轮
+    assert len(task.calls) == calls and kb.upserts == []                            # 零子调用、零写入
+    assert not (env.design / "archive").exists()                                    # 现场一个文件没搬
+    assert Ledger.load(env.design).status == "halted"
+
+    _drive(env, {"messages": [HumanMessage("重开任务，按链路树全量来")], "case": {}}, task)
+    assert (env.design / "archive").is_dir()                                        # 只有这句才销毁现场
+    assert Ledger.load(env.design).data["task"] == {}                               # 新账本等待 h_plan
+```
 - [ ] **Step 2: 全量门禁** — `backend/.venv/Scripts/python -m pytest -q`，记录读数（预期 868 + 本片新增 ≈ 15–18 条）；纯净树复现一次（裁定 23）。
 - [ ] **Step 3: 计划文本回填**：本文件所有已完成 step 勾 `[x]`，头部补「执行状态」一行（提交号／门禁读数）。
 - [ ] **Step 4: 提交并推送** — `git push origin master:main`（本仓提交与推送常授权，`project-repo-remote`）。
