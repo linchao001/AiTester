@@ -312,6 +312,17 @@ def _wants_restart(text: str) -> bool:
 - [ ] **Step 1: 写失败测试（四条，覆盖四族＋重开）**
 
 ```python
+def _archive_entries(env) -> list[str]:
+    """归档目录下的条目集合——「现场有没有被搬走」的差分读数（R-78，模块级助手，T33 从这里 import）。
+
+    `archive/` 本身**第一轮就存在**：`drive_turn` 先 `ensure_dirs()` 造出 drafts/reviews/manifests/
+    attribution/cases 五个空子目录，`_boot` 的无账本支 `any(env.design.iterdir())` 随即为真并归档。
+    所以「续跑没销毁现场」只能判**零新增条目**，判「目录不存在」是假失败。
+    """
+    arc = env.design / "archive"
+    return sorted(str(x.relative_to(arc)).replace("\\", "/") for x in arc.rglob("*"))         if arc.is_dir() else []
+
+
 def test_halted_new_turn_resumes_without_archiving(tmp_path):
     """裁定 42 的正身：中断后再发一句不销毁现场。走查四为这条赔了 572 call。"""
     kb = StubKb()
@@ -325,9 +336,10 @@ def test_halted_new_turn_resumes_without_archiving(tmp_path):
     _append(state, _drive(env, state, ScriptTask()))                 # → halted
     assert Ledger.load(env.design).data["counters"] == {"chain": 0, "story": 0, "point": 0, "case": 0}
 
+    arc_before = _archive_entries(env)                               # 续跑轮之前
     turn = _drive(env, {"messages": [HumanMessage("换个说法再试")], "case": {}}, ScriptTask())
     assert turn["case"]["route"] == "agent"                          # 续跑：重新下发，不是重开账本
-    assert not (env.design / "archive").exists()                     # 现场一个文件都没搬走
+    assert _archive_entries(env) == arc_before                       # 零新增归档条目＝现场一个文件没搬
     assert (env.design / "plan.json").is_file()
     led = Ledger.load(env.design)
     assert led.status == "active" and led.cursor["stage"] == "plan"
@@ -354,8 +366,10 @@ def test_halted_new_turn_with_explicit_restart_archives(tmp_path):
     led.layer("story")["state"] = "stale_pending"
     led.save()
 
+    arc_before = _archive_entries(env)
     _drive(env, {"messages": [HumanMessage("作废这次，重开任务")], "case": {}}, ScriptTask())
     assert (env.design / "archive").is_dir()
+    assert len(_archive_entries(env)) > len(arc_before)              # 明示重开才搬现场
     fresh = Ledger.load(env.design)
     assert fresh.data["task"] == {} and fresh.data["carried_stale"] == ["story"]
 
@@ -372,9 +386,10 @@ def test_human_wait_halt_resume_goes_back_to_the_gate(tmp_path):
     assert led.cursor["stage"] == "gate_interpret" and led.data["gate"]["unclear"] == 4
     assert kb.upserts == []
 
+    arc_before = _archive_entries(env)
     turn = _drive(env, {"messages": [HumanMessage("同意通过")], "case": {}}, ScriptTask())
     assert turn["case"]["route"] == "end"
-    assert not (env.design / "archive").exists()
+    assert _archive_entries(env) == arc_before                       # 门接上放行，不搬现场
     led = Ledger.load(env.design)
     assert led.status == "done" and kb.upserts                        # 解读 1 call → 回写，零重烧
     assert led.data["gate"]["unclear"] == 0
@@ -397,6 +412,7 @@ def test_needs_input_halt_refuses_and_costs_nothing(tmp_path):
     assert "在链路树里不存在" in _end_text(frames)          # halted 终帧带 reason（T28 已落）
 
     calls, upserts = len(task.calls), len(kb.upserts)
+    arc_before = _archive_entries(env)
     frames2: list[dict] = []
     _drive(env, {"messages": [HumanMessage("继续")], "case": {}}, task, writer=frames2.append)
     assert len(task.calls) == calls and len(kb.upserts) == upserts     # 判据 ① 的离线同型
@@ -404,7 +420,7 @@ def test_needs_input_halt_refuses_and_costs_nothing(tmp_path):
     assert "重开任务" in refusal and "本轮未做任何生成" in refusal   # 「怎么出去」由拒绝帧说（T32 只补 halted 帧尾巴）
     led2 = Ledger.load(env.design)
     assert led2.status == "halted" and led2.data["halt"]["count"] == 2  # 拒绝不改状态、只说实话
-    assert not (env.design / "archive").exists()
+    assert _archive_entries(env) == arc_before                       # 拒绝轮一个文件没搬
 
 
 def test_halt_count_tracks_same_spot(tmp_path):
@@ -545,7 +561,7 @@ def _needs_input_text(halt: dict) -> str:
     ])
 ```
 
-- [ ] **Step 8: 跑绿 + 全量门禁**（`test_halt_count_tracks_same_spot` 到此处必须转绿——若仍红，说明续跑没保住账本，回到 Step 5 查局部变量残留）。既有断言核对：`test_case_design_driver.py:670`（`carried_stale`）与 `test_case_design_writing_stages.py:147/299/337`（归档）都走 `done` 或显式 `_archive`，**不应改动**；若某条因分家而红，报出来由控制方裁，不许改断言迁就。
+- [ ] **Step 8: 跑绿 + 全量门禁**（`test_halt_count_tracks_same_spot` 到此处必须转绿——若仍红，说明续跑没保住账本，回到 Step 5 查局部变量残留）。既有断言核对（**按测试名锚定，行号会随追加漂移**）：`test_case_design_driver.py::test_human_revision_marks_downstream_stale_and_writeback_skips`（`carried_stale`，走 `done`）与 `test_case_design_writing_stages.py::test_case_only_blocks_on_stale_layer`／`::test_archive_moves_case_surface_with_the_rest`（显式 `_archive`）／`::test_second_task_does_not_see_prior_case_surface`，**都不应改动**；若某条因分家而红，报出来由控制方裁，不许改断言迁就。
 - [ ] **Step 9: 提交** — `git commit -m "feat(case-design): _boot 把 halted 与 done 分家——默认断点续跑、四族分流（裁定 42/44）"`
 
 ---
@@ -689,6 +705,11 @@ def _halt_frame(ctx: Ctx, base: str) -> str:
 - Consumes: T27–T32 全部。
 - Produces: 一条「首建跑到门 → 门待决 halted → 明示批准续跑闭合」的整链证据，一条「needs_input 拒绝 → 明示重开 → 新账本跑通」的整链证据。
 
+- [ ] **Step 0: 补 import**（`test_case_design_e2e.py:17` 那行现为
+  `from test_case_design_driver import ScriptTask, StubKb, _end_text, _env, _j, drain`，本任务的两条测试还要用
+  `_append`、`_drive`、`_env`、`simulate`、`_archive_entries`——**五个都要加进同一行**，别新起一条 import；
+  少加一个就是 `NameError`，那不是产品缺陷。已实测：该文件当前**没有** `_append`/`_drive`/`simulate`。）
+
 - [ ] **Step 1: 追加 e2e 两条**（drain 级为主；图级两回合只有在同 `thread_id` 能取回上一回合 state 时才写，否则在报告里说明「本仓 checkpointer 形态不支持」并以 drain 级为准——**不许为此改生产码或伪造断言**）
 
 ```python
@@ -701,11 +722,12 @@ def test_e2e_gate_halt_then_resume_closes_without_reburn(tmp_path):
         _drive(env, {"messages": [HumanMessage("我再想想")], "case": {}}, ScriptTask())
     assert Ledger.load(env.design).status == "halted"
     outline_before = (env.design / "outline.md").read_bytes()
+    arc_before = _archive_entries(env)
     _drive(env, {"messages": [HumanMessage("同意通过")], "case": {}}, ScriptTask())
     led = Ledger.load(env.design)
     assert led.status == "done" and kb.upserts
     assert (env.design / "outline.md").read_bytes() == outline_before   # 大纲没被重生成
-    assert not (env.design / "archive").exists()
+    assert _archive_entries(env) == arc_before                           # 零新增归档条目
 
 
 def test_e2e_needs_input_refuse_then_restart_replans(tmp_path):
@@ -724,13 +746,15 @@ def test_e2e_needs_input_refuse_then_restart_replans(tmp_path):
     assert led.status == "halted" and led.data["halt"]["kind"] == "needs_input"
     calls = len(task.calls)
 
+    arc_before = _archive_entries(env)
     _drive(env, {"messages": [HumanMessage("继续")], "case": {}}, task)             # 拒绝轮
     assert len(task.calls) == calls and kb.upserts == []                            # 零子调用、零写入
-    assert not (env.design / "archive").exists()                                    # 现场一个文件没搬
+    assert _archive_entries(env) == arc_before                                      # 现场一个文件没搬
     assert Ledger.load(env.design).status == "halted"
 
     _drive(env, {"messages": [HumanMessage("重开任务，按链路树全量来")], "case": {}}, task)
     assert (env.design / "archive").is_dir()                                        # 只有这句才销毁现场
+    assert len(_archive_entries(env)) > len(arc_before)                             # 归档条目确实新增
     assert Ledger.load(env.design).data["task"] == {}                               # 新账本等待 h_plan
 ```
 - [ ] **Step 2: 全量门禁** — `backend/.venv/Scripts/python -m pytest -q`，记录读数（预期 868 + 本片新增 ≈ 15–18 条）；纯净树复现一次（裁定 23）。
