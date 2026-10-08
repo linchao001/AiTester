@@ -20,7 +20,7 @@
 - **裁定 43**：halt 族属**只由抛点声明**（`_Halt(msg, kind)`，构造必传、非法值 `ValueError`）；下游**禁读 `reason` 文案猜族**。`_book_halt` 是 `data["halt"]` 的唯一写入处。
 - **裁定 43 纠正**：「块环／层审**轮次用尽**」**不是** halt——`h_opt` 到 `round_cap` 转 `h_attribute` 收口前进。本片不给它任何分支。
 - **裁定 44**：续跑复用 `_go`（`nudge/asked` 自动复位），**`round` 原样保留**——断一次不许白送 5 轮。`human_wait` 只复位**游标那道门**的 `unclear`。`needs_input` **零转场、零子调用**、状态保持 `halted`。
-- **裁定 45**：注入点只有 `Ctx.ask` 一处，附「【人工补充】…」并**用后即清**；`resume_note` 每个新回合进 `_boot` 先清一次（只活一回合）。
+- **裁定 45**：注入点只有下发原语 `Ctx.instr` 一处（`Ctx.ask` 同走它；`h_case_plan` 首批下发不经 `ask`，写进 `ask` 就漏），附「【人工补充】…」并**用后即清**；`resume_note` 每个新回合进 `_boot` 先清一次（只活一回合）。
 - **裁定 46**：`_wants_restart` 必须是 `_approval_clause(text, _RESTART_WORDS)` 的一行调用。**不许**新建第二套分句/否定扫描。
 - **裁定 47**：不启用 `interrupted` 状态、不动 `_ARCHIVE_ITEMS`、不动两道门的 hard=0 门禁。
 - **文案基句逐字不许动**：`测试设计任务中止：{reason}` 是既有逐字断言对象（`test_case_design_graph.py:146/182`），尾巴**另起一句**追加；改那两处断言时基句用 `startswith` 钉住。
@@ -567,15 +567,16 @@ def _needs_input_text(halt: dict) -> str:
 
 ---
 
-### Task T31: `Ctx.ask` 续跑注入单点（【人工补充】用后即清）
+### Task T31: `Ctx.instr` 续跑注入单点（【人工补充】用后即清）
 
 **Files:**
-- Modify: `backend/src/aitester/case_design/stages.py:119-127`
+- Modify: `backend/src/aitester/case_design/stages.py`（`Ctx.instr`；`Ctx.ask` 一字不动）
 - Test: `backend/tests/test_case_design_driver.py`
 
 **Interfaces:**
 - Consumes: `halt["resume_note"]`（T30 写入）。
 - Produces: 续跑后第一条下发的文本末尾含 `【人工补充】<本轮人话>`，且下发后 `halt["resume_note"] == ""`。
+  两条下发口（`ask` 与 `h_case_plan` 首批的裸 `instr`）共用这一个注入点。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -620,22 +621,38 @@ def test_resume_note_does_not_cross_turns(tmp_path):
     assert len([m for m in turn["messages"] if "换个说法" in str(m.content)]) == 0
 ```
 
-- [ ] **Step 2: 跑红** → **Step 3: 实现**（`ask` 头部两行，其余不动）
-
 ```python
-    def ask(self, text: str, cap: int = NUDGE_CAP) -> HumanMessage:
-        """带重试上限的下发：首问只置 asked，重问加 nudge；用尽即中止（plan/gen 3、opt/attr 2）。"""
-        cur = self.cur
-        assert self.led is not None
-        note = str(self.led.data["halt"].get("resume_note") or "")
-        if note:                                         # 续跑注入的唯一落点（裁定 45）：用后即清
-            self.led.data["halt"]["resume_note"] = ""
-            text = f"{text}\n【人工补充】{note}"
-        if cur.get("asked"):
-            ...
+def test_instr_is_the_single_injection_point(tmp_path):
+    """R-81：注入点必须在下发原语 `instr`，不在 `ask`——`h_case_plan` 的首批下发绕开重试预算、
+    不经 `ask`，写进 `ask` 就漏那一条。前两条钉行为，本条钉「两条口共用一处」的位置。"""
+    from aitester.case_design.stages import Ctx
+    env = _env(tmp_path, StubKb())
+    led = Ledger.fresh(env.design)
+    led.data["halt"]["resume_note"] = "按下单／售后拆两条"
+    ctx = Ctx(env=env, task_tool=ScriptTask(), writer=lambda e: None,
+              config={"configurable": {"thread_id": "t1"}},
+              state_messages=[HumanMessage("换个说法")], led=led, case={}, ticks=1)
+    assert ctx.instr("生成计划").content.endswith("\n【人工补充】按下单／售后拆两条")
+    assert led.data["halt"]["resume_note"] == ""              # 用后即清
+    assert ctx.instr("生成计划").content == "生成计划"          # 第二条起不再带
 ```
 
-- [ ] **Step 4: 跑绿 + 提交** — `git commit -m "feat(case-design): Ctx.ask 单点注入续跑补充语，用后即清（裁定 45）"`
+- [ ] **Step 2: 跑红** → **Step 3: 实现**（只改 `Ctx.instr` 的函数体，`Ctx.ask` 一字不动）
+
+```python
+    def instr(self, text: str) -> HumanMessage:
+        """续跑补充语的唯一注入点（裁定 45）：`ask` 与 `h_case_plan` 的裸下发共用这里，用后即清。"""
+        assert self.led is not None
+        note = str(self.led.data["halt"].get("resume_note") or "")
+        if note:
+            self.led.data["halt"]["resume_note"] = ""
+            text = f"{text}\n【人工补充】{note}"
+        return HumanMessage(content=text, id=f"cdinstr-{self.ticks}")
+```
+
+`Ctx.ask` 一字不动（它本来就在最后 `return self.instr(text)`）。
+
+- [ ] **Step 4: 跑绿 + 提交** — `git commit -m "feat(case-design): Ctx.instr 单点注入续跑补充语，用后即清（裁定 45）"`
 
 ---
 
