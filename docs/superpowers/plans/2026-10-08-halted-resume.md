@@ -23,7 +23,7 @@
 - **裁定 45**：注入点只有下发原语 `Ctx.instr` 一处（`Ctx.ask` 同走它；`h_case_plan` 首批下发不经 `ask`，写进 `ask` 就漏），附「【人工补充】…」并**用后即清**；`resume_note` 每个新回合进 `_boot` 先清一次（只活一回合）。
 - **裁定 46**：`_wants_restart` 必须是 `_approval_clause(text, _RESTART_WORDS)` 的一行调用。**不许**新建第二套分句/否定扫描。
 - **裁定 47**：不启用 `interrupted` 状态、不动 `_ARCHIVE_ITEMS`、不动两道门的 hard=0 门禁。
-- **文案基句逐字不许动**：`测试设计任务中止：{reason}` 是既有逐字断言对象（`test_case_design_graph.py:146/182`），尾巴**另起一句**追加；改那两处断言时基句用 `startswith` 钉住。
+- **文案基句逐字不许动**：`测试设计任务中止：{reason}` 是既有逐字断言对象（`test_case_design_graph.py` 的 `test_case_env_injection_runs_loop_and_halts`／`test_service_stream_carries_case_env_to_graph` 各一处），尾巴**另起一句**追加；改那两处断言时基句用 `startswith` 钉住。
 - **门禁只增不减**：基线 868，只许 ≥868。读数一律以**提交态/纯净树**为准（裁定 23），脏树读数只作线索。
 - **测试执行只用** `backend/.venv/Scripts/python -m pytest -q`（系统 python312 会在 collection 前撞 `--env` argparse 冲突）。
 - **Windows/Git Bash 纪律**：控制台中文乱码 ⇒ 证据写 UTF-8 文件再读；`md5sum -c` 必须在基线自己的根里跑；python 路径用 `D:/...`。
@@ -659,8 +659,11 @@ def test_instr_is_the_single_injection_point(tmp_path):
 ### Task T32: 终帧说实话——halt 帧尾巴 + 族属中文
 
 **Files:**
-- Modify: `backend/src/aitester/case_design/stages.py`（新增 `_halt_frame`，两处 `ctx.end` 用它）
-- Test: `backend/tests/test_case_design_driver.py`、`backend/tests/test_case_design_graph.py:146/182`
+- Modify: `backend/src/aitester/case_design/stages.py`（新增 `_halt_frame`，驱动两处 `ctx.end(f"测试设计任务中止…")` 用它；`constants` 那行 import 补 `HALT_KIND_CN`）
+- Test: `backend/tests/test_case_design_driver.py`、`backend/tests/test_case_design_graph.py`
+  （按**测试名**锚定，行号会随追加漂移：`test_case_env_injection_runs_loop_and_halts` 里的
+  `assert turns[-1]["text"] == "测试设计任务中止：…"`，与 `test_service_stream_carries_case_env_to_graph` 里的
+  `assert done["reply"] == "测试设计任务中止：…"`。**全仓只有这两处**逐字全等，已 grep 证实）
 
 **Interfaces:**
 - Consumes: `data["halt"]`（T28）、`HALT_KIND_CN`（T27）。
@@ -702,7 +705,16 @@ def _halt_frame(ctx: Ctx, base: str) -> str:
 ```
 两处 `ctx.end(f"测试设计任务中止…")` 改为 `ctx.end(_halt_frame(ctx, f"测试设计任务中止：{exc}"))` / `...（内部错误：{exc}）`。`_Halt` 的 `HALT_KIND_CN` 需要 import（`constants` 那行加）。
 
-- [ ] **Step 4: 更新两处全等断言**（`test_case_design_graph.py:146` 与 `:182`）——基句改 `startswith` 钉住，新增尾句存在性断言；**除此之外不许动那两个测试的其他行**。
+> **R-82（控制方复审期裁定，本任务修复轮执行）**：上面这段字面代码的尾句「再发一句将从这里续跑」对 `needs_input` **说谎**——
+> 该族六处抛点（`stages.py:625/:675/:1010/:1133/:1286/:2176`）都在阶段处理器**执行中途**抛，走的就是这两处 `ctx.end`，
+> 而 `_resume_halted` 对该族的既定行为是拒绝续跑。控制方离线实测逐字复现（`D:\tmp\w5_probe_out.txt`）。
+> **清偿形态**：新增唯一实现处 `_next_step_text(kind)`（`needs_input` ⇒ 「这类停顿续跑也无解——…再明说「重开任务」开启新任务。」，
+> 其余三族 ⇒ 原句逐字），`_halt_frame` 与 `_needs_input_text` 同用它（这条规则从此只有一处），
+> 并加一条 `test_halt_frame_next_step_matches_family`（gate 882→883）。**Why**：终帧是人唯一读到的话，
+> 相邻两句自相矛盾等于裁定 18「豁免必须可见」的反面。**代价**：`_needs_input_text` 一处措辞「然后」→「再」。
+
+- [ ] **Step 4: 更新两处全等断言**（`test_case_design_graph.py` 的 `test_case_env_injection_runs_loop_and_halts`
+  与 `test_service_stream_carries_case_env_to_graph` 各一处 `==` 终帧断言）——基句改 `startswith` 钉住，新增尾句存在性断言；**除此之外不许动那两个测试的其他行**。
 
 ```python
     assert turns[-1]["text"].startswith("测试设计任务中止：plan/-/- 重试超限")
