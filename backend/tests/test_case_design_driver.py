@@ -1888,7 +1888,8 @@ def test_halted_new_turn_resumes_without_archiving(tmp_path):
         _append(state, _drive(env, state, ScriptTask()))
         simulate(env, plan=bad)
     _append(state, _drive(env, state, ScriptTask()))                 # → halted
-    assert Ledger.load(env.design).data["counters"] == {"chain": 0, "story": 0, "point": 0, "case": 0}
+    assert Ledger.load(env.design).data["counters"] == {
+        "chain": 0, "story": 0, "point": 0, "case": 0}
 
     arc_before = _archive_entries(env)                               # 续跑轮之前
     turn = _drive(env, {"messages": [HumanMessage("换个说法再试")], "case": {}}, ScriptTask())
