@@ -125,7 +125,7 @@ def test_load_keeps_existing_writing_section(tmp_path: Path):
 def test_load_backfill_is_narrow_not_deep_merge(tmp_path: Path):
     """背填是窄补位不是深合并：只补 writing 与 counters.case，别的缺什么不发明什么。
 
-    _backfill_fourth_slice 若顺手 deep-merge，真坏掉的账本（比如 gate 节整体丢失）会被
+    _backfill_ledger_slices 若顺手 deep-merge，真坏掉的账本（比如 gate 节整体丢失）会被
     洗成「看起来完好」——腐坏被静默吞掉，后续环基于假地基推进。缺键必须露出来。
     """
     design_dir = tmp_path / "design"
@@ -154,6 +154,29 @@ def test_load_backfill_is_narrow_not_deep_merge(tmp_path: Path):
     assert led.data["counters"]["case"] == 0
     # 本不属于本片背填范围的缺键：不发明，保持缺失让坏账本自己露出来
     assert "gate" not in led.data
+
+
+def test_halt_node_fresh_shape_and_narrow_backfill():
+    """裁定 43：续跑的依据必须成节存在；背填仍走 F1 的窄口径——只补 halt，别把坏账本洗白。"""
+    from aitester.case_design.constants import HALT_KINDS
+    from aitester.case_design.ledger import _backfill_ledger_slices, _fresh_data
+
+    halt = _fresh_data()["halt"]
+    assert tuple(halt) == ("kind", "reason", "stage", "layer", "block",
+                           "round", "at", "count", "resume_note")
+    assert halt["kind"] == "" and halt["count"] == 0 and halt["round"] == 0
+    assert set(HALT_KINDS) == {"human_wait", "artifact_retry", "transient", "needs_input"}
+
+    old = _fresh_data()
+    del old["halt"]                                   # 本片之前落盘的账本
+    _backfill_ledger_slices(old)
+    assert old["halt"] == _fresh_data()["halt"]       # 缺什么补什么，补完即健康
+
+    broken = _fresh_data()
+    del broken["halt"]
+    broken["gate"] = None                             # 真坏了：不许顺手「修好」
+    _backfill_ledger_slices(broken)
+    assert broken["gate"] is None                     # 深合并会把真损坏洗成健康账本
 
 
 def _pt(pid, story, chain_stories=None):

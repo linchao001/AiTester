@@ -18,6 +18,12 @@ STATUSES = ("active", "awaiting_review", "interrupted", "done", "halted", "write
 LAYER_STATES = ("pending", "active", "audited", "done", "stale_pending", "skipped")
 
 
+def _fresh_halt() -> dict[str, Any]:
+    """halt 节形状（裁定 43）：续跑的唯一依据。count 记「停在同一处的第几次」，供终帧说实话。"""
+    return {"kind": "", "reason": "", "stage": "", "layer": "", "block": "",
+            "round": 0, "at": "", "count": 0, "resume_note": ""}
+
+
 def _fresh_data() -> dict[str, Any]:
     return {
         "version": 1,
@@ -33,18 +39,22 @@ def _fresh_data() -> dict[str, Any]:
         "writing": {"status": "", "targets": [], "batches": [], "opinions": [], "unresolved": [],
                     "gate": {"round": 0, "int_round": 0, "unclear": 0, "approved_at": ""},
                     "stale_batches": [], "note": ""},
+        "halt": _fresh_halt(),
         "writeback": {"done": False, "log": []},
         "history": [],
     }
 
 
-def _backfill_fourth_slice(data: dict[str, Any]) -> None:
-    """旧账本（本片之前写的）没有 writing 节与 counters.case：只补这两位，缺别的键说明文件真坏了。"""
+def _backfill_ledger_slices(data: dict[str, Any]) -> None:
+    """旧账本（各片之前写的）可能缺 writing 节、counters.case 与 halt 节：只补这几处，
+    缺别的键说明文件真坏了，不做深合并把腐坏洗成健康账本。"""
     if "writing" not in data:
         data["writing"] = _fresh_data()["writing"]
     counters = data.get("counters")
     if isinstance(counters, dict) and "case" not in counters:
         counters["case"] = 0
+    if "halt" not in data:
+        data["halt"] = _fresh_halt()
 
 
 @dataclass
@@ -68,7 +78,7 @@ class Ledger:
                 f"ledger.corrupt-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.json")
             os.replace(path, corrupt)
             return None
-        _backfill_fourth_slice(data)
+        _backfill_ledger_slices(data)
         return cls(path=path, data=data)
 
     @classmethod

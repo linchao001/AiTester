@@ -25,6 +25,15 @@ FIX_CAP = 2            # opt/attribute 处置表校验失败的重试上限
 WRITEBACK_FIX_CAP = 2  # 回写失败自动重试上限（超限 writeback_failed）
 MAX_TRANSITIONS = 80   # 单次运行驱动激活上限（防转场死循环）
 
+# 断点续跑（第五片，spec 裁定 43）：族属由抛点自标，下游一律不许读 reason 文案猜。
+HALT_KINDS: tuple[str, ...] = ("human_wait", "artifact_retry", "transient", "needs_input")
+HALT_KIND_CN: dict[str, str] = {
+    "human_wait": "等你的一句话",
+    "artifact_retry": "制品反复不合法",
+    "transient": "环境或内部故障",
+    "needs_input": "输入或账本对不上，续跑必再炸",
+}
+
 PRIORITY_RANK: dict[str, int] = {"P0": 0, "P1": 1, "P2": 2}
 DIRECTIONS: tuple[str, ...] = ("正向", "负向", "边界")
 ID_RE = re.compile(r"^(ch|st|pt)-\d{4}$")
