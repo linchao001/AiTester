@@ -728,8 +728,9 @@ def _halt_frame(ctx: Ctx, base: str) -> str:
 ### Task T33: 离线端到端 + 全量门禁 + 推送
 
 **Files:**
-- Test: `backend/tests/test_case_design_e2e.py`（追加两条）
-- Modify: `docs/superpowers/specs/…design.md` 的「走查记录」不动；计划自身勾选
+- Test: `backend/tests/test_case_design_e2e.py`（补 import ＋ 追加两条 drain 级端到端）
+- Test: `backend/tests/test_case_design_driver.py`（追加一条 `_reset_gate_unclear` 直测，R-80）
+- Modify: `docs/superpowers/specs/…design.md` 的「走查记录」不动；计划自身勾选与执行状态回填
 
 **Interfaces:**
 - Consumes: T27–T32 全部。
@@ -787,9 +788,30 @@ def test_e2e_needs_input_refuse_then_restart_replans(tmp_path):
     assert len(_archive_entries(env)) > len(arc_before)                             # 归档条目确实新增
     assert Ledger.load(env.design).data["task"] == {}                               # 新账本等待 h_plan
 ```
-- [ ] **Step 2: 全量门禁** — `backend/.venv/Scripts/python -m pytest -q`，记录读数（预期 868 + 本片新增 ≈ 15–18 条）；纯净树复现一次（裁定 23）。
-- [ ] **Step 3: 计划文本回填**：本文件所有已完成 step 勾 `[x]`，头部补「执行状态」一行（提交号／门禁读数）。
-- [ ] **Step 4: 提交并推送** — `git push origin master:main`（本仓提交与推送常授权，`project-repo-remote`）。
+- [ ] **Step 2: 追加一条 `_reset_gate_unclear` 直测**（`backend/tests/test_case_design_driver.py` 末尾；
+  名字加进该文件顶部的 `from aitester.case_design.stages import (...)` 那组，**不许在测试体内起局部 import**——
+  本切片已两次删过这种冗余）。**R-80：裁定 44 那句「另一道门的账不许顺手洗白」至今无人证**——
+  T30 那条 human_wait 测试只断言自己那道门归零，一个「两道门一起洗」的实现照样绿；
+  而 `case_gate_interpret` 分支要 e2e 跑到第四层末门才可达，代价与收益不成比例，故按纯函数直接钉。
+
+```python
+def test_reset_gate_unclear_only_touches_the_named_gate(tmp_path):
+    """R-80：续跑只复位游标那道门——设计门与用例末门的待决计数是两本账（裁定 44）。"""
+    env = _env(tmp_path, StubKb())
+    led = Ledger.fresh(env.design)
+    led.data["gate"]["unclear"] = 2
+    led.data["writing"]["gate"]["unclear"] = 3
+    _reset_gate_unclear(led, "plan")                                  # 非门阶段：谁的账都不许动
+    assert led.data["gate"]["unclear"] == 2 and led.data["writing"]["gate"]["unclear"] == 3
+    _reset_gate_unclear(led, "gate_interpret")                         # 只洗设计门
+    assert led.data["gate"]["unclear"] == 0 and led.data["writing"]["gate"]["unclear"] == 3
+    _reset_gate_unclear(led, "case_gate_interpret")                    # 只洗末门
+    assert led.data["writing"]["gate"]["unclear"] == 0
+```
+
+- [ ] **Step 3: 全量门禁** — `backend/.venv/Scripts/python -m pytest -q`，记录读数（本片实到基线：T27 869 → T28 871 → T29 873 → T30 878 → T31 881 → T32 882 → 修复轮 883；T33 再加三条 ⇒ **预期 886**）；纯净树复现一次（裁定 23）。
+- [ ] **Step 4: 计划文本回填**：本文件所有已完成 step 勾 `[x]`，头部补「执行状态」一行（提交号／门禁读数）。
+- [ ] **Step 5: 提交并推送** — `git push origin master:main`（本仓提交与推送常授权，`project-repo-remote`）。
 
 ---
 
