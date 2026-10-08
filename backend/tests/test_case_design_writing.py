@@ -10,10 +10,10 @@ from pathlib import Path
 
 from aitester.case_design.constants import (
     CASE_BATCH_CAP, CASE_DELIVERY_NAME, CASE_ID_RE, CASE_PREFIX, CASES_DIR_NAME,
-    ENV_PRECONDITION_MARKS, ID_RE, VAGUE_ASSERTION_MARKS,
+    ENV_PRECONDITION_MARKS, HALT_KINDS, ID_RE, VAGUE_ASSERTION_MARKS,
 )
 from aitester.case_design.env import CaseDesignEnv
-from aitester.case_design.ledger import Ledger, _fresh_data
+from aitester.case_design.ledger import Ledger, _backfill_ledger_slices, _fresh_data
 from aitester.case_design.schema import CaseDraft
 from aitester.case_design.writing import (
     collect_covers, compose_case_delivery, denominator_points, plan_case_targets,
@@ -158,9 +158,6 @@ def test_load_backfill_is_narrow_not_deep_merge(tmp_path: Path):
 
 def test_halt_node_fresh_shape_and_narrow_backfill():
     """裁定 43：续跑的依据必须成节存在；背填仍走 F1 的窄口径——只补 halt，别把坏账本洗白。"""
-    from aitester.case_design.constants import HALT_KINDS
-    from aitester.case_design.ledger import _backfill_ledger_slices, _fresh_data
-
     halt = _fresh_data()["halt"]
     assert tuple(halt) == ("kind", "reason", "stage", "layer", "block",
                            "round", "at", "count", "resume_note")

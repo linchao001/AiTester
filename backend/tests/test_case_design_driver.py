@@ -12,6 +12,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import ToolException
 
@@ -23,10 +25,10 @@ from aitester.case_design.outline import compose_outline
 from aitester.case_design.reviewers import _RETRY_HINT
 from aitester.case_design.schema import ClaimsOut, parse_json_fence
 from aitester.case_design.stages import (
-    Ctx, _claims_brief, _collect_writeback_items, _drafts_errors, _drop_out_of_window_hards,
+    Ctx, _Halt, _claims_brief, _collect_writeback_items, _drafts_errors, _drop_out_of_window_hards,
     _explicit_approval, _layer_audited, _next_step_text, _open_of, _outline_extras,
-    _patch_ids, _rescan_claims, _reset_gate_unclear, _writeback_authorized, drive_turn,
-    h_writeback,
+    _patch_ids, _rescan_claims, _reset_gate_unclear, _wants_restart, _writeback_authorized,
+    drive_turn, h_writeback,
 )
 
 REV_CLEAN = '```json\n{"opinions": [], "resolutions": []}\n```'
@@ -1834,8 +1836,6 @@ def test_halt_books_cursor_snapshot_and_kind(tmp_path):
 
 def test_halt_kind_validation_fails_loud():
     """新抛点漏标族属必须响亮失败：默认值会把未知族属洗成某一族的续跑策略（比不分类更坏）。"""
-    from aitester.case_design.stages import _Halt
-    import pytest
     with pytest.raises(ValueError):
         _Halt("某句原因", "not_a_kind")
     assert _Halt("某句原因", "transient").kind == "transient"
@@ -1843,7 +1843,6 @@ def test_halt_kind_validation_fails_loud():
 
 def test_wants_restart_truth_table():
     """裁定 46：重开＝销毁现场，判据只许偏「少销毁」。分句规则复用批准那一族，不写第二份。"""
-    from aitester.case_design.stages import _wants_restart
     for text, expected in (
         ("重开任务", True),
         ("作废这次，重新按新需求来", True),
@@ -1860,7 +1859,6 @@ def test_wants_restart_truth_table():
 
 def test_wants_restart_negation_only_kills_the_matching_clause():
     """W3-2 的教训反向复用：前一分句的「没」不许连坐后一分句的明示重开。"""
-    from aitester.case_design.stages import _wants_restart
     assert _wants_restart("没什么问题，重开任务吧") is True
 
 
@@ -1949,6 +1947,28 @@ def test_human_wait_halt_resume_goes_back_to_the_gate(tmp_path):
     led = Ledger.load(env.design)
     assert led.status == "done" and kb.upserts                        # 解读 1 call → 回写，零重烧
     assert led.data["gate"]["unclear"] == 0
+
+
+def test_human_wait_resume_resets_gate_unclear_for_undecided(tmp_path):
+    """终评 I-1 的差分面：续跑复位的是游标那道门的待决计数，非批准续跑也要受它救。
+
+    批准续跑会走批准分支顺手清零 unclear——只测「同意通过」证不出 `_reset_gate_unclear`
+    的存在（删掉它整套测试照绿）。本测用一句不含批准词、不含重开词的待决续跑钉死：
+    4 已复位、本轮 +1，若不复位则 5>NUDGE_CAP 当场 re-halt（假续跑）。
+    """
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask())                                     # 跑到 awaiting_review
+    for _ in range(4):                                               # NUDGE_CAP=3 → 第 4 次待决 halted
+        _drive(env, {"messages": [HumanMessage("我再想想")], "case": {}}, ScriptTask())
+    led = Ledger.load(env.design)
+    assert led.status == "halted" and led.data["halt"]["kind"] == "human_wait"
+    assert led.cursor["stage"] == "gate_interpret" and led.data["gate"]["unclear"] == 4
+
+    _drive(env, {"messages": [HumanMessage("我再想想")], "case": {}}, ScriptTask())
+    led = Ledger.load(env.design)
+    assert led.status == "awaiting_review"                           # 真续跑：不是首轮即再 halted
+    assert led.data["gate"]["unclear"] == 1                          # 4 已复位、本轮 +1
 
 
 def test_needs_input_halt_refuses_and_costs_nothing(tmp_path):
