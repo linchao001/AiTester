@@ -463,7 +463,10 @@ def _resume_halted(ctx: Ctx) -> bool:
         return True
     kind = str(halt.get("kind") or "transient")
     if kind == "needs_input":
-        ctx.halt_refusal = _needs_input_text(halt)
+        # 拒绝放行也要把「停在同一处」的读数说实（spec 走查五判据 ③：`halt["count"]` 递增）：
+        # 这一族不会重放，但人连着发几句「继续」时，终帧那句「第 N 次」必须跟着涨。
+        _book_halt(ctx, kind, str(halt.get("reason") or ""))
+        ctx.halt_refusal = _needs_input_text(ctx.led.data["halt"])
         return False
     cur = dict(led.cursor)
     _go(ctx, cur["stage"], layer=cur["layer"], block=cur["block"],
@@ -475,6 +478,13 @@ def _resume_halted(ctx: Ctx) -> bool:
     led.data["history"].append(f"resumed-from-halted@{_now()} kind={kind}")
     return True
 ```
+
+> 计划缺陷更正（控制方拆计划后自查，裁定 24／R-66 同族，登记为 R-75）：本任务 Step 1 的
+> `test_needs_input_halt_refuses_and_costs_nothing` 断言 `halt["count"] == 2`，而 Step 4 原写法在
+> needs_input 分支**只设 `halt_refusal` 不记账**——按原代码这条测试永远红，spec 走查五判据 ③ 也明写
+> 「再发一句『继续』⇒ `halt["count"]` 递增」。已在 Step 4 补上 `_book_halt(ctx, kind, 原 reason)` 一行
+> （仍由唯一写入处记账，同处判据自然成立 ⇒ count+1、`at` 刷新、reason 不变），并把
+> `_needs_input_text(halt)` 改成读记账**之后**的节（`ctx.led.data["halt"]`），否则终帧那句「第 N 次」会停在旧值。
 
 - [ ] **Step 5: 重写 `_boot` 的 fresh 块**——**关键纪律：`fresh` 块内一律用 `ctx.led`，不许再用局部 `led`**（`_restart` 会换绑账本，局部变量会把旧字典盖回新账本——这条是本片最容易踩的坑，测试 `test_halted_new_turn_with_explicit_restart_archives` 钉它）。
 
