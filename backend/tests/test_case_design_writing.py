@@ -208,8 +208,9 @@ def test_plan_case_targets_story_chain_membership_decides_ownership():
 def test_duplicate_point_rows_without_signals_fall_back_to_last_row():
     """降级形状专用：两行都没有 state/op 时 `is_draft_row` 辨不出来源，只能后见覆盖。
 
-    真机行序（`_rows_of(POINT)` 把 KB 存量排前、本 run 草稿排后）见下一条——那条才钉业务口径。
-    本条只兜底钉「辨不出来源时不崩、仍并成一行」。
+    真机不可达（终评 I-1 的收口点）：生产侧的行都来自 `stages._rows_of`，它给草稿行补 `state`
+    并已按 `schema.dedup_written` 并成一行人库，故「两行都无信号」这一形状不再出现在链路上；
+    本条只兜底钉纯函数拿到最坏输入时不崩、仍并成一行。业务口径由下一条钉（那条才写真机行序）。
     """
     rows = [{"id": "pt-0001", "story": "st-0001", "name": "旧名"},
             {"id": "pt-0001", "story": "st-0001", "name": "新名"}]

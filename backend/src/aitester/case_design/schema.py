@@ -31,8 +31,8 @@ def is_draft_row(row: dict) -> bool:
     `state=存量`、给草稿标 新增／更新／删除；测试夹具与本仓快照另用 `op`（存量 noop／草稿
     upsert）表达同一区分。两个信号都认——先 `state`，`state` 缺失才落到 `op`。
     delete 草稿在 `_tree_lines` 已被过滤，不进这里。
-    R-59：同源判别式只许有一处实现，呈递侧 `outline._dedup_written` 与分母侧
-    `writing.denominator_points` 共用本函数（与 `stages._collect_writeback_items` 首见即留同口径）。
+    R-59：同源判别式只许有一处实现，取舍规则见下方 `dedup_written`（呈递／分母／清单／写库四侧
+    共用）；生产侧的行由 `stages._rows_of` 自报来源（草稿行补 `state`），故这里不必再猜。
     """
     state = str(row.get("state") or "")
     if state == "存量":
@@ -40,6 +40,41 @@ def is_draft_row(row: dict) -> bool:
     if state:
         return True
     return str(row.get("op") or "noop") == "upsert"
+
+
+def dedup_written(rows: list[dict]) -> list[dict]:
+    """同 id 只留**将被写库的那一份**，位置仍取该 id 首次出现处（树形顺序不漂）。
+
+    W3-3（走查三呈报、R-58 并入本片）：呈递侧的行序是「先 KB 存量、后本 run 草稿」，
+    不去重 ⇒ 同一节点在唯一人审门里呈双行（实测 38 行 / 19 唯一 id）。
+    取舍必须和写库侧**同一个口径**，否则人看的是后一块、库里进的是前一块：
+    `_collect_writeback_items`（stages.py）只遍历草稿、且 `seen` 首见即留 ⇒
+    ① 有草稿就不呈存量行（KB 存量永不进写库侧）；
+    ② 草稿之间取**先出现**的那一条（按 sorted 文件名序，与写库侧同序）。
+
+    终评 I-1：这条规则此前在四侧各写一遍，其中清单侧（`_materialize_case_batches` 的 dict 推导）
+    是无条件后见覆盖 ⇒ 同一个 `pt-` id 被两块点草稿重复表达时，末门按后一块的 `story` 记分母、
+    库里进的是前一块。现四侧（呈递 `outline._tree_lines`／分母 `writing.denominator_points`／
+    清单 `stages._materialize_case_batches`／写库 `stages._collect_writeback_items`）同走本函数。
+
+    无 id 的行不参与去重、原样留在列表里（`_tree_lines` 渲染本来就需要 id，本函数不新增兜底、
+    也不改变它那侧的既有行为：呈递侧宁可多一行，不可静默少一行）。
+    """
+    out: list[dict] = []
+    slot_of: dict[str, int] = {}          # id → 该 id 首次出现的下标（位置不漂）
+    for row in rows:
+        key = str(row.get("id") or "")
+        if not key:
+            out.append(row)               # 无 id 行：不参与去重、原位保留
+            continue
+        if key not in slot_of:
+            slot_of[key] = len(out)
+            out.append(row)               # 同 id 只出一行：占在该 id 的首次出现处
+            continue
+        slot = slot_of[key]
+        if not is_draft_row(out[slot]):
+            out[slot] = row               # 存量让位给草稿；草稿之间先出现者胜
+    return out
 
 
 class DraftNode(BaseModel):

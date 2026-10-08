@@ -307,13 +307,14 @@ def test_outline_dedups_same_id_delete_across_blocks():
     assert "- ch-0001 示例链路甲（新增，P0）" in md             # 存活节点照常成树
 
 
-def test_outline_dedups_same_id_upsert_keeping_latest_row():
+def test_outline_dedups_same_id_upsert_keeping_the_written_row():
     """W3-3（R-58 并入本片）：增量树里同 id 的「存量／更新」并呈时子节点去重。
 
     `_outline_nodes()`（stages.py）把 KB 存量行（state=存量）与本 run 草稿行（state=更新）**先存后草
     直接相加**，`_tree_lines` 旧写法只对 delete 去重——走查三实测同一 id 出双行、其子树整体重影
     （38 行 / 19 唯一 id，pt-0001 出现 4 次）。人审门里这一格必须说清「将被写库的是哪一份」：
-    最后一行（草稿）胜出，父与子各只呈一行。
+    取将被写库的那一行（草稿压存量、草稿之间先出现者留，见 `schema.dedup_written`），
+    父与子各只呈一行。
     """
     nodes_by_layer = {
         "chain": [{"id": "ch-0001", "name": "旧名的链路", "op": "noop", "parent": "",

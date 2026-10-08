@@ -3,39 +3,10 @@
 from __future__ import annotations
 
 from aitester.case_design.constants import CHAIN, LAYER_CN, LAYERS, POINT, STORY
-from aitester.case_design.schema import is_draft_row
+from aitester.case_design.schema import dedup_written
 
 _LAYER_STATE_CN = {"done": "已定稿", "audited": "已过审", "active": "进行中", "pending": "未开始",
                    "stale_pending": "失效待重算（下次任务重跑）", "skipped": "本次不动"}
-
-
-def _dedup_written(rows: list[dict]) -> list[dict]:
-    """同 id 只留**将被写库的那一份**，位置仍取该 id 首次出现处（树形顺序不漂）。
-
-    W3-3（走查三呈报、R-58 并入本片）：`_outline_nodes()` 的行序是「先 KB 存量、后本 run 草稿」，
-    旧写法不去重 ⇒ 同一节点在唯一人审门里呈双行（实测 38 行 / 19 唯一 id）。
-    取舍必须和写库侧**同一个口径**，否则人看的是后一块、库里进的是前一块：
-    `_collect_writeback_items`（stages.py:2257-2289）只遍历草稿、且 `seen` 首见即留 ⇒
-    ① 有草稿就不呈存量行（KB 存量永不进写库侧）；
-    ② 草稿之间取**先出现**的那一条（按 sorted 文件名序，与写库侧同序）。
-    无 id 的行不参与去重、原样留在列表里（`_tree_lines` 渲染本来就需要 id，本函数不新增兜底、
-    也不改变它那侧的既有行为：呈递侧宁可多一行，不可静默少一行）。
-    """
-    out: list[dict] = []
-    slot_of: dict[str, int] = {}          # id → 该 id 首次出现的下标（位置不漂）
-    for row in rows:
-        key = str(row.get("id") or "")
-        if not key:
-            out.append(row)               # 无 id 行：不参与去重、原位保留
-            continue
-        if key not in slot_of:
-            slot_of[key] = len(out)
-            out.append(row)               # 同 id 只出一行：占在该 id 的首次出现处
-            continue
-        slot = slot_of[key]
-        if not is_draft_row(out[slot]):
-            out[slot] = row               # 存量让位给草稿；草稿之间先出现者胜
-    return out
 
 
 def _tree_lines(nodes_by_layer: dict, layers: dict) -> list[str]:
@@ -50,9 +21,9 @@ def _tree_lines(nodes_by_layer: dict, layers: dict) -> list[str]:
                 continue
             seen_deleted.add(nid)
             deleted.append(n)
-    chains = _dedup_written([n for n in nodes_by_layer.get(CHAIN, []) if n.get("op") != "delete"])
-    stories = _dedup_written([n for n in nodes_by_layer.get(STORY, []) if n.get("op") != "delete"])
-    points = _dedup_written([n for n in nodes_by_layer.get(POINT, []) if n.get("op") != "delete"])
+    chains = dedup_written([n for n in nodes_by_layer.get(CHAIN, []) if n.get("op") != "delete"])
+    stories = dedup_written([n for n in nodes_by_layer.get(STORY, []) if n.get("op") != "delete"])
+    points = dedup_written([n for n in nodes_by_layer.get(POINT, []) if n.get("op") != "delete"])
     lines: list[str] = []
     by_parent: dict[str, list[dict]] = {}
     for c in chains:

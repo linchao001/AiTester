@@ -12,7 +12,7 @@ from typing import Any
 from aitester.case_design.constants import (
     CASE_BATCH_CAP, ENV_PRECONDITION_MARKS, VAGUE_ASSERTION_MARKS,
 )
-from aitester.case_design.schema import CaseDraft, is_draft_row
+from aitester.case_design.schema import CaseDraft, dedup_written
 
 # 本环唯一两个 hard code（新增必须同步改 spec 验收节，与三层 R-32 同口径）
 _HARD_CODES = ("uncovered_point", "phantom_cover")
@@ -35,14 +35,13 @@ def denominator_points(point_rows: list[dict], scope: dict[str, set[str]], chain
     """某链路的履约分母 = 所属故事挂在它上面的全部测试点（范围空 = 全量）。
 
     点→故事→链路的关系一律从节点字段确定性反查，不问模型（消费对称性：编写环吃的是 KB/账本
-    制品，不是对话记忆）。同 id 多行只留**将被写库的那一份**（有草稿就不取存量行、草稿之间
-    取先出现的那一条）——与呈递侧 `outline._dedup_written`、写库侧 `_collect_writeback_items`
-    同源，判别式共用 `schema.is_draft_row`。
+    制品，不是对话记忆）。同 id 多行先经 `schema.dedup_written` 收成**将被写库的那一份**，
+    再按归属/范围筛（顺序不能反：先筛后去重会让「草稿把点挪出本链路」退化成拿存量行充数）。
     """
     owned = _stories_of_chain(chain, story_rows or [])
     scope_stories = scope.get("stories") if scope else None
-    chosen: dict[str, dict] = {}
-    for row in point_rows:
+    picked: list[dict] = []
+    for row in dedup_written(point_rows):
         sid = str(row.get("story") or "")
         if story_rows is None:
             # story_rows 缺席（调用方只给了点）时退化为按点所属故事判定范围；scope 也没给 stories
@@ -61,12 +60,8 @@ def denominator_points(point_rows: list[dict], scope: dict[str, set[str]], chain
         rid = str(row.get("id") or "")
         if not rid:
             continue
-        prev = chosen.get(rid)
-        if prev is None or not is_draft_row(prev):
-            # R-59：与 `_collect_writeback_items` 的首见即留同源（先出现的草稿胜出、存量只兜底）。
-            # 去重还挡住「同一点被切进两个批次」——那是假漏测（分母里重复行）的直接来源。
-            chosen[rid] = dict(row)
-    return sorted(chosen.values(), key=lambda r: str(r["id"]))
+        picked.append(dict(row))
+    return sorted(picked, key=lambda r: str(r["id"]))
 
 
 def plan_case_targets(chain_rows: list[dict], story_rows: list[dict], point_rows: list[dict],
