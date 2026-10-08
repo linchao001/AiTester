@@ -11,11 +11,16 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from aitester.case_design import stages
-from aitester.case_design.constants import CASE_BATCH_CAP, LAYER_CN, NUDGE_CAP, ROUND_CAP
+from aitester.case_design.constants import (
+    CASE_BATCH_CAP, CHAIN, LAYER_CN, LAYERS, NUDGE_CAP, POINT, ROUND_CAP, STORY,
+)
 from aitester.case_design.instructions import case_attribute_instruction
 from aitester.case_design.ledger import Ledger
-from aitester.case_design.schema import ReviewOut
-from aitester.case_design.stages import _CAUSES, _writing_enabled
+from aitester.case_design.schema import ReviewOut, is_draft_row
+from aitester.case_design.stages import (
+    Ctx, _CAUSES, _collect_writeback_items, _case_targets, _materialize_case_batches,
+    _rows_of, _writing_enabled,
+)
 from aitester.case_design.writing import _HARD_CODES
 
 from test_case_design_driver import (  # 复用既有挂具，不抄第二份
@@ -1387,3 +1392,108 @@ def test_mixed_continues_into_writing_ring_right_after_writeback(tmp_path):
     assert Ledger.load(env.design).status == "done"
     assert kb.upserts == [] and kb.deletes == []        # 全 no_change ⇒ 设计侧本轮零节点回写；
     # 若实跑出现非空 upserts，说明 no_change 块被重发（T13 语义破了），照报不改断言。
+
+
+# ---- 终评收口（I-1 / I-2）：同 id 多行必须与写库同源；末门分母以账本为准 ----
+
+def _dup_point_world(tmp_path):
+    """同一个 pt- id 被两块点草稿各 upsert 一份、`story` 不同，且草稿**省略 `op`**。
+
+    省略 `op` 是合法输入（`DraftNode.op` 有默认值 `upsert`，写库侧据此当草稿）；同 id 跨块重复
+    是走查三实测过的真机形状（38 行 / 19 唯一 id）。两者叠起来就是评审 I-1 的触发形状：
+    分母、清单、写库三处只要有一处取了后见的行，末门核对的就是「库里不存在的那一份」。
+    """
+    kb = StubKb(layers={
+        "chain": [{"id": "ch-0001", "type": "chain", "level": 1, "parent": "",
+                   "name": "下单链路", "business_scope": "下单", "priority": "P1"},
+                  {"id": "ch-0002", "type": "chain", "level": 1, "parent": "",
+                   "name": "退款链路", "business_scope": "退款", "priority": "P1"}],
+        "story": [{"id": "st-0001", "type": "story", "chains": ["ch-0001"], "actor": "客户",
+                   "preconditions": "账号已注册", "trigger": "提交下单", "expected": "下单成功",
+                   "name": "正常下单", "priority": "P1"},
+                  {"id": "st-0002", "type": "story", "chains": ["ch-0002"], "actor": "客户",
+                   "preconditions": "订单已支付", "trigger": "提交退款", "expected": "退款成功",
+                   "name": "正常退款", "priority": "P1"}],
+        "point": [],                                  # 点全部来自本 run 草稿
+    }, root=tmp_path / "kb")
+    env = _env(tmp_path, kb)
+    led = Ledger.fresh(env.design)
+    for layer in LAYERS:
+        led.layer(layer)["state"] = "audited"         # 写库侧只收 audited 层
+    led.data["task"] = {"descriptor": {"target_subtree": ""}}
+    led.save()
+
+    def node(story: str, name: str, scenario: str) -> dict:
+        return {"type": "point", "id": "pt-0001", "story": story, "name": name,
+                "scenario": scenario, "entities": ["订单"], "directions": ["正向"],
+                "priority": "P1"}                    # 刻意不写 op
+    _write(env.drafts_dir(POINT) / "st-0001.json",
+           {"layer": POINT, "block": "st-0001", "nodes": [node("st-0001", "先见的草稿", "场景甲")]})
+    _write(env.drafts_dir(POINT) / "st-0002.json",
+           {"layer": POINT, "block": "st-0002", "nodes": [node("st-0002", "后见的草稿", "场景乙")]})
+    ctx = Ctx(env=env, task_tool=ScriptTask(), writer=lambda e: None, config={},
+              state_messages=[], led=led)
+    return ctx, env
+
+
+def test_duplicated_point_row_is_the_same_row_at_all_three_sites(tmp_path):
+    """I-1：分母 / 清单 / 写库对同一个 pt- id 必须取**同一块**（写库侧首见即留 ⇒ 先见的那块）。
+
+    取错的代价不是难看一行：后见草稿挂在另一条链路的故事上，分母据此把点记到 ch-0002 名下，
+    ch-0001 的批次就出现「库里有点、分母里没有」的假漏测（或反过来判绿）。
+    """
+    ctx, env = _dup_point_world(tmp_path)
+    rows = _rows_of(ctx, POINT)
+    # 来源自报 + 同 id 并行：省略 op 的草稿也要被认成草稿，且只留写库侧那一份（先见的那块）
+    assert [(r["id"], r["name"]) for r in rows] == [("pt-0001", "先见的草稿")]
+    assert all(is_draft_row(r) for r in rows)
+
+    targets = _case_targets(ctx)
+    by_chain = {t["chain"]: [p for b in t["batches"] for p in b["points"]] for t in targets}
+    assert by_chain == {"ch-0001": ["pt-0001"], "ch-0002": []}
+
+    _materialize_case_batches(ctx, targets)
+    man = json.loads((env.manifests_dir / "case-ch-0001-b1.json").read_text(encoding="utf-8"))
+    assert [p["name"] for p in man["points"]] == ["先见的草稿"]
+    written = [p for _layer, nid, p in _collect_writeback_items(ctx) if nid == "pt-0001"]
+    assert len(written) == 1 and written[0]["story"] == "st-0001"
+    assert written[0]["name"] == man["points"][0]["name"]      # 清单行就是入库行
+
+
+def test_gate_halts_when_manifest_denominator_silently_loses_a_point(tmp_path):
+    """I-2：末门分母以账本为准——盘上清单少点又没人认领它时，响亮中止而非「未落实 0」判绿。"""
+    kb, env, task, _ = _run_to_gate(tmp_path, n=3)
+    mpath = env.manifests_dir / "case-ch-0001-b1.json"
+    mraw = json.loads(mpath.read_text(encoding="utf-8"))
+    dropped = mraw["points"].pop()                    # 只改盘上清单：悄悄少一个点
+    _write(mpath, mraw)
+    cpath = env.cases_dir() / "ch-0001-b1.json"
+    craw = json.loads(cpath.read_text(encoding="utf-8"))
+    craw["cases"] = [c for c in craw["cases"] if dropped["id"] not in c["covers"]]
+    _write(cpath, craw)                               # 连认领它的用例一起抹掉 ⇒ 旧行为判绿
+    _reopen_gate(env)
+
+    frames: list[dict] = []
+    _drive(env, _new_turn("通过"), task, writer=frames.append)
+    text = _end_text(frames)
+    assert "中止" in text and "ch-0001-b1" in text and dropped["id"] in text
+    assert _led(env).status == "halted"
+    assert kb.upserts == [] and kb.deletes == []
+
+
+def test_gate_refusal_reports_the_total_when_hard_exceeds_the_list_cap(tmp_path):
+    """F4：拒绝放行文案截到 20 条必须报总数，否则人会把 22 条漏测读成 20 条。"""
+    kb, env, task, _ = _run_to_gate(tmp_path, n=25, script={
+        "case-gate-int-r1": _j({"opinions": [], "resolutions": []})})
+    for bid in [b["id"] for b in _led(env).data["writing"]["batches"]]:
+        path = env.cases_dir() / f"{bid}.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["cases"] = raw["cases"][:1]               # 三批各留一条 ⇒ 25 点里 22 点未落实
+        _write(path, raw)
+
+    frames: list[dict] = []
+    turn = _drive(env, _new_turn("通过"), task, writer=frames.append)
+    text = turn["messages"][-1].content
+    assert "不予放行" in text
+    assert "共 22 条，此处只列前 20 条" in text
+    assert len([l for l in text.splitlines() if l.startswith("- ")]) == 20

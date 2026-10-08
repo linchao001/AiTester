@@ -47,7 +47,7 @@ from aitester.case_design.plan import (
 from aitester.case_design.reviewers import run_reviewer
 from aitester.case_design.schema import (
     ClaimsOut, CompareOut, EnumeratorOut, MatrixOut, Opinion, OpinionTarget, ReviewOut,
-    parse_case_file, parse_draft_file,
+    dedup_written, parse_case_file, parse_draft_file,
 )
 from aitester.case_design.writing import compose_case_delivery, plan_case_targets, run_case_checks
 
@@ -258,7 +258,13 @@ def _first_live(entry: str, terminal: str, modes: dict[str, str]) -> str | None:
 
 
 def _rows_of(ctx: Ctx, layer: str) -> list[dict]:
-    """当层活宇宙：KB 存量 ∪ 本层草稿（upsert，id 已由生成阶段补齐）。"""
+    """当层活宇宙：KB 存量 ∪ 本层草稿（upsert，id 已由生成阶段补齐），同 id 已并成写库侧那一份。
+
+    终评 I-1：草稿行离开磁盘就没人认得它是草稿了——`DraftNode.op` 有默认值 `upsert`，模型省略
+    `op` 时盘上是合法的 upsert，读回字典却只剩「无 state 无 op」，与 KB 存量无从区分；判别式一猜
+    就错，方向还正好与写库侧相反（猜成存量 ⇒ 后见覆盖）。来源在这个函数里还是事实（KB 在前、
+    草稿在后），所以在此自报：草稿行一律补 `state`（生成侧已标的原样保留），下游不必再猜。
+    """
     out = [dict(r) for r in ctx.kb_rows(layer)]
     drafts = ctx.env.drafts_dir(layer)
     if drafts.is_dir():
@@ -266,8 +272,8 @@ def _rows_of(ctx: Ctx, layer: str) -> list[dict]:
             raw = _read_json(path) or {}
             for item in raw.get("nodes") or []:
                 if isinstance(item, dict) and item.get("op") != "delete":
-                    out.append(item)
-    return out
+                    out.append({**item, "state": str(item.get("state") or "更新")})
+    return dedup_written(out)
 
 
 def _chain_closure(seeds: list[str], chain_rows: list[dict]) -> set[str]:
@@ -455,8 +461,8 @@ def _case_targets(ctx: Ctx) -> list[dict]:
     """编写环的取数单点：活宇宙 = KB 存量 ∪ 本 run 草稿，范围走 `in_scope_targets`（与三层同源）。
 
     mixed 的同一轮里 `ctx.kb_rows` 缓存的是**回写前**的存量，只用它会漏掉本 run 刚过审的点；
-    `_rows_of` 把草稿拼在后面，配合 `denominator_points` 的同 id 取先出现的草稿（与写库侧
-    `seen` 首见即留同源），分母就是回写后的现稿。
+    `_rows_of` 把草稿拼在后面并按 `schema.dedup_written` 并成写库侧那一份（同 id 取先出现的草稿，
+    与写库侧 `seen` 首见即留同源），分母就是回写后的现稿。
     """
     descriptor = (ctx.led.data.get("task") or {}).get("descriptor") or {}
     chains, stories, points = (_rows_of(ctx, CHAIN), _rows_of(ctx, STORY), _rows_of(ctx, POINT))
@@ -495,7 +501,11 @@ def _case_ready_or_block(ctx: Ctx) -> str:
 
 
 def _materialize_case_batches(ctx: Ctx, targets: list[dict]) -> None:
-    """批次入账 + 分母清单落盘：清单自带故事上下文，生成侧不必再翻 KB（消费对称性）。"""
+    """批次入账 + 分母清单落盘：清单自带故事上下文，生成侧不必再翻 KB（消费对称性）。
+
+    I-1：三个索引都建在 `_rows_of` 之上，而它已经把同 id 并成写库侧那一份 ⇒ 这里的 dict 推导
+    不再可能取到后见的另一块（旧写法是无条件后见覆盖，与写库侧首见即留正相反）。
+    """
     story_rows = {str(r.get("id") or ""): r for r in _rows_of(ctx, STORY)}
     point_rows = {str(r.get("id") or ""): r for r in _rows_of(ctx, POINT)}
     chain_rows = {str(r.get("id") or ""): r for r in _rows_of(ctx, CHAIN)}
@@ -885,7 +895,17 @@ def _case_gate_report(ctx: Ctx) -> dict:
         batch_of_case: dict[str, str] = {}
         for item in target.get("batches") or []:
             bid = str(item.get("id") or "")
-            for point in _case_manifest(ctx, bid).get("points") or []:
+            listed = _case_manifest(ctx, bid).get("points") or []
+            # I-2：分母的事实源是账本，盘上清单只是给生成侧看的副本。两者对不上就是内部不一致，
+            # 按同文件 `_materialize_case_batches` 缺点行的先例响亮中止——「清单少一个点、又没人
+            # 认领它」在旧写法下会退化成未落实点 0 直接判绿（离线用例复现过）。
+            on_ledger = _case_batch_points(ctx, bid)
+            if sorted(str(p.get("id") or "") for p in listed) != sorted(on_ledger):
+                raise _Halt(
+                    f"编写环清单与账本分母不一致：{bid}："
+                    f"清单 {sorted(str(p.get('id') or '') for p in listed)} "
+                    f"／ 账本 {sorted(on_ledger)}（分母以账本为准，请重跑编写环计划）")
+            for point in listed:
                 points.append(point)
                 batch_of_point[str(point.get("id") or "")] = bid
             file_cases, errors = parse_case_file(_cases_file(ctx, bid))
@@ -980,8 +1000,14 @@ def _case_gate_refusal(report: dict) -> str:
     lines = ["【用例末门·不予放行】本轮人话是明示批准，但末门的机器账没有清零——"
              "批准不能代替实测计数，批次状态与游标都不动、零放行，"
              "交付物已由编排层按当前实测刷新："]
-    lines += [f"- {h['detail']}" for h in report["hard"][:20]]
-    lines += [f"- 批次 {b['batch']} 正文不可解析：{b['errors'][0]}" for b in report["broken"][:20]]
+    cap = 20                                     # 单类最多列 20 条，超出必须报总数（评审 Minor 10）
+    hard, broken = report["hard"], report["broken"]
+    lines += [f"- {h['detail']}" for h in hard[:cap]]
+    if len(hard) > cap:
+        lines.append(f"（未落实/假完整项共 {len(hard)} 条，此处只列前 {cap} 条。）")
+    lines += [f"- 批次 {b['batch']} 正文不可解析：{b['errors'][0]}" for b in broken[:cap]]
+    if len(broken) > cap:
+        lines.append(f"（坏批共 {len(broken)} 个，此处只列前 {cap} 个。）")
     lines.append("要改：说一句带 cc-/pt-/ch- id 的意见即可退回批环重做；要放行：把正文修好后重新批准。"
                  "本轮只输出一条面向人的答复，不要改动任何文件。")
     return "\n".join(lines)

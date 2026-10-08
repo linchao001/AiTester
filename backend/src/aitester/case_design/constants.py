@@ -33,7 +33,8 @@ ID_RE = re.compile(r"^(ch|st|pt)-\d{4}$")
 # 扩一位 LAYERS 会连带改 build_universe/run_checks/compose_outline 的三层轴口径，本片明确不做。
 CASE_PREFIX = "cc"
 CASE_ID_RE = re.compile(r"^cc-\d{4}$")
-CASE_BATCH_CAP = 10          # 每批**点数**上限（裁定 39 的「≤10/批」按分母切，条数随认领浮动；见 spec 实施澄清）
+CASE_BATCH_CAP = 10          # 每批**点数**上限（裁定 39 的「≤10/批」按分母切，条数随认领浮动；
+                             # 口径出处：计划 2026-10-07-case-writing-loop.md「实施澄清 B」）
 CASES_DIR_NAME = "cases"     # design/cases/ —— 用例正文唯一落点
 CASE_DELIVERY_NAME = "case-delivery.md"   # 末门唯一可视交付物
 
