@@ -1974,6 +1974,7 @@ def test_needs_input_halt_refuses_and_costs_nothing(tmp_path):
     assert "重开任务" in refusal and "本轮未做任何生成" in refusal   # 「怎么出去」由拒绝帧说（T32 只补 halted 帧尾巴）
     led2 = Ledger.load(env.design)
     assert led2.status == "halted" and led2.data["halt"]["count"] == 2  # 拒绝不改状态、只说实话
+    assert led2.data["cursor"] == led.data["cursor"]                   # 游标原样：断点没被清，人修完仍接得上
     assert _archive_entries(env) == arc_before                       # 拒绝轮一个文件没搬
 
 

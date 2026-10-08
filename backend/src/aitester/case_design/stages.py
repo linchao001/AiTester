@@ -319,7 +319,7 @@ def _boot(ctx: Ctx, fresh: bool) -> None:
             # B-F2/R-31：上一回合没跑完（取消/崩溃）的续跑留痕。旧写法先赋 "interrupted"
             # 再无条件覆盖回 "active"、中间没有 save——磁盘账本永远看不到 interrupted，
             # 契约 §9「六态可观测」是假闭环。裁定清偿最小形态：删死赋值，往账本既有
-            # history 追加带时间戳痕迹，仍由下面 led.save() 单点落盘；不新增状态词。
+            # history 追加带时间戳痕迹，仍由下面 ctx.led.save() 单点落盘；不新增状态词。
             ctx.led.data["history"].append(f"resumed-from-interrupted@{_now()}")
         # 「重入驾驶=active」只在**新回合**成立：非 fresh 的图内重入（待决转述轮等）
         # 必须原样保留 awaiting_review，否则 h_gate 的 B-F4 守卫拿不到等待态事实。
