@@ -320,7 +320,8 @@ def _archive_entries(env) -> list[str]:
     所以「续跑没销毁现场」只能判**零新增条目**，判「目录不存在」是假失败。
     """
     arc = env.design / "archive"
-    return sorted(str(x.relative_to(arc)).replace("\\", "/") for x in arc.rglob("*"))         if arc.is_dir() else []
+    entries = arc.rglob("*") if arc.is_dir() else []
+    return sorted(str(x.relative_to(arc)).replace("\\", "/") for x in entries)
 
 
 def test_halted_new_turn_resumes_without_archiving(tmp_path):
