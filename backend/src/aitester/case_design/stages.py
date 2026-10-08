@@ -274,14 +274,21 @@ def _resume_halted(ctx: Ctx) -> bool:
     return True
 
 
+def _next_step_text(kind: str) -> str:
+    """中止之后「下一步该说什么」的唯一实现处（裁定 44/47）：`needs_input` 不许承诺续跑。"""
+    if kind == "needs_input":
+        return ("这类停顿续跑也无解——请先修正上面的业务信息或目标范围，"
+                "再明说「重开任务」开启新任务。")
+    return "再发一句将从这里续跑；要放弃这次工作请明说「重开任务」。"
+
+
 def _needs_input_text(halt: dict) -> str:
     """停在「续跑也无解」那一族：终帧说实话——停在哪、为什么、要人先做什么、本轮什么都没花。"""
     where = f"{halt.get('stage') or '-'}/{halt.get('layer') or '-'}/{halt.get('block') or '-'}"
     return "\n".join([
         f"测试设计任务停在 {where}（第 {int(halt.get('round') or 0)} 轮）：{halt.get('reason') or ''}",
-        f"这是第 {int(halt.get('count') or 1)} 次停在同一处。这类停顿续跑也无解——"
-        "请先修正上面的业务信息或目标范围，然后明说「重开任务」开启新任务。"
-        "本轮未做任何生成、未写入知识库、未归档现场。",
+        f"这是第 {int(halt.get('count') or 1)} 次停在同一处。"
+        f"{_next_step_text('needs_input')}本轮未做任何生成、未写入知识库、未归档现场。",
     ])
 
 
@@ -293,7 +300,7 @@ def _halt_frame(ctx: Ctx, base: str) -> str:
     where = f"{halt['stage']}/{halt['layer'] or '-'}/{halt['block'] or '-'}"
     return (f"{base}\n现场已保留（停在 {where} 第 {halt['round']} 轮，"
             f"第 {halt['count']} 次停在这一处；{HALT_KIND_CN.get(halt['kind'], halt['kind'])}）。"
-            "再发一句将从这里续跑；要放弃这次工作请明说「重开任务」。")
+            + _next_step_text(str(halt.get("kind") or "")))
 
 
 def _boot(ctx: Ctx, fresh: bool) -> None:

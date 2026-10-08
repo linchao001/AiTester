@@ -24,8 +24,8 @@ from aitester.case_design.reviewers import _RETRY_HINT
 from aitester.case_design.schema import ClaimsOut, parse_json_fence
 from aitester.case_design.stages import (
     Ctx, _claims_brief, _collect_writeback_items, _drafts_errors, _drop_out_of_window_hards,
-    _explicit_approval, _layer_audited, _open_of, _outline_extras, _patch_ids, _rescan_claims,
-    _writeback_authorized, drive_turn, h_writeback,
+    _explicit_approval, _layer_audited, _next_step_text, _open_of, _outline_extras,
+    _patch_ids, _rescan_claims, _writeback_authorized, drive_turn, h_writeback,
 )
 
 REV_CLEAN = '```json\n{"opinions": [], "resolutions": []}\n```'
@@ -2068,3 +2068,24 @@ def test_halt_frame_tells_where_it_stopped_and_what_next(tmp_path):
     assert text.startswith("测试设计任务中止：plan/-/- 重试超限")        # 基句逐字不动
     assert "现场已保留" in text and "制品反复不合法" in text
     assert "再发一句将从这里续跑" in text and "重开任务" in text
+
+
+def test_halt_frame_next_step_matches_family(tmp_path):
+    """裁定 44/47 的文案同伴：mid-drive 抛的 needs_input 也走 _halt_frame，
+    那一族根本不许被承诺「再发一句就续跑」——相邻两句自相矛盾就是终帧说谎。"""
+    kb = StubKb(layers={"chain": [{"id": "ch-0001", "type": "chain", "parent": "", "level": 1}],
+                        "story": [], "point": []})
+    env = _env(tmp_path, kb)
+    task = ScriptTask()
+    state = {"messages": [HumanMessage("只更新 ch-9999")], "case": {}}
+    _append(state, _drive(env, state, task))
+    simulate(env, plan={"task_kind": "design", "entry_layer": "story", "terminal_layer": "point",
+                        "target_subtree": "ch-9999", "source_files": [], "note": "窄任务"})
+    frames: list[dict] = []
+    _append(state, _drive(env, state, task, writer=frames.append))
+    text = _end_text(frames)
+    assert text.startswith("测试设计任务中止：目标子树「ch-9999」")   # 基句仍逐字
+    assert "现场已保留" in text and "输入或账本对不上" in text        # 位置读数与中文族名在
+    assert "续跑也无解" in text and "从这里续跑" not in text          # 这句对本族是谎
+    assert _next_step_text("artifact_retry") == \
+        "再发一句将从这里续跑；要放弃这次工作请明说「重开任务」。"      # 另一族照旧承诺续跑
