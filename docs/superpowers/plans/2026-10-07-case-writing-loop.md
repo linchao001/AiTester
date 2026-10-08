@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-05-case-design-loop-design.md` —— 本片的设计权威是文末**「第四层用例编写环（第四片，2026-10-07 用户菜单裁定 35–41）」整节**（裁定 35–41 + 走查四验收线）。与该节冲突时以该节为准；与更早的三层裁定冲突时，三层裁定继续生效（本片不改设计环的语义）。
 
+**执行状态（2026-10-08 收口）**：T18–T26 **全部执行完毕**，64 个 step 全勾齐；代码终态 `8b23d9a`（门禁 868 passed / 0 failed，控制方独立复现），走查四真机读数与两条实施澄清已回填 spec（`57fe976`）。计划文本自身在终评时对齐过两处（`cases_cap`→`points_cap`、`outline._dedup_written`→`schema.dedup_written`），见文末「附：2026-10-08 整片终评后的计划文本对齐」。**未在本片修的**：W4-1（`_after_case_batch` 只向后扫）、W4-2（批准话术无幂等守卫）、待办 ④（`halted` 无受控续跑入口）三条已呈报进 spec，等产品决策再开片。
+
 ## Global Constraints
 
 每一任务的要求都隐含本节；逐条照抄 spec/既有纪律，不许在执行时自行放宽。
@@ -79,7 +81,7 @@ T18/T19 是纯函数与形状，先落地可以把 T21/T22 的断言全部钉在
   - `schema.CaseDraft`（字段：`case_id/title/covers/preconditions/steps/expected/priority/note`）、`schema.validate_cases(raw) -> tuple[list[CaseDraft], list[str]]`、`schema.parse_case_file(path) -> tuple[list[CaseDraft], list[str]]`
   - 用例草稿文件形状（模型必须逐字产出）：`{"chain": "ch-0002", "batch": "ch-0002-b1", "cases": [{"case_id": "", "title": "…", "covers": ["pt-0003"], "preconditions": "…", "steps": ["…"], "expected": ["…"], "priority": "P1", "note": ""}]}`
 
-- [ ] **Step 1: 写失败测试——常量与 id 形状**
+- [x] **Step 1: 写失败测试——常量与 id 形状**
 
 在 `backend/tests/test_case_design_writing.py` 新建：
 
@@ -153,12 +155,12 @@ def test_next_case_seq_four_digit_and_bounded(tmp_path: Path):
         raise AssertionError("序号到 9999 后必须响亮失败，不许静默产 cc-10000")
 ```
 
-- [ ] **Step 2: 跑到红**
+- [x] **Step 2: 跑到红**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_writing.py -q`
 Expected: `ModuleNotFoundError` 或 `ImportError: cannot import name 'CASE_PREFIX'`（收集期即红，全部用例未过）。
 
-- [ ] **Step 3: 加常量**
+- [x] **Step 3: 加常量**
 
 `backend/src/aitester/case_design/constants.py`，在 `ID_RE = re.compile(r"^(ch|st|pt)-\d{4}$")`（第 36 行）之后插入：
 
@@ -177,7 +179,7 @@ VAGUE_ASSERTION_MARKS: tuple[str, ...] = ("正常", "正确", "符合预期", "�
 ENV_PRECONDITION_MARKS: tuple[str, ...] = ("已有", "已存在", "存量数据", "库中已有", "环境中已")
 ```
 
-- [ ] **Step 4: 加 env 缝**
+- [x] **Step 4: 加 env 缝**
 
 `backend/src/aitester/case_design/env.py`：把 `reviews_dir` 属性之后加一个方法，并把 `ensure_dirs` 的目录元组补上它。
 
@@ -208,7 +210,7 @@ from aitester.case_design.constants import (
 )
 ```
 
-- [ ] **Step 5: 加账本节与用例序号**
+- [x] **Step 5: 加账本节与用例序号**
 
 `backend/src/aitester/case_design/ledger.py`：`_fresh_data()` 里 `"counters"` 与 `"gate"` 两行改为（`writing` 紧跟 `gate` 之后、`writeback` 之前）：
 
@@ -236,7 +238,7 @@ from aitester.case_design.constants import (
         return f"cc-{seq:04d}"
 ```
 
-- [ ] **Step 6: 加用例 schema**
+- [x] **Step 6: 加用例 schema**
 
 `backend/src/aitester/case_design/schema.py` 第 16 行导入补 `CASE_ID_RE`（`from aitester.case_design.constants import ... ` 一行内加），文件末尾追加：
 
@@ -322,7 +324,7 @@ def parse_case_file(path: Path) -> tuple[list[CaseDraft], list[str]]:
     return validate_cases(raw)
 ```
 
-- [ ] **Step 7: 写 schema 失败测试并跑到红**
+- [x] **Step 7: 写 schema 失败测试并跑到红**
 
 在 `backend/tests/test_case_design_schema.py` 末尾追加：
 
@@ -409,12 +411,12 @@ from aitester.case_design.schema import (
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_schema.py tests/test_case_design_writing.py -q`
 Expected: 全绿（Step 3–6 已实现；若仍红按报错回改）。
 
-- [ ] **Step 8: 全量门禁复跑**
+- [x] **Step 8: 全量门禁复跑**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest -q`
 Expected: `770 + 13 = 783 passed, 0 failed`（只增不减；具体数以实跑为准并在报告里如实写）。
 
-- [ ] **Step 9: 提交**
+- [x] **Step 9: 提交**
 
 ```bash
 cd /d/code/github/AiTester && git add backend/src/aitester/case_design/constants.py backend/src/aitester/case_design/env.py backend/src/aitester/case_design/ledger.py backend/src/aitester/case_design/schema.py backend/tests/test_case_design_schema.py backend/tests/test_case_design_writing.py && git commit -m "feat(case-design): 第四层落点常量与账本 writing 节 + 用例草稿 schema（cc- 不进三层轴）"
@@ -441,7 +443,7 @@ cd /d/code/github/AiTester && git add backend/src/aitester/case_design/constants
     - `checks_by_chain[chain]["fulfillment"]` 必须由**全局一次** `run_case_checks(全部点, 全部用例)` 的表按链路过滤而来（跨批认领的用例仍算 owner），实测计数只认 `extras["uncovered"]`——两处不同源就会出现「表上落实了、计数说没落实」。
 - 交付物必须包含的中文段标题（T22 断言逐字匹配）：`## 前置判定`、`## 用例清单`、`## 履约差异表`、`## 规范校验表（呈递项）`、`## 未消化项（含不收敛归因）`、`## 失效待重算批次`、`## 意见落点对照表（每条意见的去向）`。
 
-- [ ] **Step 1: 写失败测试——分批与分母**
+- [x] **Step 1: 写失败测试——分批与分母**
 
 在 `backend/tests/test_case_design_writing.py` 追加：
 
@@ -511,7 +513,7 @@ def test_duplicate_point_rows_without_signals_fall_back_to_last_row():
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_writing.py -q -k "targets or denominator"`
 Expected: FAIL（`ModuleNotFoundError: aitester.case_design.writing`）。
 
-- [ ] **Step 2: 实现分批与分母**
+- [x] **Step 2: 实现分批与分母**
 
 `backend/src/aitester/case_design/writing.py` 新建：
 
@@ -608,12 +610,12 @@ def collect_covers(cases: list[CaseDraft]) -> dict[str, list[str]]:
     return owners
 ```
 
-- [ ] **Step 3: 跑到绿（分批/分母）**
+- [x] **Step 3: 跑到绿（分批/分母）**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_writing.py -q -k "targets or denominator"`
 Expected: PASS。`test_denominator_points_scope_empty_means_all` 的第一句断言依赖「无 story 表 ⇒ 按点所属故事判定」这条退化分支，实现已覆盖；若红，改实现而非改断言。
 
-- [ ] **Step 4: 写失败测试——履约核对（两条 hard）**
+- [x] **Step 4: 写失败测试——履约核对（两条 hard）**
 
 追加到 `backend/tests/test_case_design_writing.py`：
 
@@ -673,7 +675,7 @@ def test_report_counts_only_advisory_marks_never_hard():
     assert any("环境存量前置" in item["detail"] for item in rep["notes"])
 ```
 
-- [ ] **Step 5: 实现 `run_case_checks`**
+- [x] **Step 5: 实现 `run_case_checks`**
 
 在 `writing.py` 追加：
 
@@ -735,7 +737,7 @@ def run_case_checks(points: list[dict], cases: list[CaseDraft]) -> dict:
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_writing.py -q`
 Expected: 全绿。
 
-- [ ] **Step 6: 写失败测试——交付物渲染（末门唯一可视对象）**
+- [x] **Step 6: 写失败测试——交付物渲染（末门唯一可视对象）**
 
 追加：
 
@@ -803,7 +805,7 @@ def test_shared_point_counted_once_in_measured_line():
     assert text.count("pt-0001") >= 2          # 两条链路各自可见（呈递不缩水），但计数只算一次
 ```
 
-- [ ] **Step 7: 实现 `compose_case_delivery`**
+- [x] **Step 7: 实现 `compose_case_delivery`**
 
 ```python
 _SECTION_ORDER = ("前置判定", "用例清单", "履约差异表", "规范校验表（呈递项）",
@@ -877,7 +879,7 @@ def compose_case_delivery(ledger_data: dict, targets: list[dict],
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_writing.py -q`
 Expected: 全绿。
 
-- [ ] **Step 8: 全量门禁 + 提交**
+- [x] **Step 8: 全量门禁 + 提交**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest -q`
 Expected: 只增不减、0 failed（把实跑数写进报告）。
@@ -907,7 +909,7 @@ cd /d/code/github/AiTester && git add backend/src/aitester/case_design/writing.p
   - `case_gen_instruction(*, chain, batch, manifest_path, points, batch_no, batch_total) -> str`（`instructions.py`；T21 的批环重试与后续批次复用同一构造器）
   - 游标 stage 名（T21/T22 继续用）：`"case_plan"`, `"case_gen"`, `"case_opt"`, `"case_attribute"`, `"case_gate"`, `"case_gate_interpret"`
 
-- [ ] **Step 1: 写失败测试——`case_only` 三层不进窗口、直进编写环**
+- [x] **Step 1: 写失败测试——`case_only` 三层不进窗口、直进编写环**
 
 新建 `backend/tests/test_case_design_writing_stages.py`：
 
@@ -1015,7 +1017,7 @@ def test_design_task_never_enters_writing(tmp_path):
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_writing_stages.py -q`
 Expected: FAIL（`_writing_enabled` 不存在；`ImportError`）。
 
-- [ ] **Step 2: 写失败测试——前置不满足时明示边界**
+- [x] **Step 2: 写失败测试——前置不满足时明示边界**
 
 追加：
 
@@ -1078,7 +1080,7 @@ def test_case_only_blocks_when_no_points_in_scope(tmp_path):
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_writing_stages.py -q`
 Expected: 仍红（Step 1 的 `ImportError` 未消；边界三条此刻无法执行属正常，实现后一并转绿）。
 
-- [ ] **Step 3: 实现 `_writing_enabled` + 前置判定 + `h_case_plan`**
+- [x] **Step 3: 实现 `_writing_enabled` + 前置判定 + `h_case_plan`**
 
 `stages.py` 导入区（第 42–50 行那两个 import 之间）加：
 
@@ -1212,7 +1214,7 @@ from aitester.case_design.instructions import (
 )
 ```
 
-- [ ] **Step 4: 接四个既有接缝**
+- [x] **Step 4: 接四个既有接缝**
 
 1. `h_plan`（`stages.py:462-466`）把「无活层即 halted」改成先给编写环让路：
 
@@ -1267,7 +1269,7 @@ from aitester.case_design.instructions import (
     "case_plan": h_case_plan,
 ```
 
-- [ ] **Step 5: 指令侧——新增 `case_gen_instruction` + task_kind 措辞升级**
+- [x] **Step 5: 指令侧——新增 `case_gen_instruction` + task_kind 措辞升级**
 
 `backend/src/aitester/case_design/instructions.py` 末尾新增（模型可见正文用中文，但**文件形状与字段名逐字摊开**——W3-1 真机教训：简报/指令不摊开必填字段与枚举字面量，确定性核对必把付费真机打成 halted）：
 
@@ -1327,12 +1329,12 @@ def test_plan_instruction_opens_the_writing_ring_for_case_kinds():
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_plan.py -q -k case_kinds`
 Expected: FAIL（旧文案含「本期只做设计」且没有后两个标记）→ 改文案后转绿。
 
-- [ ] **Step 6: 跑到绿 + 既有 driver 测试不许红**
+- [x] **Step 6: 跑到绿 + 既有 driver 测试不许红**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_writing_stages.py tests/test_case_design_driver.py tests/test_case_design_e2e.py -q`
 Expected: 全绿。若既有 `design` 任务用例被转场改动波及，说明第 4 步改错了分支——回改实现，不许动既有断言。
 
-- [ ] **Step 7: 全量门禁 + 提交**
+- [x] **Step 7: 全量门禁 + 提交**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest -q`
 Expected: 只增不减、0 failed。
@@ -1364,7 +1366,7 @@ cd /d/code/github/AiTester && git add backend/src/aitester/case_design/stages.py
   - 批次条目 `state` 取值：`"todo"` → `"drafted"`（草稿已入账，评审/优化在跑）→ `"done"`（本批收口）；`"stale"` 由 T22 的门后回溯写入。
   - 评审 `call_id` 形状：`case-<batch>-r<round>`；意见簿 `source` 固定 `"case_block"`。
 
-- [ ] **Step 1: 写失败测试——批环收草稿、补号、评审、转下一批**
+- [x] **Step 1: 写失败测试——批环收草稿、补号、评审、转下一批**
 
 追加到 `backend/tests/test_case_design_writing_stages.py`（文件导入区补 `import re` 与 `from aitester.case_design.schema import ReviewOut`）：
 
@@ -1456,7 +1458,7 @@ def test_uncovered_batch_is_reasked_before_paying_for_review(tmp_path):
     assert _led(env).cursor["block"] == "ch-0001-b1"   # 原地重问，不转场
 ```
 
-- [ ] **Step 2: 写失败测试——意见环（开环 / 处置销账 / unresolved / 归因 / 简报形状纪律）**
+- [x] **Step 2: 写失败测试——意见环（开环 / 处置销账 / unresolved / 归因 / 简报形状纪律）**
 
 追加（同一文件；`_to_case_opt` 是三条用例共用现场，避免各抄一份三轮转场）：
 
@@ -1599,7 +1601,7 @@ def test_batch_review_brief_rejects_out_of_enum_kind(tmp_path):
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_writing_stages.py -q`
 Expected: Step 1–2 的新用例全红（`case_gen` 无处理器 ⇒ 终帧含「测试设计任务中止（内部错误」）。T20 的四条必须仍绿。
 
-- [ ] **Step 3: 意见簿内核换成簿本无关**
+- [x] **Step 3: 意见簿内核换成簿本无关**
 
 `stages.py` 把 `_register`（`:572-590`）拆成「内核 + 三层薄壳」，并在其后加编写环薄壳（**行为逐字不变**，只是把簿本从签名里拿出来；`_apply_resolutions` 扩一本簿）：
 
@@ -1673,7 +1675,7 @@ def _apply_resolutions(ctx: Ctx, resolutions: list) -> None:
 
 （原 docstring 随函数保留，一字不动。）
 
-- [ ] **Step 4: 用例文件工具 + 批评审简报 + `_run_case_review` + `h_case_gen`**
+- [x] **Step 4: 用例文件工具 + 批评审简报 + `_run_case_review` + `h_case_gen`**
 
 `stages.py` 在 `h_case_plan` 之后追加（导入区补 `from aitester.case_design.writing import run_case_checks`，并把 `parse_case_file` 加进 `schema` 那行 import）：
 
@@ -1809,7 +1811,7 @@ def h_case_gen(ctx: Ctx) -> Any:
     return ctx.instr(_case_gen_text(ctx, first["chain"], first["id"]))
 ```
 
-- [ ] **Step 5: 优化/归因指令 + `h_case_opt` + `h_case_attribute`**
+- [x] **Step 5: 优化/归因指令 + `h_case_opt` + `h_case_attribute`**
 
 `instructions.py` 末尾追加（两份都逐字摊开处置表/归因文件的形状与枚举，理由同 Step 4 的简报纪律）：
 
@@ -1930,7 +1932,7 @@ def h_case_attribute(ctx: Ctx) -> Any:
     return None
 ```
 
-- [ ] **Step 6: 注册处理器 + 归档清单补两件**
+- [x] **Step 6: 注册处理器 + 归档清单补两件**
 
 `_STAGE_HANDLERS`（`:1620-1624`）加编写环已实现的四个阶段（**`case_gate` / `case_gate_interpret` 属 T22，本任务不许注册**）：
 
@@ -1960,13 +1962,13 @@ _ARCHIVE_ITEMS = (PLAN_NAME, OUTLINE_NAME, "drafts", "reviews", "attribution", "
 
 （常量 import 行补 `CASES_DIR_NAME, CASE_DELIVERY_NAME`。）
 
-- [ ] **Step 7: 跑到绿 + 既有测试不许红**
+- [x] **Step 7: 跑到绿 + 既有测试不许红**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_writing_stages.py tests/test_case_design_driver.py tests/test_case_design_e2e.py -q`
 Expected: 全绿。既有 driver/e2e 用例覆盖的是三层设计环与 `_apply_resolutions`/`_register` 的旧路径——
 若它们红了，说明 Step 3 的簿本改造改错了语义（销账范围、`op_seq` 复用规则不许变），回改实现而不是动断言。
 
-- [ ] **Step 8: 全量门禁 + 提交**
+- [x] **Step 8: 全量门禁 + 提交**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest -q`
 Expected: 只增不减、0 failed（基线 770 + T18/T19/T20 增数 + 本任务 8 条）。
@@ -1996,7 +1998,7 @@ cd /d/code/github/AiTester && git add backend/src/aitester/case_design/stages.py
   - 批次条目 `state` 第五个取值 `"stale"`（门后回溯写入，`_close_case_batch` 除账）
   - 挂具：`simulate` 认得 `case_gen|case_opt|case_attribute` 三个 stage（`drain` 签名不变），`_cases_payload` 从用例文件**搬进**挂具文件供其复用
 
-- [ ] **Step 1: 写失败测试——整环到末门（离线，零联网）**
+- [x] **Step 1: 写失败测试——整环到末门（离线，零联网）**
 
 追加到 `backend/tests/test_case_design_writing_stages.py`：
 
@@ -2176,7 +2178,7 @@ Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tes
 Expected: 新用例全红——`case_gate` 未注册 ⇒ 终帧含「测试设计任务中止（内部错误」；注册之后仍红在
 `simulate` 的「仿真无法处理的 stage：case_gen」（Step 2 才补挂具）。
 
-- [ ] **Step 2: 挂具跟着到编写环（`test_case_design_driver.py`）**
+- [x] **Step 2: 挂具跟着到编写环（`test_case_design_driver.py`）**
 
 先把 T21 定义在 `backend/tests/test_case_design_writing_stages.py` 里的 `_cases_payload` **整段搬进**
 `backend/tests/test_case_design_driver.py`，放在 `simulate` 之前（挂具的默认正文生成器与用例的现场
@@ -2215,7 +2217,7 @@ Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tes
 Expected: 仍红，但红点换了——drain 能走到末门，终帧是「测试设计任务中止（内部错误：'case_gate'）」
 （KeyError 被 `drive_turn` 的兜底收成 halted），Step 1 的六条全部落在这上面。T20/T21 的既有用例必须仍绿。
 
-- [ ] **Step 3: 批收口单点 + 末门确定性核对**
+- [x] **Step 3: 批收口单点 + 末门确定性核对**
 
 `stages.py` 在 `h_case_attribute` 之后追加末门段。先把两处「批收口」换成单点（`_run_case_review`
 的 `entry["state"] = "done"` 与 `h_case_attribute` 的 `_case_batch_entry(ctx, chain, batch)["state"] = "done"`）：
@@ -2322,7 +2324,7 @@ def _case_gate_report(ctx: Ctx) -> dict:
             "hard": hard, "uncovered": sorted(uncovered), "broken": broken}
 ```
 
-- [ ] **Step 4: 交付物渲染接线 + 末门修复指令**
+- [x] **Step 4: 交付物渲染接线 + 末门修复指令**
 
 `stages.py` 继续追加（`_op_status_cn`/`_write_case_delivery` 是「人在门上看到的东西」的唯一产地，
 主智能体无从在这里改口径——裁定 36 的实测计数必须出自代码而不是出自模型）：
@@ -2384,7 +2386,7 @@ def case_gate_fix_instruction(*, issues_path: str, round_no: int) -> str:
     ])
 ```
 
-- [ ] **Step 5: `h_case_gate`（B-F4 守卫 + 修复环 + 呈递）**
+- [x] **Step 5: `h_case_gate`（B-F4 守卫 + 修复环 + 呈递）**
 
 ```python
 def h_case_gate(ctx: Ctx) -> Any:
@@ -2416,7 +2418,7 @@ def h_case_gate(ctx: Ctx) -> Any:
     return ctx.end("用例交付物已生成（design/case-delivery.md），等待人工评审。")
 ```
 
-- [ ] **Step 6: `h_case_gate_interpret` + `_boot` 缝 + 注册两个阶段**
+- [x] **Step 6: `h_case_gate_interpret` + `_boot` 缝 + 注册两个阶段**
 
 `stages.py` 在末门段继续追加（两份待决文案与 `_GATE_UNDECIDED` 同处一个文件、同一风格）：
 
@@ -2549,14 +2551,14 @@ def h_case_gate_interpret(ctx: Ctx) -> Any:
 
 `instructions.py` 的 import 行（T21 已补两件）再加 `case_gate_fix_instruction`。
 
-- [ ] **Step 7: 跑到绿 + 既有测试不许红**
+- [x] **Step 7: 跑到绿 + 既有测试不许红**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_writing_stages.py tests/test_case_design_driver.py tests/test_case_design_e2e.py -q`
 Expected: 全绿。若 `test_backtrack_…` 红在 `op-02`，先看批评审登记处（空判决不许登记）；
 若 `test_approval_refused_…` 红在 route=="end"，是 `h_case_gate` 的守卫条件被写回了「hard 为空」——按 Step 5 的注释改回来，
 **不许把断言改成实跑读数**。
 
-- [ ] **Step 8: 全量门禁 + 提交**
+- [x] **Step 8: 全量门禁 + 提交**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest -q`
 Expected: 只增不减、0 failed（把实跑数写进报告）。
@@ -2580,7 +2582,7 @@ cd /d/code/github/AiTester && git add backend/src/aitester/case_design/stages.py
 
 为什么必须做而不是「文档顺手」：`case_design.md:9` 现在写的是「用户指令跨到用例侧时，只做设计部分并明示边界」——第四片之后这句话是**错的**，主智能体读到它会拒绝执行 `case_only` 任务里它本来该做的批生成，真机表现为「计划已写好但用例侧一步不出」，而这条错误只能靠人读提示词发现，测试面拦不住。`test_agents.py:34` 的 `"同步用例平台" not in text` 是这个专项的先例：文本口径由测试钉住。
 
-- [ ] **Step 1: 写失败测试（改 `test_agents.py` 两处断言）**
+- [x] **Step 1: 写失败测试（改 `test_agents.py` 两处断言）**
 
 `test_agents.py:19-21` 整段替换为（desc 逐字 = `catalog.py` 里的新 desc，二者任何一侧改动都必须同步）：
 
@@ -2605,7 +2607,7 @@ cd /d/code/github/AiTester && git add backend/src/aitester/case_design/stages.py
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_agents.py -q`
 Expected: 两条用例红（desc 不符 + `用例编写环` 缺标记 + 旧边界句仍在）。
 
-- [ ] **Step 2: 重写 `case_design.md` 五处**
+- [x] **Step 2: 重写 `case_design.md` 五处**
 
 逐处按「原文 → 新文」替换，其余行**一字不动**（文件是 UTF-8 无 BOM，`_load_prompt` 与 `test_agents.py` 都对内容做 `.strip()`，别引入行尾空格）。
 
@@ -2662,19 +2664,19 @@ Expected: 两条用例红（desc 不符 + `用例编写环` 缺标记 + 旧边�
 - 两条门都只认本轮最后一条人话里的明示措辞；含糊表态（「看起来没问题」）不是批准，编排层会把状态转述给人并继续等待，你不代替人给出批准。
 ```
 
-- [ ] **Step 3: `catalog.py:27` desc 换成 Step 1 里逐字引用的同一串**
+- [x] **Step 3: `catalog.py:27` desc 换成 Step 1 里逐字引用的同一串**
 
 ```python
         desc="拆解业务链路、用户故事、测试点三层测试设计，产出增量测试大纲并人工审核后回写知识库；"
              "再按子链路分批编写第四层用例正文，用例只落项目空间、经末门人工确认后交付，不写知识库。",
 ```
 
-- [ ] **Step 4: 跑到绿**
+- [x] **Step 4: 跑到绿**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_agents.py -q`
 Expected: 全绿。若 `test_prompt_is_loaded_verbatim_from_md_file` 红在 `spec.prompt == text`，是 `_load_prompt` 读到的文件与断言的标记不一致——改**提示词**补标记，**不许**把逐字断言改成 `in`。
 
-- [ ] **Step 5: 全量门禁 + 提交**
+- [x] **Step 5: 全量门禁 + 提交**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest -q`
 Expected: 只增不减、0 failed。
@@ -2708,7 +2710,7 @@ cd /d/code/github/AiTester && git add backend/src/aitester/agents/prompts/case_d
 - **W3-2**：`_explicit_approval` 现在对**全句**扫否定标记，长句里任意一个「不／没／先／暂」即作废批准。人类写「整体看没什么问题，同意通过」时被判待决——代价是**不可逆写的门禁变得不可预测**，且走查三真机里这条是「已呈报未修」的既有缺口，不是理论风险。
 - **W3-3**：`_tree_lines` 只对 `op=="delete"` 去重（`seen_deleted`），存量行与草稿同 id 并呈时**父与子都重复成行**（走查二实测 38 行 / 19 唯一 id，`pt-0001` 出现 4 次）。唯一人审门里那格没有说明哪一份将被写库。
 
-- [ ] **Step 1: 写 W3-2 失败测试（真值表 + 门级钉桩）**
+- [x] **Step 1: 写 W3-2 失败测试（真值表 + 门级钉桩）**
 
 在 `backend/tests/test_case_design_driver.py` 末尾追加。**先把两个待测名加进文件第 24–29 行既有的 `from aitester.case_design.stages import (...)` 那个 import 块**（`_explicit_approval, _writeback_authorized`，按字母序插在 `_drafts_errors` 之后；不在文件中段新开第二个 import 块——那是本仓测试文件的既有形状）：
 
@@ -2749,7 +2751,7 @@ def test_w3_2_long_sentence_approval_reaches_writeback(tmp_path):
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_driver.py -q -k w3_2`
 Expected: 两条全红（纯函数红在「整体看没什么问题」→ False；门级红在 status=="awaiting_review"）。
 
-- [ ] **Step 2: 实现 W3-2——分句扫描，常量改名**
+- [x] **Step 2: 实现 W3-2——分句扫描，常量改名**
 
 `stages.py:1364-1384` 整段替换（`_AUTH_STRIP_RE` 的分词面正是分句面，改名复用而不是新建第二个正则；`_is_bare_authorization` 里的 `sub("")` 用法不变，只是换名）：
 
@@ -2796,7 +2798,7 @@ def _writeback_authorized(text: str) -> bool:
 
 `_is_bare_authorization` 内 `rest = _AUTH_STRIP_RE.sub("", text)` 改为 `rest = _CLAUSE_SPLIT_RE.sub("", text)`。全仓 `grep -n "_AUTH_STRIP_RE" backend/` 必须**只剩零处**（改名不留兼容别名，本仓纪律）。
 
-- [ ] **Step 3: 写 W3-3 失败测试（大纲单测）**
+- [x] **Step 3: 写 W3-3 失败测试（大纲单测）**
 
 在 `backend/tests/test_case_design_plan.py` 追加。夹具形状取自既有 `test_outline_deletes_appear_once_per_layer`（同 id 两条 upsert 行、`state` 一存一更），断言只呈最新那行且**子树不重影**：
 
@@ -2837,7 +2839,7 @@ def test_outline_dedups_same_id_upsert_keeping_latest_row():
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_plan.py -q -k w3_3`
 Expected: 红——每层拿到 2 行（父行重复两次，因两行同 id 都是根；子行 ×2 挂在两个父下）。
 
-- [ ] **Step 4: 实现 W3-3——最后一行胜出**
+- [x] **Step 4: 实现 W3-3——最后一行胜出**
 
 `outline.py` 在 `_tree_lines` 之前新增（口径与 `writing.denominator_points` 的 last-row-wins 同源，注释里点名，防止后来者两处漂开）：
 
@@ -2873,12 +2875,12 @@ def _dedup_latest(rows: list[dict]) -> list[dict]:
 
 **只这三行**。delete 清单（`seen_deleted`，A-M3 已有专门用例）不动；`walked` 环保护不动。
 
-- [ ] **Step 5: 两条既有大纲用例不许被顺带改坏**
+- [x] **Step 5: 两条既有大纲用例不许被顺带改坏**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_plan.py tests/test_case_design_driver.py -q`
 Expected: 全绿。重点复核 `test_outline_deletes_appear_once_per_layer` 与 `test_outline_dedups_same_id_delete_across_blocks`（A-M3）：它们的输入每层同 id 只有一条存活行，`_dedup_latest` 必须**零影响**——若这两条红了，是 `_dedup_latest` 把顺序或行内容改了，回 Step 4 修实现，**不许**改这两条既有断言。
 
-- [ ] **Step 6: 全量门禁 + 提交**
+- [x] **Step 6: 全量门禁 + 提交**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest -q`
 Expected: 只增不减、0 failed。
@@ -2901,7 +2903,7 @@ cd /d/code/github/AiTester && git add backend/src/aitester/case_design/stages.py
 
 为什么要 drain 级 + e2e 级两层：drain 仿真（T18–T22）证明状态机每步对，但它挂的是 `ScriptTask`（call_id 命中的假评审子）；e2e 走真图（`stream_graph` + `ScriptedProvider`），才能钉住**帧序、provider 调用数、以及「批准终帧文案逐字」**这三类只有整图才暴露的缺陷（走查一/二/三每一片的真机挡出物都在这一层，前例见 `_first_build_script` 的帧注释）。
 
-- [ ] **Step 1: 写 e2e 失败用例——case_only 全环**
+- [x] **Step 1: 写 e2e 失败用例——case_only 全环**
 
 在 `backend/tests/test_case_design_e2e.py` 追加（脚本形状对齐 `_update_script` 的既有先例：**一次工具调用一条 AIMessage，工具后跟一句人话**；provider 调用数是断言对象，多一句少一句都会红）：
 
@@ -2976,7 +2978,7 @@ def test_case_only_end_to_end_delivery_and_approval(tmp_path: Path) -> None:
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_e2e.py -q -k case_only`
 Expected: 红在帧数或 `provider.calls`（末门未注册时的 generic halted），实现完成后绿。
 
-- [ ] **Step 2: 写 mixed 续跑用例（drain 级，两次人话）**
+- [x] **Step 2: 写 mixed 续跑用例（drain 级，两次人话）**
 
 在 `backend/tests/test_case_design_writing_stages.py` 追加（`_kb_with_three_layers` 是 T20 已在本文件建好的三层存量夹具，直接用；`ScriptTask()` 的 `_default` 已按前缀给 `enum/claims/matrix/case-*` 结构化干净判决，不需要显式 script）。
 
@@ -3031,7 +3033,7 @@ def test_mixed_continues_into_writing_ring_right_after_writeback(tmp_path):
 - 第二次 `drain` 必须传**新 state**（`{"messages": [HumanMessage("通过")], "case": {}}`），不能复用 `first`：`drain` 留下的 `case["boot"]` 为真会让 `_boot` 不重入、`fresh` 判假直接走 B-F4 的静默交回。这是本片已确立的挂具纪律（T22 里三条人审续步用例同理）。
 - `_end_text(state["frames"])` 是 T22 Step 2 已加好的取数壳；`drain` 把终帧列表存在 `state["frames"]`。
 
-- [ ] **Step 3: 跑到绿——整片六阶段第一次接成真图**
+- [x] **Step 3: 跑到绿——整片六阶段第一次接成真图**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest tests/test_case_design_e2e.py tests/test_case_design_writing_stages.py tests/test_case_design_writing.py -q`
 Expected: 全绿。分三种红法分开处置：
@@ -3039,7 +3041,7 @@ Expected: 全绿。分三种红法分开处置：
 - mixed 用例红在**设计侧**（drain 未收敛、账本 `halted`、或大纲门 hard 非零）⇒ **报 BLOCKED**，把这轮的 hard 与账本读数原样贴进报告；**不许**为了让 mixed 跑绿而把 `gen_nodes` 改成出真节点、也不许改 `terminal_layer`/砍断言迁就实跑——那是设计侧既有语义的问题，不归本片。
 - e2e 用例红在 `provider.calls` 或末门未注册时的 generic halted ⇒ 按 T22 已注册的六个 handler 对照 `_STAGE_HANDLERS`，实现侧修，**不许**改断言迁就实跑。
 
-- [ ] **Step 4: 全量门禁 + 计数收口**
+- [x] **Step 4: 全量门禁 + 计数收口**
 
 Run: `cd backend && PYTHONDONTWRITEBYTECODE=1 .venv/Scripts/python -m pytest -q`
 Expected: 0 failed；把实跑 passed 数（基线 770 + 本片新增）报给控制方，由控制方回填 spec 的第四片记录。
@@ -3048,7 +3050,7 @@ Expected: 0 failed；把实跑 passed 数（基线 770 + 本片新增）报给�
 cd /d/code/github/AiTester && git add backend/tests/test_case_design_e2e.py backend/tests/test_case_design_writing_stages.py && git commit -m "test(case-design): 第四片整图端到端——case_only 全环到末门、mixed 同轮续编写环、批准零知识库写入"
 ```
 
-- [ ] **Step 5: 推送（控制方执行，实施代理不得 push）**
+- [x] **Step 5: 推送（控制方执行，实施代理不得 push）**
 
 `git push origin master:main` —— 由控制方在本任务评审通过后执行（Global Constraints 12）。
 
@@ -3066,7 +3068,7 @@ cd /d/code/github/AiTester && git add backend/tests/test_case_design_e2e.py back
 
 **授权线（务必先读）**：本任务的前两步是**免费**的（起实例 + 探针 + md5 基线，零 LLM 调用）；第三步起是真金付费（预计一次 case_only 走查 ~200–400 call，含修复轮可能更多）。按用户既有走查纪律（「走查与整份验收由我端到端做完，含付费」）**不必逐项再问**，但控制方仍要在开跑前把「免费部分读数 + 预计付费」一并呈报一句，开了就跑到底，不中途停。
 
-- [ ] **Step 1: 隔离实例自起（端口 8012，零向量调用）**
+- [x] **Step 1: 隔离实例自起（端口 8012，零向量调用）**
 
 ```bash
 cd /d/code/github/AiTester/backend
@@ -3080,18 +3082,18 @@ PYTHONDONTWRITEBYTECODE=1 REME_KNOWLEDGE_BASES_DIR=D:/tmp/walkthrough_case/kb KB
 - **复用走查三回写后的 KB 根**（三层已 maintained、第四层不落库）——这是裁定 40 的 `case_only` 放行前提，也是判据 ④ 的对照面。开跑前 `md5sum` 全量存基线（在 `D:/tmp/walkthrough_case/kb` 根里跑，别在 junction 里跑）。
 - 实例健康检查用**零副作用** GET（不打 `/stream`，避免白烧一次调用）：`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8012/api/health`。
 
-- [ ] **Step 2: 探针会话与项目（先建、后删，名字留痕）**
+- [x] **Step 2: 探针会话与项目（先建、后删，名字留痕）**
 
 建一个合成项目「云杉商城 订单域」（**合成，与任何真实产品线无关**），里面放两份业务文档：`requirements.md`（已有三层内容的复述，供设计侧不触发）与 `notes.md`（一句话：「请把下单链路的测试点落成可执行用例」）。建探针会话并把 `agent_id=case_design`、`project_id` 指过去，**记下 session id 与 project id**（清场要删、spec 要写）。
 
-- [ ] **Step 3: 真机 case_only 一轮（付费）**
+- [x] **Step 3: 真机 case_only 一轮（付费）**
 
 发一句人话（合成措辞，不引任何真实产品名词）：「给云杉商城订单域的下单链路编写用例」。用 `curl -N` 打 `/api/chat/stream` 抄帧，全程存 `walkthrough4.sse`：
 - 数成本：`grep -c '^event: call' walkthrough4.sse`（既有口径）。
 - 抄 run_id：`curl` 侧 `tee` 或从 `data:` 帧里读（走查三手法）。
 - 期望走到末门呈递终帧「用例交付物已生成（design/case-delivery.md），等待人工评审。」。**若走到 halted**：按走查纪律如实报 halted 文案与账本 `cursor`，先归因（多半是简报字段形状——W3-1 的教训），再修，不许粉饰。
 
-- [ ] **Step 4: 判据 ①–⑤ 逐条实测（每条都要能复现的读数）**
+- [x] **Step 4: 判据 ①–⑤ 逐条实测（每条都要能复现的读数）**
 
 | 判据 | 取数方法 | 通过线 |
 |---|---|---|
@@ -3101,15 +3103,15 @@ PYTHONDONTWRITEBYTECODE=1 REME_KNOWLEDGE_BASES_DIR=D:/tmp/walkthrough_case/kb KB
 | ④ 真实 KB 与探针 KB **零写入** | `md5sum -c` 对照 Step 1 基线：`D:/tmp/walkthrough_case/kb` 全量 + 真实 KB `C:\Users\qifengshunshi\.reme\knowledge_bases`（1803 文件，判「今日 0 改动」）；两者都必须零变化 | 零变化 |
 | ⑤ 用例制品落 `design/cases/` 且字节可复核 | `ls design/cases/`、每条用例含 `cc-` id、`wc -c` 与台账对得上；`design/case-delivery.md` 里的 `cc-` 与文件内**逐字一致** | 落点 + 字节一致 |
 
-- [ ] **Step 5: 批准轮（付费，一次）**
+- [x] **Step 5: 批准轮（付费，一次）**
 
 末门发一句**明示批准**（建议就用 W3-2 修过的那句长句「整体看没什么问题，同意通过」——顺带在真机上给 W3-2 留一条证据）。期望终帧逐字「用例交付确认完成：用例正文只落项目空间 design/cases/，本次零知识库写入。」，且 `kb` 侧 md5 仍零变化（裁定 35 的真机确认：批准**不**触发回写）。
 
-- [ ] **Step 6: R-56 补证——「等字节跳过」分支的真机证据**
+- [x] **Step 6: R-56 补证——「等字节跳过」分支的真机证据**
 
 走查三照报了 `untouched=0`：R-56/T14 的等字节跳过分支只有离线证据。本轮补法（**设计侧**，不是用例侧）：在同一个探针项目里再发一句纯设计增量（合成新文档 `notes2.md`：只补一条与既有链路无关的新二级链路），跑完回写后读 `design/ledger.json` 的 `writeback` 计数与尾句——**13 个未动链节点整文件 md5 与基线逐字节一致** + 尾句「（其中 N 个节点内容未变，已跳过重写）」在场，即该分支首次真机触发。若尾句仍无（本轮没有任何下发项逐字等于存量），照报「未触发」，不伪造输入去凑。
 
-- [ ] **Step 7: spec 回填 + 两条实施澄清 + 提交**
+- [x] **Step 7: spec 回填 + 两条实施澄清 + 提交**
 
 在 spec 第四片节末追加「走查四记录（2026-10-XX 实测）」，含：五条判据逐条读数（过了/没过，落空照报）、call 数对照（首建 1648／走查二 2830／走查三设计轮 1187）、W3-2/W3-3 收口证据、R-56 是否补上、清场读数。并落两条**实施澄清**（裁定原文与实现有差、必须写回 spec 免得后来者按原文读不出实现）：
 - **实施澄清 A（裁定 35）**：裁定原文「不新增 `tc-` 前缀」被实现为**新增 `cc-` 前缀但只活在大项目空间**（`design/cases/` + 交付物 + `counters.case`），KB 侧零写入。理由：用例必须有可被 `covers` 引用的稳定 id，否则认领关系无从核对；裁定真正禁止的是**进知识库**，不是禁 id。
@@ -3120,7 +3122,7 @@ PYTHONDONTWRITEBYTECODE=1 REME_KNOWLEDGE_BASES_DIR=D:/tmp/walkthrough_case/kb KB
 cd /d/code/github/AiTester && git add docs/superpowers/specs/2026-10-05-case-design-loop-design.md && git commit -m "docs(case-design): 走查四读数回填——五条判据实测、W3-2/W3-3 收口证据、R-56 等字节补证与两条实施澄清"
 ```
 
-- [ ] **Step 8: 清场（实测，逐项复现）**
+- [x] **Step 8: 清场（实测，逐项复现）**
 
 - 停掉 8012 实例（只停自己起的这个 PID，**不碰 62220/9272**）。
 - 删探针会话与探针项目（删前记项目数，用户项目 `debug1` 不许动）；`backend/data/projects.json` md5 回基线 `9116cdf85e…`、`data/sessions/index.json` 回 `bd78c88524…`。
