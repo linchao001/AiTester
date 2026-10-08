@@ -25,7 +25,8 @@ from aitester.case_design.schema import ClaimsOut, parse_json_fence
 from aitester.case_design.stages import (
     Ctx, _claims_brief, _collect_writeback_items, _drafts_errors, _drop_out_of_window_hards,
     _explicit_approval, _layer_audited, _next_step_text, _open_of, _outline_extras,
-    _patch_ids, _rescan_claims, _writeback_authorized, drive_turn, h_writeback,
+    _patch_ids, _rescan_claims, _reset_gate_unclear, _writeback_authorized, drive_turn,
+    h_writeback,
 )
 
 REV_CLEAN = '```json\n{"opinions": [], "resolutions": []}\n```'
@@ -2090,3 +2091,17 @@ def test_halt_frame_next_step_matches_family(tmp_path):
     assert "续跑也无解" in text and "从这里续跑" not in text          # 这句对本族是谎
     assert _next_step_text("artifact_retry") == \
         "再发一句将从这里续跑；要放弃这次工作请明说「重开任务」。"      # 另一族照旧承诺续跑
+
+
+def test_reset_gate_unclear_only_touches_the_named_gate(tmp_path):
+    """R-80：续跑只复位游标那道门——设计门与用例末门的待决计数是两本账（裁定 44）。"""
+    env = _env(tmp_path, StubKb())
+    led = Ledger.fresh(env.design)
+    led.data["gate"]["unclear"] = 2
+    led.data["writing"]["gate"]["unclear"] = 3
+    _reset_gate_unclear(led, "plan")                                  # 非门阶段：谁的账都不许动
+    assert led.data["gate"]["unclear"] == 2 and led.data["writing"]["gate"]["unclear"] == 3
+    _reset_gate_unclear(led, "gate_interpret")                         # 只洗设计门
+    assert led.data["gate"]["unclear"] == 0 and led.data["writing"]["gate"]["unclear"] == 3
+    _reset_gate_unclear(led, "case_gate_interpret")                    # 只洗末门
+    assert led.data["writing"]["gate"]["unclear"] == 0

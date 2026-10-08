@@ -14,7 +14,9 @@ from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage
 
 from streaming_fakes import ScriptedProvider, local_tools
-from test_case_design_driver import ScriptTask, StubKb, _end_text, _env, _j, drain
+from test_case_design_driver import (
+    ScriptTask, StubKb, _append, _archive_entries, _drive, _end_text, _env, _j, drain, simulate
+)
 
 from aitester.adapters.tools.subagent_tools import build_task_tool
 from aitester.case_design.constants import CASE_REVIEW_AGENT_ID, CASE_REVIEW_BLIND_AGENT_ID
@@ -382,3 +384,48 @@ def test_case_only_end_to_end_delivery_and_approval(tmp_path: Path) -> None:
     assert (env.cases_dir() / "ch-0001-b1.json").exists()
     body = json.loads((env.cases_dir() / "ch-0001-b1.json").read_text(encoding="utf-8"))
     assert body["cases"][0]["case_id"] == "cc-0001"  # 补号写回文件本体，交付物与制品逐字一致
+
+
+def test_e2e_gate_halt_then_resume_closes_without_reburn(tmp_path):
+    """第五片整链：门待决用尽 → halted → 「同意通过」续跑 → 回写 → done，现场全程不归档。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    state = drain(env, kb, ScriptTask())                    # 到 awaiting_review
+    for _ in range(4):
+        _drive(env, {"messages": [HumanMessage("我再想想")], "case": {}}, ScriptTask())
+    assert Ledger.load(env.design).status == "halted"
+    outline_before = (env.design / "outline.md").read_bytes()
+    arc_before = _archive_entries(env)
+    _drive(env, {"messages": [HumanMessage("同意通过")], "case": {}}, ScriptTask())
+    led = Ledger.load(env.design)
+    assert led.status == "done" and kb.upserts
+    assert (env.design / "outline.md").read_bytes() == outline_before   # 大纲没被重生成
+    assert _archive_entries(env) == arc_before                           # 零新增归档条目
+
+
+def test_e2e_needs_input_refuse_then_restart_replans(tmp_path):
+    """拒绝轮零调用，重开轮才重新计划——两句话的区别必须由账本说话，不是靠文案（判据 ①④ 离线同型）。"""
+    kb = StubKb(layers={"chain": [{"id": "ch-0001", "type": "chain", "parent": "", "level": 1}],
+                        "story": [], "point": []})
+    env = _env(tmp_path, kb)
+    task = ScriptTask()
+    state = {"messages": [HumanMessage("只更新 ch-9999")], "case": {}}
+    _append(state, _drive(env, state, task))
+    simulate(env, plan={"task_kind": "design", "entry_layer": "story", "terminal_layer": "point",
+                        "target_subtree": "ch-9999", "source_files": [], "note": "窄任务"})
+    frames: list[dict] = []
+    _append(state, _drive(env, state, task, writer=frames.append))
+    led = Ledger.load(env.design)
+    assert led.status == "halted" and led.data["halt"]["kind"] == "needs_input"
+    calls = len(task.calls)
+
+    arc_before = _archive_entries(env)
+    _drive(env, {"messages": [HumanMessage("继续")], "case": {}}, task)             # 拒绝轮
+    assert len(task.calls) == calls and kb.upserts == []                            # 零子调用、零写入
+    assert _archive_entries(env) == arc_before                                      # 现场一个文件没搬
+    assert Ledger.load(env.design).status == "halted"
+
+    _drive(env, {"messages": [HumanMessage("重开任务，按链路树全量来")], "case": {}}, task)
+    assert (env.design / "archive").is_dir()                                        # 只有这句才销毁现场
+    assert len(_archive_entries(env)) > len(arc_before)                             # 归档条目确实新增
+    assert Ledger.load(env.design).data["task"] == {}                               # 新账本等待 h_plan
