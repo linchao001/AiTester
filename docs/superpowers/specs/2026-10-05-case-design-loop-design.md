@@ -651,3 +651,77 @@ R-29/R-30、C-Minor-3、空模型名「调用 deepseek/ 失败」。
 ④ 重开词表真机一句：明示重开（含「作废／重开」措辞）→ 必须归档、开新账、`carried_stale` 在位；
 另发一句歧义句（「重开了新市场」这类）实测词表方向，读数照实登记。
 ⑤ 全程只碰本片自己的隔离实例（端口 8013）与探针 KB 根；真实 KB 1803 文件零改动；清场回基线读数照实报。
+
+### 走查五（第五片，2026-10-08 付费真机）
+
+环境：隔离实例 8013（`REME_KNOWLEDGE_BASES_DIR=D:/tmp/walkthrough_case/kb`、`KB_ID=case_probe`，真机 provider
+deepseek-flash，付费前探 `/api/models/providers/deepseek/test` ok/906ms）；三个新建探针项目
+`proj_bde64ac6`／`proj_19cd2001`／`proj_49387d9b`（目录 `D:/tmp/walkthrough_case/w5_project_{a,b,c}`），
+用户项目未动；8000/5173 全程未碰——但二者在读数期间本不在监听（照实：见 ⑤ 段末句）。起前基线：探针 KB
+26 文件（相对 walk4 基线只差 `st-0002`/`pt-0003` 两处＝走查四应落的回写，属预期）；真实 KB 1803 文件、
+当日改动 0。
+
+**① `needs_input` 零成本拒绝——通过。** 窄任务「只更新「物流签收链路」（ch-9999）」（子树不存在）：
+首轮 5 call 后 `status=halted`、`halt.kind=needs_input`、`stage=gen/chain/-`、`count=1`、reason 逐字
+「目标子树「ch-9999」在链路树里不存在：范围内没有任何可生成的块（业务链路层）」。再发「继续」⇒
+**本轮新增子调用 0**（SSE 只有 start/delta/done，零 `call` 帧）、账本游标逐字原样
+（`gen/chain/-/round 0/nudge 0`）、`count→2`、归档条目 9→9（零新增）；终帧逐字：
+「测试设计任务停在 gen/chain/-（第 0 轮）：目标子树「ch-9999」在链路树里不存在…
+这是第 2 次停在同一处。这类停顿续跑也无解——请先修正上面的业务信息或目标范围，再明说「重开任务」
+开启新任务。本轮未做任何生成、未写入知识库、未归档现场。」
+
+**② `human_wait` 断点续跑——通过（真机全链）。** 窄任务跑到大纲门（`status=awaiting_review`、`outline.md`
+545036 字节、游标 `gate`、`gate={round 0, approved_at ""}`）。四句无意见无批准逐句一 POST（服务器 POST
+7→8→9→10→11 单通道逐轮核对）：`gate.unclear` 0→1→2→3、`int_round` 1/2/3，解读子智能体各 1 次
+（`gate-int-r1/r2/r3`，SSE `^event: call` 2/2/0 帧＝其工具调用数），每轮回复如实转述「未构成批准、不动文件」；
+第 4 句 `unclear=4 > NUDGE_CAP` ⇒ **halted**（`halt.kind=human_wait`、`stage=gate_interpret`、`count=1`、
+`at 21:11:02`），终帧逐字：「测试设计任务中止：人审门连续未给出可执行意见也未明示批准 / 现场已保留
+（停在 gate_interpret/-/- 第 0 轮，第 1 次停在这一处；等你的一句话）。再发一句将从这里续跑；
+要放弃这次工作请明说「重开任务」。」批准续跑（「整体看没什么问题，同意通过。」，POST 12）⇒
+`history += resumed-from-halted@21:11:13 kind=human_wait`；**游标从 `gate_interpret` 接上**（`int_round` 4→5、
+`gate-int-r5.review.md` 逐字 `{"opinions": [], "resolutions": []}`）；`gate.unclear` 4→0、
+`approved_at=21:11:15`；**回写发生**：`writeback={done true, written 8, untouched 0}`，探针 KB 26→29
+（改写 5：`st-0001`/`st-0002`/`pt-0001`/`pt-0002`/`pt-0006` ＋新增 3：`pt-0015/16/17`，与三份草稿 8 节点
+逐一对应）；`status=done`、终帧「回写完成：本次过审节点已写入知识库。」；**归档条目全程 9→9（零新增）**；
+批准轮 call 增量 0 帧（解读子智能体 `gate-int-r5` 未用工具、回写 0 次 LLM）——按子智能体计＝解读 1＋回写 0，
+与走查四批准轮同量级。
+
+**③ `artifact_retry` 续跑注入【人工补充】——通过（真机触发；触发源归因照实，见末段）。**
+B0 窄任务在点层 `opt/point/st-0001` 第 3 轮以 `status=halted`、`halt.kind=artifact_retry`、
+reason「opt/point/st-0001 重试超限」、`count=1` 收场——这是**真码路径**（`Ctx.ask` 预算用尽 →
+`_Halt(…, "artifact_retry")`），未伪造任何坏草稿（R-56 纪律）。续跑回合（发一句业务补充：st-0002
+分支 Ⅴ 的落点后续会补建、SEAM-ch-0001-09 括注要把该支写进去且不删限定；「退款通知」按
+SEAM-ch-0003-04 先例就地登记、不改回链层用词）读数：① `history` 落
+`resumed-from-halted@2026-10-08T20:26:40 kind=artifact_retry`；② 游标从断点续上
+`opt/point/st-0001`（`round` 原样 3、`nudge` 2→0、首问 `asked=True`，即续跑位 R-76 同形）；
+③ `halt.resume_note` 由 `_resume_halted` 写入该句全文、续跑首问后被 `Ctx.instr` 唯一消费点清空
+（读数 `""`）；④ **交付物回声**（注入确实到了模型）：`fix-r3.json`（20:27:11 落盘）两条
+disposition 均 `fixed` 且逐字采纳【人工补充】的两处选择——op-152 取「限定不排除 st-0002
+分支 Ⅴ」一侧（`drafts/point/st-0001.json`【断言边界】括注改为「…以及 st-0002 分支 Ⅴ
+（…其落点由后续 point 块按 st-0002 补建…）」）、op-153 取「就地登记、不退回链层用词」一侧
+（新增【实体声明】＋「同行登记」段，体例同 SEAM-ch-0003-04）。
+**触发源归因（照实，不许读成自然收敛失败）**：该「重试超限」的预算是**客户端断连排干**烧掉的——
+B0 的 curl `-m 3600` 于 20:19:01 exit 28（客户端超时断连），`_fold_turn` 的 GeneratorExit 分支
+cancel＋排干，但图仍走完评审 r3（20:19:40 落盘）→ `_go(opt, r3)` → 首问后连遭被取消的空轮，
+`nudge` 0→1→2 → 第 4 问 raise。属本片**走查发现**（断连浊化读数：reason 对人不实、预算被
+空轮烧掉；续跑可用因 artifact_retry 族复位 asked/nudge），随走查报告呈报。
+
+**④ 重开词表——通过（含误判面真机复现）。** 主句「重开任务，按 requirements.md 全量来。」在
+`halted` 现场上 ⇒ 归档条目 9→19（新 `archive/20261008-191157-127057`）、`history` 落
+`restarted-from-halted@…`、`halt` 节清空、新任务描述符按全量重规划；`carried_stale=[]`——照实报：
+该现场停在链层、没有任何 `stale_pending` 层，故沿用空表（非零路径由离线
+`test_human_revision_marks_downstream_stale_and_writeback_skips` 钉住）。歧义句「这条链路重开了新
+市场，先看看影响面。」实测**判成明示重开**（归档 9→19、`restarted-from-halted@19:17:29`）——
+裁定 46 登记的误判面在真机复现；是否收窄措辞仍属第二次裁定，本片不改词表。
+
+**⑤ 真实 KB 零改动与清场——通过（用户端口读数照实修正见末句）。** 真实 KB
+（`C:\Users\qifengshunshi\.reme\knowledge_bases`）起前与收尾两次读数一致：**1803 文件、当日 mtime 改动 0**。
+探针 KB 根以起前基线 `md5sum -c` 逐文件核对：基线 26 文件 **21 OK／5 FAILED**——FAILED 恰为本次回写改写的
+5 节点（`st-0001`/`st-0002`/`pt-0001`/`pt-0002`/`pt-0006`）；另新增 3 文件（`pt-0015/16/17`）＝26+3=29，
+与 `writeback={written 8, untouched 0}` 逐一对上（改写 5＋新增 3）。清场：3 个探针项目 API DELETE（204×3）
+⇒ `backend/data/projects.json` md5 回起前基线 `9116cdf8…`、`sessions/index.json` 回 `bd78c885…`（四个探针
+会话 jsonl 先存证据到 `D:/tmp/walkthrough_case/session_backup/`，随后由 DELETE 正常回收，目录仅剩 `index.json`）；
+8013 实例（PID 25740→26664 树，核命令行后）taskkill，停后 8013 零监听、health 000。用户 8000/5173：
+本片**从未触碰**（全部 taskkill 均先核命令行、只杀自起实例；`w4_cleanup.py` 候选集显式排除 62220/9272）——
+但照实报：**收尾读数时二者本已不在监听**，且走查五开工前（18:56）的同一检查即为零监听，**早于本片任何操作**；
+最后在册存活读数为 2026-10-07 12:28（用户侧何时停的、何因停的，非本片可知）。

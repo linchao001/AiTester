@@ -12,7 +12,7 @@
 
 **Baseline:** 代码 `8b23d9a`（docs 到 `3c700b3` = origin/main），门禁 **868 passed / 0 failed**。本片只动 `backend/src/aitester/case_design/{constants,ledger,stages}.py` 与 `backend/tests/test_case_design_{writing,driver,graph,e2e}.py`。
 
-**执行状态（2026-10-08，T27–T33 已闭合；T34 付费走查五待跑）：** T27 `e6ad849`→门禁 869 · T28 `e961a7d`→871 · T29 `ae5d1b2`→873 · T30 `c60eb8a`→878（R-78 差分口径 `a965e6e`/`64535cf`）· T31 `d60b639`→881（R-81 注入点下移到 `Ctx.instr`）· T32 `ec9fefa`→882 ＋修复轮 `c9dea3b`→883（R-82 终帧文案按族分流）· T33 `af4e05f`→886 ＋修复轮 `b129f6f`（R-83 拒绝腿改成带判别力）。全片裁定 42–47 落地，切片内评审四处 plan/spec 缺陷（R-75/R-76/R-78/R-81）派前裁、两处复审产物（R-80 补测、R-82/R-83 修复轮）当场并入本片。
+**执行状态（2026-10-08，T27–T34 全闭合）：** T27 `e6ad849`→门禁 869 · T28 `e961a7d`→871 · T29 `ae5d1b2`→873 · T30 `c60eb8a`→878（R-78 差分口径 `a965e6e`/`64535cf`）· T31 `d60b639`→881（R-81 注入点下移到 `Ctx.instr`）· T32 `ec9fefa`→882 ＋修复轮 `c9dea3b`→883（R-82 终帧文案按族分流）· T33 `af4e05f`→886 ＋修复轮 `b129f6f`（R-83 拒绝腿改成带判别力）。全片裁定 42–47 落地，切片内评审四处 plan/spec 缺陷（R-75/R-76/R-78/R-81）派前裁、两处复审产物（R-80 补测、R-82/R-83 修复轮）当场并入本片。**T34 付费走查五：五条判据全达成**（读数全录于 spec「走查五」段：① `needs_input` 零成本拒绝＋续发 0 call；② `human_wait` 四句无意见 halted 后批准续上、回写 8 节点、归档条目零新增；③ `artifact_retry` 真机触发【人工补充】续跑＋交付物回声（触发源归因＝B0 断连排干烧预算——走查发现，照实）；④ 重开词表主句/歧义句双实测，裁定 46 误判面复现；⑤ 真实 KB 1803 文件零改动＋探针 KB `md5sum -c` 5 FAILED 恰为改写集＋清场回基线 md5、8013 停、用户 8000/5173 未碰〔照实修正：读数期间二者本不在监听，走查开工前即零监听〕）。
 
 ---
 
@@ -845,13 +845,13 @@ def test_reset_gate_unclear_only_touches_the_named_gate(tmp_path):
 - Consumes: T33 后的 origin/main。
 - Produces: 五条判据的实测读数 + 清场回基线证据。
 
-- [ ] **Step 1: 起隔离实例（端口 8013）前先跑免费预检**：`REME_KNOWLEDGE_BASES_DIR=D:/tmp/walkthrough_case/kb`、`KB_ID=case_probe`、`env -u DASHSCOPE_API_KEY KB_EMBEDDING_API_KEY=`（零向量调用）；**付费 key 在 `backend/data/model_config.json`，撤 env 不省钱**（走查四实测，别再报一遍省钱）。探针项目新建（不复用已删的 `proj_dfc5374e`），用户项目 `debug1` 不动。KB 基线：先按 `baseline/kb-before-walk5.md5` 落前置基线（沿用走查四的 26 文件根，判定用 `md5sum -c` 在基线根里跑）。
-- [ ] **Step 2: 判据① `needs_input` 零成本拒绝**：发一句 `target_subtree` 指向不存在链路的窄任务 → 必 `halted`；核对账本 `halt.kind=="needs_input"`、`count==1`、SSE `^event: call` 计数增量；再发「继续」→ 核对终帧文案、`design/` 未归档、**call 计数增量为 0**、`count==2`。
-- [ ] **Step 3: 判据② `human_wait` 断点续跑**：跑一次窄设计任务到大纲门（成本照实记），连发 4 句无意见无批准 → `halted`；再发走查四那句长句「整体看没什么问题，同意通过」→ 核对：游标从 `gate_interpret` 接上、`gate.unclear` 归 0、回写发生、`status=done`、**归档目录不存在**、本轮 call 增量 ≈ 解读 1＋回写 0（与走查四批准轮的 1 call 对照）。
-- [ ] **Step 4: 判据③ `artifact_retry`**：真机自然出现重试超限才测「续跑首轮下发带【人工补充】」；未出现 ⇒ **照实报「真机未触发」**＋机制归因（离线 `test_resume_note_*` 为准），**不许伪造坏草稿凑触发**（R-56 纪律）。
-- [ ] **Step 5: 判据④ 重开词表**：发「作废这次任务，重新按新需求来」→ 归档＋新账本＋`carried_stale` 核对；另发一句歧义句（「这条链路重开了新市场」）实测方向，读数登记（裁定 46 的误判面）。
-- [ ] **Step 6: 判据⑤ 真实 KB 与清场**：真实 KB 1803 文件当日 0 改动（mtime 口径）＋探针 KB 根 `md5sum -c` 逐文件对基线；停 8013（命令行核对后再 `taskkill //PID <pid> //F`）、删探针项目并核对 `projects.json`/`sessions/index.json` 回基线 md5、用户 8000/5173 未动。
-- [ ] **Step 7: 读数回填与推送**：spec 新增「### 走查五（第五片，2026-10-08 付费真机）」段（五条判据逐条实测／未触发照实），计划勾选执行状态；`git push origin master:main`。
+- [x] **Step 1: 起隔离实例（端口 8013）前先跑免费预检**：`REME_KNOWLEDGE_BASES_DIR=D:/tmp/walkthrough_case/kb`、`KB_ID=case_probe`、`env -u DASHSCOPE_API_KEY KB_EMBEDDING_API_KEY=`（零向量调用）；**付费 key 在 `backend/data/model_config.json`，撤 env 不省钱**（走查四实测，别再报一遍省钱）。探针项目新建（不复用已删的 `proj_dfc5374e`），用户项目 `debug1` 不动。KB 基线：先按 `baseline/kb-before-walk5.md5` 落前置基线（沿用走查四的 26 文件根，判定用 `md5sum -c` 在基线根里跑）。
+- [x] **Step 2: 判据① `needs_input` 零成本拒绝**：发一句 `target_subtree` 指向不存在链路的窄任务 → 必 `halted`；核对账本 `halt.kind=="needs_input"`、`count==1`、SSE `^event: call` 计数增量；再发「继续」→ 核对终帧文案、`design/` 未归档、**call 计数增量为 0**、`count==2`。
+- [x] **Step 3: 判据② `human_wait` 断点续跑**：跑一次窄设计任务到大纲门（成本照实记），连发 4 句无意见无批准 → `halted`；再发走查四那句长句「整体看没什么问题，同意通过」→ 核对：游标从 `gate_interpret` 接上、`gate.unclear` 归 0、回写发生、`status=done`、**归档条目零新增**（R-84 就地改口径：`archive/` 第一轮就存在，「没搬现场」只能按 `_archive_entries` 差分判，不能按目录存在与否判——与判据① 同源）、本轮 call 增量 ≈ 解读 1＋回写 0（与走查四批准轮的 1 call 对照）。
+- [x] **Step 4: 判据③ `artifact_retry`**：真机自然出现重试超限才测「续跑首轮下发带【人工补充】」；未出现 ⇒ **照实报「真机未触发」**＋机制归因（离线 `test_resume_note_*` 为准），**不许伪造坏草稿凑触发**（R-56 纪律）。
+- [x] **Step 5: 判据④ 重开词表**：发「作废这次任务，重新按新需求来」→ 归档＋新账本＋`carried_stale` 核对；另发一句歧义句（「这条链路重开了新市场」）实测方向，读数登记（裁定 46 的误判面）。
+- [x] **Step 6: 判据⑤ 真实 KB 与清场**：真实 KB 1803 文件当日 0 改动（mtime 口径）＋探针 KB 根 `md5sum -c` 逐文件对基线；停 8013（命令行核对后再 `taskkill //PID <pid> //F`）、删探针项目并核对 `projects.json`/`sessions/index.json` 回基线 md5、用户 8000/5173 未动。
+- [x] **Step 7: 读数回填与推送**：spec 新增「### 走查五（第五片，2026-10-08 付费真机）」段（五条判据逐条实测／未触发照实），计划勾选执行状态；`git push origin master:main`。
 
 **走查纪律（照抄走查四的三条教训）**：① 起流只用一条通道，`nohup curl &` 看不到输出文件 ≠ 没发出去，**补发会双发**（走查四为此白烧 38 call）；② 会话落盘 `backend/data/sessions/<id>.jsonl` 是终帧与调用数的第二证据源；③ 付费轮之前所有可免费的核对（路由/账本形态/文件落点）先在离线证据里做完。
 
