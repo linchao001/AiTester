@@ -2041,7 +2041,6 @@ def test_resume_note_does_not_cross_turns(tmp_path):
 def test_instr_is_the_single_injection_point(tmp_path):
     """R-81：注入点必须在下发原语 `instr`，不在 `ask`——`h_case_plan` 的首批下发绕开重试预算、
     不经 `ask`，写进 `ask` 就漏那一条。前两条钉行为，本条钉「两条口共用一处」的位置。"""
-    from aitester.case_design.stages import Ctx
     env = _env(tmp_path, StubKb())
     led = Ledger.fresh(env.design)
     led.data["halt"]["resume_note"] = "按下单／售后拆两条"
