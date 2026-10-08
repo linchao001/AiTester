@@ -725,3 +725,48 @@ cancel＋排干，但图仍走完评审 r3（20:19:40 落盘）→ `_go(opt, r3)
 本片**从未触碰**（全部 taskkill 均先核命令行、只杀自起实例；`w4_cleanup.py` 候选集显式排除 62220/9272）——
 但照实报：**收尾读数时二者本已不在监听**，且走查五开工前（18:56）的同一检查即为零监听，**早于本片任何操作**；
 最后在册存活读数为 2026-10-07 12:28（用户侧何时停的、何因停的，非本片可知）。
+
+## 第五片终评记录（T27–T34，2026-10-08）
+
+- **门禁只增不减**：868（`3c700b3`，第五片开工基线）→ 878（T30）→ 881（T31）→ 883（T32）
+  → 886（T33 收口）→ 887（终评 I-1 新测试）→ **888**（终评 M-2 收敛测试；末级由控制方
+  2026-10-08 独立复跑 73.14s 全绿，不采信代理声称）。
+- **逐任务评审计数**（评审包＝控制方生成的 diff 文件，评审方独立复跑）：T27 `0C/0I/1M`、
+  T28 `0C/0I/3M`、T29 `0C/0I/2M`、T30 `0C/0I/3M`、T31 `0C/0I/5M`、T32 `0C/1I/3M`
+  （Important 为 plan-mandated，R-82 修复轮收口）、T33 `Spec ✅ / Task quality Approved`
+  （R-83 控制方直接实施，变异实测坐实）。每处修复轮均有 scoped re-review 回执逐条 ADDRESSED。
+- **整枝终评**（`.superpowers/sdd/2026-10-08-halted-resume/final-review-928fb98.md`，
+  `3c700b3..928fb98` 共 26 commits）：判定 **With fixes** ＝ Critical 0、Important 1（I-1）、
+  Minor 2（M-1/M-2）。一次修复派发（`565f77e` 测试面 ＋ `11c3489` 生产面），scoped re-review 回执：
+  **全 ADDRESSED、无新 Critical/Important 破坏**。
+- **I-1（Important，测试判别力缺口）**：`human_wait` 续跑复位（`stages.py:269–270`）的**调用点**
+  零人证——离线三条测试与走查五真机续跑都发批准句、走 `h_gate_interpret` 批准支自清 `unclear`，
+  删除复位两行全量 886 照绿。补 `test_human_wait_resume_resets_gate_unclear_for_undecided`
+  （非批准续跑：4 句待决 → `halted`/`unclear=4` → 再发「我再想想」→ `awaiting_review` ＋ `unclear==1`）；
+  红证＝删两行后双断言红（`halted` / `unclear=5`），恢复后 `stages.py` md5 `727db6d0…` 字节一致，
+  **生产码零改动**。评审检查项固化：复位/注入这类语义的「调用点」也要有差分测试，直测纯函数不算数。
+- **M-2（Minor，防御加固）**：`halt` 节「键在但非字典」的手工腐坏（如 `"halt": null`）会在
+  `drive_turn` 通用 `except` 处理器内再抛 `AttributeError` 逃逸、炸图（违反 A3 收敛承诺）。
+  修法＝**写点重建**（`_book_halt` 首行 `isinstance` 判非字典即 `_fresh_halt()`，不洗白其他腐坏）
+  ＋**读点退基句**（`_halt_frame` 同判即回 base）；窄背填（`_backfill_ledger_slices`）纪律未动。
+  红证：`AttributeError: 'NoneType' object has no attribute 'get'` 逃出 `drive_turn` → 收敛
+  halted/transient/合法 dict（新测试 `test_halt_node_non_dict_rebuilds_at_write_point_and_converges`）。
+- **M-1（Minor，收口）**：测试体内 import 上移——driver 顶部组 +3 名（`pytest`/`_Halt`/`_wants_restart`）、
+  writing 顶部组 +2 名，体内 6 处删除。裁判核实：生产侧 `_wants_restart` 体内**零** import
+  （评审所述位置有误，真正的体内 import 在测试文件），「只删不上移」必 NameError。余两条体内 import
+  （`test_case_design_driver.py:125` `fnmatch`、`test_case_design_writing.py:296` `_HARD_CODES`）
+  经查 `928fb98` 前即存在，属既有性质、非本片引入，parked 不改。
+- **复审残留裁决**：「新注释 ~103 宽」经控制方复测不成立——`stages.py:212` 为 79 字符，本片修复 diff
+  新增行**零行超 100 字符**（display-width 口径非本仓约定，同文件既有 22 行超 display-100，不予动）；
+  另两条观察照实 parked：`_boot:324` 对腐坏 halt 仍先抛 `TypeError`，但被通用 `except` 收敛
+  （M-2 保其收敛而非逃逸）、`_halt_frame` 直取键面在正常写路径不可达。
+- **走查发现（断连排干烧预算 → 伪 `artifact_retry` reason）**：B0 客户端 `curl -m 3600` 于 20:19:01
+  超时断连 ⇒ `_fold_turn` 排干，被取消的空轮把 `Ctx.ask` 预算烧光 → 终帧 reason 写「重试超限」对人不实
+  （非模型连错三次）。真码路径、续跑可用（artifact_retry 族复位 asked/nudge），已照实入走查五 ③ 段；
+  处置＝呈报随用户裁定，本片不改。
+- **呈报项（不在本片修）**：W5-1 首回合 `archive/` 空目录归档（R-78 差分口径的成因；改它要碰第一片
+  「新任务先归位旧工作面」语义）；「第 0 轮」读数人读着怪（账本事实、契约合规，走查五见真人读数仍
+  parked 不改）；W4-1（`_after_case_batch` 只向后扫）承第四片开放；裁定 46 歧义句误判面真机复现，
+  收窄措辞属第二次裁定（本片不改词表）。
+- **注入登记**：本片终评与走查五期间，tool 结果尾部未现伪造注入指令（**0 条**，对齐第四片
+  R-63/R-65 的登记口径）。
