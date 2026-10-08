@@ -29,7 +29,7 @@ from langgraph.errors import GraphBubbleUp
 from aitester.case_design.checks import build_universe, run_checks
 from aitester.case_design.constants import (
     CASE_BATCH_CAP, CASE_DELIVERY_NAME, CASE_PREFIX, CASE_REVIEW_AGENT_ID,
-    CASE_REVIEW_BLIND_AGENT_ID, CASES_DIR_NAME, CHAIN, FIX_CAP, HALT_KINDS, LAYERS, LAYER_CN, MAX_TRANSITIONS,
+    CASE_REVIEW_BLIND_AGENT_ID, CASES_DIR_NAME, CHAIN, FIX_CAP, HALT_KIND_CN, HALT_KINDS, LAYERS, LAYER_CN, MAX_TRANSITIONS,
     NUDGE_CAP, OUTLINE_NAME, PLAN_NAME, POINT, ROUND_CAP, STORY, TYPE_PREFIX, WRITEBACK_FIX_CAP,
 )
 from aitester.case_design.instructions import (
@@ -282,6 +282,17 @@ def _needs_input_text(halt: dict) -> str:
         "请先修正上面的业务信息或目标范围，然后明说「重开任务」开启新任务。"
         "本轮未做任何生成、未写入知识库、未归档现场。",
     ])
+
+
+def _halt_frame(ctx: Ctx, base: str) -> str:
+    """中止终帧：基句一字不动（既有逐字断言），尾巴说实话＋给下一步（裁定 42/47、W4-2）。"""
+    halt = ctx.led.data["halt"] if ctx.led is not None else {}
+    if not halt.get("kind"):
+        return base
+    where = f"{halt['stage']}/{halt['layer'] or '-'}/{halt['block'] or '-'}"
+    return (f"{base}\n现场已保留（停在 {where} 第 {halt['round']} 轮，"
+            f"第 {halt['count']} 次停在这一处；{HALT_KIND_CN.get(halt['kind'], halt['kind'])}）。"
+            "再发一句将从这里续跑；要放弃这次工作请明说「重开任务」。")
 
 
 def _boot(ctx: Ctx, fresh: bool) -> None:
@@ -2557,10 +2568,10 @@ def drive_turn(state: dict, config: Any, *, env: Any, task_tool: Any, writer: An
         if ctx.led is not None:
             ctx.led.status = "halted"
             _book_halt(ctx, exc.kind, str(exc))
-        return ctx.end(f"测试设计任务中止：{exc}")
+        return ctx.end(_halt_frame(ctx, f"测试设计任务中止：{exc}"))
     except Exception as exc:                       # A3：其余异常收敛 halted，不炸图
         logger.exception("case_design 驱动失败")
         if ctx.led is not None:
             ctx.led.status = "halted"
             _book_halt(ctx, "transient", f"内部错误：{exc}")
-        return ctx.end(f"测试设计任务中止（内部错误：{exc}）")
+        return ctx.end(_halt_frame(ctx, f"测试设计任务中止（内部错误：{exc}）"))

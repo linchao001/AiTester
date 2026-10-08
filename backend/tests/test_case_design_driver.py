@@ -2050,3 +2050,21 @@ def test_instr_is_the_single_injection_point(tmp_path):
     assert ctx.instr("生成计划").content.endswith("\n【人工补充】按下单／售后拆两条")
     assert led.data["halt"]["resume_note"] == ""              # 用后即清
     assert ctx.instr("生成计划").content == "生成计划"          # 第二条起不再带
+
+
+def test_halt_frame_tells_where_it_stopped_and_what_next(tmp_path):
+    """W4-2 的同族要求：终帧是用户唯一读到的话，不许只说「中止」而不说下一步的代价。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    state = {"messages": [HumanMessage("生成测试设计")], "case": {}}
+    bad = {"task_kind": "x", "entry_layer": "chain", "terminal_layer": "point",
+           "target_subtree": "", "source_files": [], "note": ""}
+    frames: list[dict] = []
+    for _ in range(4):
+        _append(state, _drive(env, state, ScriptTask()))
+        simulate(env, plan=bad)
+    _append(state, _drive(env, state, ScriptTask(), writer=frames.append))
+    text = _end_text(frames)
+    assert text.startswith("测试设计任务中止：plan/-/- 重试超限")        # 基句逐字不动
+    assert "现场已保留" in text and "制品反复不合法" in text
+    assert "再发一句将从这里续跑" in text and "重开任务" in text

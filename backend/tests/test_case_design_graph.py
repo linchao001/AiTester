@@ -143,7 +143,8 @@ def test_case_env_injection_runs_loop_and_halts(tmp_path: Path) -> None:
         stream_mode="custom",
     ))
     turns = [f for f in frames if f.get("type") == "turn"]
-    assert turns[-1]["text"] == "测试设计任务中止：plan/-/- 重试超限"
+    assert turns[-1]["text"].startswith("测试设计任务中止：plan/-/- 重试超限")
+    assert "现场已保留" in turns[-1]["text"]
     assert turns[-1]["stopped"] is False and turns[-1]["tool_calls"] == []
     assert len(provider.calls) == 4                          # 首问 + 3 次重问
     for k, call in enumerate(provider.calls, start=1):
@@ -180,5 +181,6 @@ def test_service_stream_carries_case_env_to_graph(tmp_path: Path) -> None:
     kinds = [e for e, _ in frames]
     assert kinds[0] == "start" and kinds[-1] == "done"
     done = frames[-1][1]
-    assert done["reply"] == "测试设计任务中止：plan/-/- 重试超限"
+    assert done["reply"].startswith("测试设计任务中止：plan/-/- 重试超限")
+    assert "现场已保留" in done["reply"]
     assert len(provider.calls) == 4
