@@ -417,15 +417,20 @@ def test_e2e_needs_input_refuse_then_restart_replans(tmp_path):
     _append(state, _drive(env, state, task, writer=frames.append))
     led = Ledger.load(env.design)
     assert led.status == "halted" and led.data["halt"]["kind"] == "needs_input"
+    assert "在链路树里不存在" in _end_text(frames)          # R-83：帧不能只落盘，中止理由也要在链尾说实话
     calls = len(task.calls)
 
     arc_before = _archive_entries(env)
     _drive(env, {"messages": [HumanMessage("继续")], "case": {}}, task)             # 拒绝轮
+    led2 = Ledger.load(env.design)
     assert len(task.calls) == calls and kb.upserts == []                            # 零子调用、零写入
+    assert led2.data["halt"]["count"] == 2                                          # 拒绝也记账
+    assert led2.data["cursor"] == led.data["cursor"]                                # R-83：零转场，游标原样
+    assert not any(h.startswith("resumed-from-halted")                              # R-83：走拒绝支，非续跑支
+                   for h in led2.data["history"])
     assert _archive_entries(env) == arc_before                                      # 现场一个文件没搬
-    assert Ledger.load(env.design).status == "halted"
+    assert led2.status == "halted"
 
     _drive(env, {"messages": [HumanMessage("重开任务，按链路树全量来")], "case": {}}, task)
-    assert (env.design / "archive").is_dir()                                        # 只有这句才销毁现场
-    assert len(_archive_entries(env)) > len(arc_before)                             # 归档条目确实新增
+    assert len(_archive_entries(env)) > len(arc_before)                             # R-78：只有这句才销毁现场
     assert Ledger.load(env.design).data["task"] == {}                               # 新账本等待 h_plan

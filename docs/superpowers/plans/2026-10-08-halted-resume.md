@@ -775,19 +775,33 @@ def test_e2e_needs_input_refuse_then_restart_replans(tmp_path):
     _append(state, _drive(env, state, task, writer=frames.append))
     led = Ledger.load(env.design)
     assert led.status == "halted" and led.data["halt"]["kind"] == "needs_input"
+    assert "在链路树里不存在" in _end_text(frames)          # R-83：帧不能只落盘，中止理由也要在链尾说实话
     calls = len(task.calls)
 
     arc_before = _archive_entries(env)
     _drive(env, {"messages": [HumanMessage("继续")], "case": {}}, task)             # 拒绝轮
+    led2 = Ledger.load(env.design)
     assert len(task.calls) == calls and kb.upserts == []                            # 零子调用、零写入
+    assert led2.data["halt"]["count"] == 2                                          # 拒绝也记账
+    assert led2.data["cursor"] == led.data["cursor"]                                # R-83：零转场，游标原样
+    assert not any(h.startswith("resumed-from-halted")                              # R-83：走拒绝支，非续跑支
+                   for h in led2.data["history"])
     assert _archive_entries(env) == arc_before                                      # 现场一个文件没搬
-    assert Ledger.load(env.design).status == "halted"
+    assert led2.status == "halted"
 
     _drive(env, {"messages": [HumanMessage("重开任务，按链路树全量来")], "case": {}}, task)
-    assert (env.design / "archive").is_dir()                                        # 只有这句才销毁现场
-    assert len(_archive_entries(env)) > len(arc_before)                             # 归档条目确实新增
+    assert len(_archive_entries(env)) > len(arc_before)                             # R-78：只有这句才销毁现场
     assert Ledger.load(env.design).data["task"] == {}                               # 新账本等待 h_plan
 ```
+
+**R-83（T33 复审裁定，plan-mandated 已并入本片）**：评审复现出「把 `_resume_halted` 的
+`needs_input` 拒绝支整段删掉」这个变异下，原 brief 文本的拒绝腿**照绿**——因为 `_go("plan", …)`
+之后同一张坏计划在同一回合再炸一次 `needs_input`，对外读数仍是 halted／零子调用／零写入／零归档。
+故补两条真正带判别力的断言（游标原样 + history 里不许出现 `resumed-from-halted`，`stages.py:273`
+只在续跑支追加）与一条 `halt["count"] == 2`（裁定 44「拒绝也记账」在 e2e 层的人证）。
+同时撤掉那条 `archive` 目录 `is_dir()`：R-78 已定它第一轮就存在，恒真、且注释「只有这句才销毁现场」
+把话说错给了假人证——该注释移到真正的差分读数上。T30 的 driver 测试一直是这条规则的正主，
+本裁定只是让 e2e 的注释不再吹它没证的东西。
 - [ ] **Step 2: 追加一条 `_reset_gate_unclear` 直测**（`backend/tests/test_case_design_driver.py` 末尾；
   名字加进该文件顶部的 `from aitester.case_design.stages import (...)` 那组，**不许在测试体内起局部 import**——
   本切片已两次删过这种冗余）。**R-80：裁定 44 那句「另一道门的账不许顺手洗白」至今无人证**——
