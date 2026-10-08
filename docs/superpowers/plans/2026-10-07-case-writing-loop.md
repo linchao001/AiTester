@@ -38,9 +38,9 @@
 | `backend/src/aitester/case_design/constants.py` | 单点常量 | 加 `CASE_PREFIX / CASE_ID_RE / CASE_BATCH_CAP / CASES_DIR_NAME / CASE_DELIVERY_NAME / VAGUE_ASSERTION_MARKS / ENV_PRECONDITION_MARKS` |
 | `backend/src/aitester/case_design/env.py` | 运行环境缝 | 加 `cases_dir()`，`ensure_dirs()` 带上它 |
 | `backend/src/aitester/case_design/ledger.py` | 账本形状 | `_fresh_data()` 加 `writing` 节与 `counters.case`；加 `Ledger.next_case_seq()` |
-| `backend/src/aitester/case_design/schema.py` | 数据形状 | 加 `CaseDraft` + `validate_cases(raw)` + `parse_case_file(path)` |
+| `backend/src/aitester/case_design/schema.py` | 数据形状 | 加 `CaseDraft` + `validate_cases(raw)` + `parse_case_file(path)`；终评 F2 再加 `dedup_written(rows)`（同 id「取将被写库那一份」的唯一实现处） |
 | `backend/src/aitester/case_design/writing.py` | **新模块**：编写环的纯确定性逻辑 | `plan_case_targets / denominator_points / collect_covers / run_case_checks / compose_case_delivery` |
-| `backend/src/aitester/case_design/outline.py` | 增量大纲渲染 | W3-3：新增 `_dedup_written`（计划原文作 `_dedup_latest`，实现期按 R-59/R-60 改名），`_tree_lines` 的链/故事/点三行去重 |
+| `backend/src/aitester/case_design/outline.py` | 增量大纲渲染 | W3-3：`_tree_lines` 的链/故事/点三行去重（计划原文作 `_dedup_latest`，实现期按 R-59/R-60 改名 `_dedup_written`，终评 F2 上移为 `schema.dedup_written` 后本文件只消费） |
 | `backend/src/aitester/case_design/instructions.py` | 阶段指令（模型可见） | 加 `case_gen_instruction / case_opt_instruction / case_attribute_instruction / case_gate_fix_instruction`，`plan_instruction` 的 task_kind 措辞升级 |
 | `backend/src/aitester/case_design/stages.py` | 阶段处理器与驱动 | 加编写环六个 handler + 取数/前置/交付物辅助；改 `_boot`/`h_plan`/`_after_layer`/`h_writeback` 四个既有接缝；W3-2 批准改按分句 |
 | `backend/src/aitester/agents/prompts/case_design.md` | 主智能体提示词 | 第四层口径 + `covers` 认领纪律 + 末门语义（不写库） |
@@ -987,7 +987,7 @@ def test_case_only_skips_three_layers_and_opens_first_batch(tmp_path):
                                    "state": "todo", "round": 0}]
     manifest = json.loads((env.manifests_dir / "case-ch-0001-b1.json")
                           .read_text(encoding="utf-8"))
-    assert manifest["cases_cap"] == CASE_BATCH_CAP
+    assert manifest["points_cap"] == CASE_BATCH_CAP
     assert manifest["points"][0]["scenario"] == "用满足门槛的券下单"
     assert manifest["points"][0]["trigger"] == "提交下单"       # 故事上下文随清单到位
     assert manifest["points"][0]["actor"] == "客户"
@@ -1165,7 +1165,7 @@ def _materialize_case_batches(ctx: Ctx, targets: list[dict]) -> None:
             _write_json(ctx.env.manifests_dir / f"case-{batch['id']}.json",
                         {"chain": cid,
                          "chain_name": str((chain_rows.get(cid) or {}).get("name") or ""),
-                         "batch": batch["id"], "cases_cap": CASE_BATCH_CAP, "points": items})
+                         "batch": batch["id"], "points_cap": CASE_BATCH_CAP, "points": items})
             batches.append({"id": batch["id"], "chain": cid, "state": "todo", "round": 0})
     ctx.led.data["writing"]["batches"] = batches
 
@@ -2695,13 +2695,14 @@ cd /d/code/github/AiTester && git add backend/src/aitester/agents/prompts/case_d
 
 **Interfaces:**
 - Consumes: `_APPROVAL_WORDS` / `_RETRY_WORDS` / `_NEGATION_MARKS`（既有，值不动）、`_outline(nodes_by_layer, report, extras)` 与 `_section(md, title)`（`test_case_design_plan.py:192-210` 既有夹具）。
-- Produces: `_CLAUSE_SPLIT_RE`（原 `_AUTH_STRIP_RE` 改名，`_is_bare_authorization` 继续用它做 `sub("")`）、`_approval_clause(text, words) -> bool`、`outline._dedup_written(rows) -> list[dict]`。**函数签名不许外扩**：这两条是收口，不是新能力。
+- Produces: `_CLAUSE_SPLIT_RE`（原 `_AUTH_STRIP_RE` 改名，`_is_bare_authorization` 继续用它做 `sub("")`）、`_approval_clause(text, words) -> bool`、`schema.dedup_written(rows) -> list[dict]`（终评分母同源片 F2 上移；本片写作 `outline._dedup_written`）。**函数签名不许外扩**：这两条是收口，不是新能力。
 
 > **（2026-10-08 实现期就地更正）** 本 Task 原把 W3-3 的去重函数写作 `_dedup_latest`、规则写作「最后一行胜出」。
 > 实现期由用户裁定 R-59/R-60 收窄为**「取将被写库的那一份」**：草稿优先于 KB 存量，同为草稿时取**首见行**
 > （与 `_collect_writeback_items` 的 `seen` 首见即留同序）。据此改名 `_dedup_written`，下方 Step 4 的代码块与
-> Step 5 的引用保留原文以留下决策轨迹，实作以 `outline.py:12` 的 docstring 为准；四站点（写库/呈递/分母/④门）
-> 的同源判别式见 `schema.is_draft_row` 注释。
+> Step 5 的引用保留原文以留下决策轨迹，实作以 **`schema.dedup_written` 为唯一实现处**为准（整片终评 I-1 修复片
+> F2 把 `outline._dedup_written` 上移到 `schema`，呈递／分母／清单三站点同走这一处，不留兼容别名）；
+> 四站点（写库/呈递/分母/④门）的同源判别式见 `schema.is_draft_row` 注释。
 
 两条都是走查三**实测挡出、控制方复现过**的呈现/措辞口径缺陷（spec `:363-366`，用户裁定 R-58 并入本片，不单开收口片）：
 - **W3-2**：`_explicit_approval` 现在对**全句**扫否定标记，长句里任意一个「不／没／先／暂」即作废批准。人类写「整体看没什么问题，同意通过」时被判待决——代价是**不可逆写的门禁变得不可预测**，且走查三真机里这条是「已呈报未修」的既有缺口，不是理论风险。
@@ -3133,5 +3134,21 @@ cd /d/code/github/AiTester && git add docs/superpowers/specs/2026-10-05-case-des
 
 - 四条待办口径留给下一片：① `case_only` 的**明示边界**路径（三层未过审时不静默重生成）只测了放行侧，拒绝侧走查未见；② 末门修复环的 round_cap 用尽文案在真机未触发；③ 跨链路认领（一条用例 `covers` 别的链路的点）目前判 `phantom_cover`，是否需要放行是产品问题；④ 走查三的「halted 后无断点续跑受控入口」产品缺口仍在。
 - 本片闭合定义 = T18–T26 全部有 complete 记录、门禁只增不减、走查四五条判据读数在 spec 落字（落空项照报）。
+
+---
+
+## 附：2026-10-08 整片终评后的计划文本对齐（不改决策轨迹，只把「以哪份为准」写清）
+
+终评（0 Critical / 2 Important / 13 Minor，账本 R-63）落了一个修复片 F1–F5，其中三处**计划文本与落地代码
+不一致**，就地按落地代码对齐并在此留痕，免得后来者照计划原文找不到实现处：
+
+- **键名 `points_cap`（Minor 8）**：T20 的清单代码块与测试原写 `cases_cap`，落地为 `points_cap`
+  （`stages.py:541`、`test_case_design_writing_stages.py:99`）。理由与实施澄清 B 同源——封顶的是**点数**（分母），
+  不是用例条数。两处正文已按落地改。
+- **去重函数落点（Minor 6/7 + I-1 修复 F2）**：`_dedup_written` 不再住在 `outline.py`，上移为
+  **`schema.dedup_written` 唯一实现处**，呈递（`outline._tree_lines`）／分母（`writing.denominator_points`）／
+  清单（`stages._rows_of`）三站点同走它；文件表与 T24「Produces」行已改，终评 I-1 那个「同 id 多行取哪一份」的四侧分叉从此只有一处定义。
+- **`CASE_BATCH_CAP` 引用**：注释里的出处从「裁定 39 泛说」落到可定位的本文「实施澄清 B」。
+
 
 
