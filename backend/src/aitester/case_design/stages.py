@@ -122,6 +122,12 @@ class Ctx:
         return int((plan.get("budget") or {}).get("round_cap") or ROUND_CAP)
 
     def instr(self, text: str) -> HumanMessage:
+        """续跑补充语的唯一注入点（裁定 45）：`ask` 与 `h_case_plan` 的裸下发共用这里，用后即清。"""
+        assert self.led is not None
+        note = str(self.led.data["halt"].get("resume_note") or "")
+        if note:
+            self.led.data["halt"]["resume_note"] = ""
+            text = f"{text}\n【人工补充】{note}"
         return HumanMessage(content=text, id=f"cdinstr-{self.ticks}")
 
     def ask(self, text: str, cap: int = NUDGE_CAP) -> HumanMessage:

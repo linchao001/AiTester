@@ -1994,3 +1994,60 @@ def test_halt_count_tracks_same_spot(tmp_path):
         state = {"messages": [HumanMessage("再试一次")], "case": {}}   # 新回合＝续跑（本任务前是归档）
     halt = Ledger.load(env.design).data["halt"]
     assert halt["kind"] == "artifact_retry" and halt["count"] == 2
+
+
+# ---- 第五片 T31：Ctx.instr 续跑注入单点——【人工补充】用后即清（裁定 45／R-81）----
+
+def test_resume_note_attaches_to_first_ask_then_clears(tmp_path):
+    """裁定 45：_gen_text 一类指令纯确定性拼装、根本不读人话——不带这句就是同一指令的确定性重放。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    state = {"messages": [HumanMessage("生成测试设计")], "case": {}}
+    bad = {"task_kind": "x", "entry_layer": "chain", "terminal_layer": "point",
+           "target_subtree": "", "source_files": [], "note": ""}
+    for _ in range(4):
+        _append(state, _drive(env, state, ScriptTask()))
+        simulate(env, plan=bad)
+    _append(state, _drive(env, state, ScriptTask()))                    # halted
+
+    note = "链路按下单／售后拆成两条再试"
+    turn = _drive(env, {"messages": [HumanMessage(note)], "case": {}}, ScriptTask())
+    assert f"【人工补充】{note}" in turn["messages"][0].content
+    assert Ledger.load(env.design).data["halt"]["resume_note"] == ""    # 用后即清
+    _append(state, turn)
+    turn2 = _drive(env, state, ScriptTask())                            # 同一回合的后续重问
+    assert "【人工补充】" not in turn2["messages"][0].content
+
+
+def test_resume_note_does_not_cross_turns(tmp_path):
+    """补充语只活一个回合：下一回合即便还停在同一处，也不许把上一轮的人话再附一遍。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    state = {"messages": [HumanMessage("生成测试设计")], "case": {}}
+    bad = {"task_kind": "x", "entry_layer": "chain", "terminal_layer": "point",
+           "target_subtree": "", "source_files": [], "note": ""}
+    for _ in range(4):
+        _append(state, _drive(env, state, ScriptTask()))
+        simulate(env, plan=bad)
+    _append(state, _drive(env, state, ScriptTask()))
+    _append(state, _drive(env, {"messages": [HumanMessage("换个说法")], "case": {}}, ScriptTask()))
+    led = Ledger.load(env.design)
+    assert led.data["halt"]["resume_note"] == ""                        # 首问已消费
+    turn = _drive(env, {"messages": [HumanMessage("再想想")], "case": {}}, ScriptTask())
+    assert "【人工补充】" not in turn["messages"][0].content
+    assert len([m for m in turn["messages"] if "换个说法" in str(m.content)]) == 0
+
+
+def test_instr_is_the_single_injection_point(tmp_path):
+    """R-81：注入点必须在下发原语 `instr`，不在 `ask`——`h_case_plan` 的首批下发绕开重试预算、
+    不经 `ask`，写进 `ask` 就漏那一条。前两条钉行为，本条钉「两条口共用一处」的位置。"""
+    from aitester.case_design.stages import Ctx
+    env = _env(tmp_path, StubKb())
+    led = Ledger.fresh(env.design)
+    led.data["halt"]["resume_note"] = "按下单／售后拆两条"
+    ctx = Ctx(env=env, task_tool=ScriptTask(), writer=lambda e: None,
+              config={"configurable": {"thread_id": "t1"}},
+              state_messages=[HumanMessage("换个说法")], led=led, case={}, ticks=1)
+    assert ctx.instr("生成计划").content.endswith("\n【人工补充】按下单／售后拆两条")
+    assert led.data["halt"]["resume_note"] == ""              # 用后即清
+    assert ctx.instr("生成计划").content == "生成计划"          # 第二条起不再带
