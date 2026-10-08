@@ -331,7 +331,9 @@ def test_halted_new_turn_resumes_without_archiving(tmp_path):
     assert (env.design / "plan.json").is_file()
     led = Ledger.load(env.design)
     assert led.status == "active" and led.cursor["stage"] == "plan"
-    assert led.cursor["nudge"] == 0 and led.cursor["asked"] is False  # 该重开的预算重开
+    # 预算重开的真读数：本轮是续跑后的**首问**，故 nudge 归 0 而 asked 已置真。
+    # 这条同时是「清游标」的差分证据——若 _go 没清游标，本轮 ask 会在 nudge=3≥NUDGE_CAP 当场再 halted。
+    assert led.cursor["nudge"] == 0 and led.cursor["asked"] is True
     assert any(h.startswith("resumed-from-halted@") for h in led.data["history"])
 
 
@@ -392,12 +394,14 @@ def test_needs_input_halt_refuses_and_costs_nothing(tmp_path):
     _append(state, _drive(env, state, task, writer=frames.append))
     led = Ledger.load(env.design)
     assert led.status == "halted" and led.data["halt"]["kind"] == "needs_input"
-    assert "在链路树里不存在" in _end_text(frames) and "重开任务" in _end_text(frames)
+    assert "在链路树里不存在" in _end_text(frames)          # halted 终帧带 reason（T28 已落）
 
     calls, upserts = len(task.calls), len(kb.upserts)
     frames2: list[dict] = []
     _drive(env, {"messages": [HumanMessage("继续")], "case": {}}, task, writer=frames2.append)
     assert len(task.calls) == calls and len(kb.upserts) == upserts     # 判据 ① 的离线同型
+    refusal = _end_text(frames2)
+    assert "重开任务" in refusal and "本轮未做任何生成" in refusal   # 「怎么出去」由拒绝帧说（T32 只补 halted 帧尾巴）
     led2 = Ledger.load(env.design)
     assert led2.status == "halted" and led2.data["halt"]["count"] == 2  # 拒绝不改状态、只说实话
     assert not (env.design / "archive").exists()
@@ -420,6 +424,13 @@ def test_halt_count_tracks_same_spot(tmp_path):
     halt = Ledger.load(env.design).data["halt"]
     assert halt["kind"] == "artifact_retry" and halt["count"] == 2
 ```
+
+> 计划缺陷更正（控制方派前预检，R-75/R-66 同族，登记为 R-76）：Step 1 原文有两条**按已发码推不成立**的断言——
+> ① `asked is False`：续跑用 `_go` 清游标后，本轮立刻进 `h_plan` 并 `Ctx.ask` 首问（`stages.py:125-131`
+> 只在新游标上置 `asked=True`、nudge 不动），落盘读数必然是 `nudge==0 且 asked is True`；
+> ② `"重开任务" in _end_text(frames)`：T30 的 halted 终帧仍是 `ctx.end(f"测试设计任务中止：{exc}")`
+> （尾巴是 T32 的活），「请明说重开任务」这句出路只在 `needs_input` 的**拒绝帧**里（`_needs_input_text`）。
+> 两条都按码改断言，不改代码迁就文案。**Why**：留原断言会让实施代理当场撞红并倾向于改实现凑数。
 
 - [ ] **Step 2: 跑红**（五条同时红；记录每条的红证形态进报告）。
 - [ ] **Step 3: `Ctx` 加字段**（`stages.py:84` `transitions: int = 0` 之后）
