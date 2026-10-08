@@ -29,8 +29,9 @@ from langgraph.errors import GraphBubbleUp
 from aitester.case_design.checks import build_universe, run_checks
 from aitester.case_design.constants import (
     CASE_BATCH_CAP, CASE_DELIVERY_NAME, CASE_PREFIX, CASE_REVIEW_AGENT_ID,
-    CASE_REVIEW_BLIND_AGENT_ID, CASES_DIR_NAME, CHAIN, FIX_CAP, HALT_KIND_CN, HALT_KINDS, LAYERS, LAYER_CN, MAX_TRANSITIONS,
-    NUDGE_CAP, OUTLINE_NAME, PLAN_NAME, POINT, ROUND_CAP, STORY, TYPE_PREFIX, WRITEBACK_FIX_CAP,
+    CASE_REVIEW_BLIND_AGENT_ID, CASES_DIR_NAME, CHAIN, FIX_CAP, HALT_KIND_CN, HALT_KINDS,
+    LAYERS, LAYER_CN, MAX_TRANSITIONS, NUDGE_CAP, OUTLINE_NAME, PLAN_NAME, POINT, ROUND_CAP,
+    STORY, TYPE_PREFIX, WRITEBACK_FIX_CAP,
 )
 from aitester.case_design.instructions import (
     attribute_instruction, case_attribute_instruction, case_gate_fix_instruction,

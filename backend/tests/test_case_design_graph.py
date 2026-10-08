@@ -133,7 +133,7 @@ def test_passthrough_frames_match_react(tmp_path: Path) -> None:
 
 
 def test_case_env_injection_runs_loop_and_halts(tmp_path: Path) -> None:
-    """注入 case_env 后走真拓扑：计划阶段五连激活 → 重试超限 halted + 终帧逐字。"""
+    """注入 case_env 后走真拓扑：计划阶段五连激活 → 重试超限 halted ＋ 终帧基句逐字、尾巴说实话。"""
     env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)
     provider = ScriptedProvider([AIMessage(content=f"第 {i} 稿") for i in range(1, 5)])
     graph = build_case_design_graph(provider, [])
