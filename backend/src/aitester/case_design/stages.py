@@ -39,7 +39,7 @@ from aitester.case_design.instructions import (
     opt_instruction, plan_instruction,
 )
 from aitester.case_design.kb import KbClient, KbClientError
-from aitester.case_design.ledger import Ledger
+from aitester.case_design.ledger import Ledger, _fresh_halt
 from aitester.case_design.outline import compose_outline
 from aitester.case_design.plan import (
     in_scope_targets, init_task, materialize_blocks, plan_layers, summarize_probe,
@@ -208,7 +208,10 @@ def _archive(env: Any) -> None:
 
 def _book_halt(ctx: Ctx, kind: str, reason: str) -> None:
     """halt 现场落盘的唯一实现处（裁定 43）：游标快照＋停留计数。整节重写，resume_note 随之一清。"""
-    halt, cur = ctx.led.data["halt"], ctx.cur
+    halt = ctx.led.data.get("halt")
+    if not isinstance(halt, dict):          # 手工损坏的账本（键在但非字典）：写点重建为合法形状，不洗白其他腐坏
+        halt = ctx.led.data["halt"] = _fresh_halt()
+    cur = ctx.cur
     same = (halt.get("kind") == kind and halt.get("stage") == cur["stage"]
             and halt.get("layer") == cur["layer"] and halt.get("block") == cur["block"])
     halt.update({
@@ -294,8 +297,8 @@ def _needs_input_text(halt: dict) -> str:
 
 def _halt_frame(ctx: Ctx, base: str) -> str:
     """中止终帧：基句一字不动（既有逐字断言），尾巴说实话＋给下一步（裁定 42/47、W4-2）。"""
-    halt = ctx.led.data["halt"] if ctx.led is not None else {}
-    if not halt.get("kind"):
+    halt = ctx.led.data.get("halt") if ctx.led is not None else {}
+    if not isinstance(halt, dict) or not halt.get("kind"):
         return base
     where = f"{halt['stage']}/{halt['layer'] or '-'}/{halt['block'] or '-'}"
     return (f"{base}\n现场已保留（停在 {where} 第 {halt['round']} 轮，"

@@ -1285,6 +1285,30 @@ def test_corrupt_ledger_self_heals_with_evidence(tmp_path):
     assert led is not None and led.status == "active"          # 新账本可用
 
 
+def test_halt_node_non_dict_rebuilds_at_write_point_and_converges(tmp_path):
+    """M-2：手工损坏的账本 halt 键在但非字典——`_boot` fresh 行先炸 TypeError，
+    泛捕兜底再调 `_book_halt` 对 None 取键、AttributeError 逃出 drive_turn 炸图，
+    「其余异常收敛 halted」的收敛承诺破功。写点重建合法形状后：本轮收口为中止帧。
+    """
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask())                                     # 跑到 awaiting_review
+    path = env.design / "ledger.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["halt"] = None                                               # 键在但非字典：背填只查存在性，放行
+    path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    frames: list[dict] = []
+    turn = _drive(env, {"messages": [HumanMessage("继续")], "case": {}},
+                  ScriptTask(), writer=frames.append)                # 收敛＝不抛，正是本测的核心断言面
+    assert turn["case"]["route"] == "end"
+    assert "内部错误" in _end_text(frames)                            # 泛捕收口的中止帧，不是异常逃逸
+    led = Ledger.load(env.design)
+    assert led.status == "halted"
+    assert isinstance(led.data["halt"], dict)                        # 写点已重建为合法形状
+    assert led.data["halt"]["kind"] == "transient"
+
+
 # ---- B-F4（待决转述轮不得二次呈递「大纲已生成」终帧）----
 
 def test_gate_undecided_relay_turn_does_not_reannounce(tmp_path):
