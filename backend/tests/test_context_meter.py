@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from aitester.context import meter
@@ -15,7 +16,11 @@ class _FakeEnc:
         return list(text)
 
 
-def setup_function(_):
+@pytest.fixture(autouse=True)
+def _isolated_meter(monkeypatch):
+    monkeypatch.delenv(meter.WARM_ENV, raising=False)
+    meter.reset_for_tests()
+    yield
     meter.reset_for_tests()
 
 
@@ -76,6 +81,36 @@ def test_estimate_messages_counts_role_content_names_and_tool_calls():
     assert meter.estimate_messages([ToolMessage(content="t", tool_call_id="1",
                                                 name="shell")]) > meter.estimate_messages(
         [ToolMessage(content="t", tool_call_id="1")])         # 工具名也计入
+    assert meter.estimate_messages([
+        {"role": "assistant", "content": "",
+         "tool_calls": [{"id": "1", "name": "shell", "args": {"command": "dir"}}]}]) > \
+        meter.estimate_messages([{"role": "assistant", "content": ""}])   # 裸 dict 的工具调用也计费
+    assert meter.estimate_messages([{"role": "tool", "content": "t", "name": "shell"}]) > \
+        meter.estimate_messages([{"role": "tool", "content": "t"}])       # 裸 dict 的工具名也计费
+
+
+def test_fallback_never_under_counts_measured_samples():
+    """兜底的方向钉子：尺可以偏多算，不可以对记录真值偏少算。
+
+    五个真值（27/17/15/45/27）是 2026-10-09 用本机 o200k 词表逐样本实测后记录的
+    字面量——本测试不打网络、不 import tiktoken，就是为了在词表不可用的环境下依然
+    钉得住方向：尺少算 = 闸门自以为砍够了却没砍够，是这片要防的失败。
+    """
+    assert meter.is_warm() is False
+    samples = [
+        ("智会宝会议系统支持声纹识别与热词管理，管理员可在后台配置权限并查看审计日志。", 27),
+        ("请在 zhb 环境的 settings 页面配置 api_key，然后重启服务。", 17),
+        ("The administrator can configure the permission and view the audit log "
+         "for each meeting.", 15),
+        ("def build_provider(self, uid: str) -> LlmProvider:\n"
+         '    pid, _, mid = uid.partition("/")\n'
+         '    return OpenAICompatProvider(name=pid, api_key=provider["api_key"], model=mid)', 45),
+        ('{"tool":"read","args":{"file_path":"D:/tmp/a.md"},"id":"c1","type":"tool_call"}', 27),
+    ]
+    for text, truth in samples:
+        assert meter.estimate_text(text) >= truth
+    assert meter.estimate_text("x" * 3000) == 1150     # 纯 ASCII 口径没被改动
+    assert meter.estimate_text("智" * 38) > meter.estimate_text("x" * 38)   # 加权只作用于非 ASCII
 
 
 def test_truth_readers_prefer_usage_metadata_then_response_metadata():

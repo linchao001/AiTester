@@ -1,7 +1,8 @@
 """上下文计量：全仓唯一的一把尺。
 
 估算走 tiktoken 词表（**只有预热成功后才用**，冷取词表实测要 141 秒，绝不能出现在
-请求路径上）；词表不可用时退字符兜底并记因。真值只从 provider 回传里取，取不到就返
+请求路径上）；词表不可用时退字符兜底并记因——兜底口径刻意偏多算，尺宁可紧不可松。
+真值只从 provider 回传里取，取不到就返
 None——「没有真值」是一种必须被如实呈递的状态，不是 0。
 """
 
@@ -16,6 +17,7 @@ from typing import Any
 SAFETY_MARGIN = 1.15
 ENCODING_NAME = "o200k_base"
 FALLBACK_CHARS_PER_TOKEN = 3
+FALLBACK_TOKENS_PER_NONASCII_CHAR = 0.8   # 实测纯中文 o200k ≈ 0.71 token/字，取 0.8 留余量
 WARM_ENV = "AITESTER_TOKEN_WARM"          # 置 "0" 关闭预热（受限网络/离线环境）
 
 _lock = threading.Lock()
@@ -56,7 +58,7 @@ def warm() -> bool:
             _error = f"词表不可用：{type(exc).__name__}"
             return False
         _enc = encoding
-    _ready.set()
+        _ready.set()
     return True
 
 
@@ -72,24 +74,35 @@ def _pad(raw_tokens: float) -> int:
     return max(1, math.ceil(raw_tokens * SAFETY_MARGIN))
 
 
+def _fallback_tokens(text: str) -> float:
+    """兜底口径：ASCII 字符按 1/3 token，非 ASCII（中日韩等）按 0.8 token。
+
+    写成加权式而不是 len/3，是因为实测「中文一律按 1/3 token」会少算近 2×——
+    尺少算 = 闸门自以为砍够了却没砍够，方向必须是多算。
+    """
+    nonascii = sum(1 for ch in text if ord(ch) > 127)
+    return (len(text) - nonascii) / FALLBACK_CHARS_PER_TOKEN + nonascii * FALLBACK_TOKENS_PER_NONASCII_CHAR
+
+
 def estimate_text(text: str) -> int:
     if _ready.is_set():
         try:
             return _pad(len(_enc.encode(text, disallowed_special=())))
         except Exception as exc:
             _set_error(f"编码失败，退字符兜底：{type(exc).__name__}")
-    return _pad(len(text) / FALLBACK_CHARS_PER_TOKEN)
+    return _pad(_fallback_tokens(text))
 
 
 def _message_blob(message: Any) -> str:
     if isinstance(message, dict):
         parts = [str(message.get("role", "")), str(message.get("content", ""))]
-        calls: list[Any] = []
+        calls = list(message.get("tool_calls") or [])
+        name = message.get("name")
     else:
         parts = [str(getattr(message, "type", "") or type(message).__name__),
                  str(getattr(message, "content", "") or "")]
         calls = list(getattr(message, "tool_calls", None) or [])
-    name = getattr(message, "name", None)
+        name = getattr(message, "name", None)
     if name:
         parts.append(str(name))
     for call in calls:
