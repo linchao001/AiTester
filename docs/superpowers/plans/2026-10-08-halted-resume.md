@@ -40,7 +40,7 @@
 | `ctx.cur` **就是** `led.data["cursor"]` ⇒ 断点位置早就在盘上，续跑无须新增游标 | `stages.py:88-90`、`ledger.py:94-96` |
 | `_go` 转场会 `clear()` 整张游标 ⇒ 用它续跑即自动复位 `nudge/asked`，`round` 须由调用方原样传回 | `stages.py:193-199` |
 | halt 时只写 `status="halted"`，**原因与游标快照都没落盘** | `stages.py:2449-2457` |
-| `_Halt` 抛点全集（**11 处** raise/return）：`124`（ask 重试超限）、`390/392`（`_phantom_subtree_halt`，定义在 `:383`）、`522`、`572`、`904`、`1030`、`1102`、`1183`、`2073`、`2229`、`2446` | `grep -n "_Halt(" stages.py` 实测 |
+| `_Halt` 抛点全集（**12 处** raise/return）：`124`（ask 重试超限）、`390/392`（`_phantom_subtree_halt`，定义在 `:383`）、`522`、`572`、`904`、`1030`、`1102`、`1183`、`2073`、`2229`、`2446` | `grep -n "_Halt(" stages.py` 实测 |
 | 族属归属（裁定 43）：`124`→`artifact_retry`；`1102/2229`→`human_wait`；`2446`＋泛异常→`transient`；`390/392/522/572/904/1030/1183/2073`→`needs_input` | — |
 | 轮次用尽**不抛** `_Halt`：转 `attribute` 后 `_after_block`／`_layer_audited` 前进 | `stages.py:1430-1432`、`1549-1553` |
 | `human_wait` 抛点处游标是 `gate_interpret`／`case_gate_interinterpret`… **实测：`gate_interpret`／`case_gate_interpret`**（raise 发生在 `_go(...,"gate")` **之前**） | `stages.py:2229`（在 `:2233 _go` 之前）、`:1102`（在 `:1104` 之前） |
@@ -131,7 +131,7 @@ git commit -m "feat(case-design): halt 现场成节落账——HALT_KINDS 与账
 
 ---
 
-### Task T28: `_Halt` 带族属 + 十一处抛点自标 + `_book_halt` 单点记账
+### Task T28: `_Halt` 带族属 + 十二处抛点自标 + `_book_halt` 单点记账
 
 **Files:**
 - Modify: `backend/src/aitester/case_design/stages.py`（`_Halt` 类、`Ctx.ask`、`_phantom_subtree_halt`、`:522/:572/:904/:1030/:1102/:1183/:2073/:2229/:2446` 各 raise、两处 `except`）
@@ -190,7 +190,7 @@ class _Halt(RuntimeError):
         self.kind = kind
 ```
 
-- [ ] **Step 4: 十一处抛点逐点标族**（只加第二个实参，**文案一字不动**——`artifact_retry` 那句 reason 被 graph 测试逐字吃着）
+- [ ] **Step 4: 十二处抛点逐点标族**（只加第二个实参，**文案一字不动**——`artifact_retry` 那句 reason 被 graph 测试逐字吃着）
   - `:124` `Ctx.ask` → `"artifact_retry"`
   - `_phantom_subtree_halt` 两条 `return _Halt(...)` → `"needs_input"`
   - `:522`、`:572`、`:904`、`:1183` → `"needs_input"`
