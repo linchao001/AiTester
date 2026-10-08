@@ -1811,3 +1811,30 @@ def test_c_1_contradictory_message_stays_awaiting_review(tmp_path):
     led = Ledger.load(env.design)
     assert led.status == "awaiting_review" and not led.data["gate"].get("approved_at")
     assert kb.upserts == [] and kb.deletes == []
+
+
+def test_halt_books_cursor_snapshot_and_kind(tmp_path):
+    """裁定 43：停在哪儿、为什么停、第几次停——不落盘就没有「续跑的依据」。族属只由抛点声明。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    state = {"messages": [HumanMessage("生成测试设计")], "case": {}}
+    bad = {"task_kind": "x", "entry_layer": "chain", "terminal_layer": "point",
+           "target_subtree": "", "source_files": [], "note": ""}
+    for _ in range(4):                                   # 首问 + 3 次携错重问（NUDGE_CAP=3）
+        _append(state, _drive(env, state, ScriptTask()))
+        simulate(env, plan=bad)
+    _append(state, _drive(env, state, ScriptTask()))     # 第 5 次：nudge 用尽 → halted
+    led = Ledger.load(env.design)
+    halt = led.data["halt"]
+    assert led.status == "halted" and halt["kind"] == "artifact_retry"
+    assert halt["stage"] == "plan" and halt["count"] == 1 and halt["round"] == 0
+    assert halt["reason"].startswith("plan/-/- 重试超限") and halt["at"]
+
+
+def test_halt_kind_validation_fails_loud():
+    """新抛点漏标族属必须响亮失败：默认值会把未知族属洗成某一族的续跑策略（比不分类更坏）。"""
+    from aitester.case_design.stages import _Halt
+    import pytest
+    with pytest.raises(ValueError):
+        _Halt("某句原因", "not_a_kind")
+    assert _Halt("某句原因", "transient").kind == "transient"

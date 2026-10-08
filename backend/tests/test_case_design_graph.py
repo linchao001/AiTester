@@ -151,7 +151,8 @@ def test_case_env_injection_runs_loop_and_halts(tmp_path: Path) -> None:
         assert isinstance(instr, HumanMessage) and str(instr.id) == f"cdinstr-{k}"
         assert instr.content.startswith("【编排·计划】")
     led = Ledger.load(env.design)
-    assert led is not None and led.status == "halted" and led.cursor["nudge"] == 3
+    assert (led is not None and led.status == "halted" and led.cursor["nudge"] == 3
+            and led.data["halt"]["kind"] == "artifact_retry" and led.data["halt"]["stage"] == "plan")
 
 
 def test_service_stream_carries_case_env_to_graph(tmp_path: Path) -> None:

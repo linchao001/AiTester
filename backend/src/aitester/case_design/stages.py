@@ -29,7 +29,7 @@ from langgraph.errors import GraphBubbleUp
 from aitester.case_design.checks import build_universe, run_checks
 from aitester.case_design.constants import (
     CASE_BATCH_CAP, CASE_DELIVERY_NAME, CASE_PREFIX, CASE_REVIEW_AGENT_ID,
-    CASE_REVIEW_BLIND_AGENT_ID, CASES_DIR_NAME, CHAIN, FIX_CAP, LAYERS, LAYER_CN, MAX_TRANSITIONS,
+    CASE_REVIEW_BLIND_AGENT_ID, CASES_DIR_NAME, CHAIN, FIX_CAP, HALT_KINDS, LAYERS, LAYER_CN, MAX_TRANSITIONS,
     NUDGE_CAP, OUTLINE_NAME, PLAN_NAME, POINT, ROUND_CAP, STORY, TYPE_PREFIX, WRITEBACK_FIX_CAP,
 )
 from aitester.case_design.instructions import (
@@ -58,7 +58,14 @@ _ARCHIVE_ITEMS = (PLAN_NAME, OUTLINE_NAME, "drafts", "reviews", "attribution", "
 
 
 class _Halt(RuntimeError):
-    """驱动内的确定性中止（重试超限/轮次用尽/计划空窗）：收敛为 halted + 终帧。"""
+    """驱动内的确定性中止。kind 必须是 HALT_KINDS 之一且**由抛点自标**（裁定 43）：
+    续跑策略按族分流，靠 reason 文案猜族等于把产品语义押在字符串上。"""
+
+    def __init__(self, message: str, kind: str) -> None:
+        super().__init__(message)
+        if kind not in HALT_KINDS:
+            raise ValueError(f"非法 halt 族属「{kind}」，允许 {HALT_KINDS}")
+        self.kind = kind
 
 
 class DraftUnparseable(KbClientError):
@@ -121,7 +128,8 @@ class Ctx:
         cur = self.cur
         if cur.get("asked"):
             if int(cur.get("nudge") or 0) >= cap:
-                raise _Halt(f"{cur['stage']}/{cur['layer'] or '-'}/{cur['block'] or '-'} 重试超限")
+                raise _Halt(f"{cur['stage']}/{cur['layer'] or '-'}/{cur['block'] or '-'} 重试超限",
+                            "artifact_retry")
             cur["nudge"] = int(cur.get("nudge") or 0) + 1
         cur["asked"] = True
         return self.instr(text)
@@ -188,6 +196,17 @@ def _archive(env: Any) -> None:
         src = env.design / name
         if src.exists():
             shutil.move(str(src), str(dest / name))
+
+
+def _book_halt(ctx: Ctx, kind: str, reason: str) -> None:
+    """halt 现场落盘的唯一实现处（裁定 43）：游标快照＋停留计数。整节重写，resume_note 随之一清。"""
+    halt, cur = ctx.led.data["halt"], ctx.cur
+    same = (halt.get("kind") == kind and halt.get("stage") == cur["stage"]
+            and halt.get("layer") == cur["layer"] and halt.get("block") == cur["block"])
+    halt.update({
+        "kind": kind, "reason": reason, "stage": cur["stage"], "layer": cur["layer"],
+        "block": cur["block"], "round": int(cur["round"] or 0), "at": _now(),
+        "count": (int(halt.get("count") or 0) + 1) if same else 1, "resume_note": ""})
 
 
 def _go(ctx: Ctx, stage: str, *, layer: str = "", block: str = "", round: int = 0,
@@ -388,9 +407,9 @@ def _phantom_subtree_halt(layer: str, subtree: str) -> _Halt:
     """
     if _layer_of_id(str(subtree or "")) not in (None, CHAIN):
         return _Halt(f"目标子树「{subtree}」必须是链路（ch-）id：指向用户故事或测试点时，"
-                     f"请填其所属链路 id")
+                     f"请填其所属链路 id", "needs_input")
     return _Halt(f"目标子树「{subtree or '全量'}」在链路树里不存在："
-                 f"范围内没有任何可生成的块（{LAYER_CN[layer]}层）")
+                 f"范围内没有任何可生成的块（{LAYER_CN[layer]}层）", "needs_input")
 
 
 def _enter_layer(ctx: Ctx, layer: str) -> None:
@@ -519,7 +538,7 @@ def _materialize_case_batches(ctx: Ctx, targets: list[dict]) -> None:
                 if row is None:
                     # 分母与点行取自同一份活宇宙（_case_targets 与 point_rows 同源 _rows_of(POINT)）：
                     # 清单里没有这条点行只可能是内部不一致，静默造空名/空场景的行会写假用例。
-                    raise _Halt(f"编写环清单缺少点行：{pid}")
+                    raise _Halt(f"编写环清单缺少点行：{pid}", "needs_input")
                 point = dict(row)
                 story = story_rows.get(str(point.get("story") or "")) or {}
                 items.append({
@@ -569,7 +588,7 @@ def h_case_plan(ctx: Ctx) -> Any:
     batches = led.data["writing"]["batches"]
     first = next((b for b in batches if b["state"] == "todo"), None)
     if first is None:                              # 兜底：_case_ready_or_block 已挡，理论不达
-        raise _Halt("编写环计划里没有任何可执行批次")
+        raise _Halt("编写环计划里没有任何可执行批次", "needs_input")
     _go(ctx, "case_gen", layer=first["chain"], block=first["id"])
     # 首批指令与批环重试共用同一取数壳（_case_gen_text：批序/清单路径/应落实点全从账本读）。
     return ctx.instr(_case_gen_text(ctx, first["chain"], first["id"]))
@@ -904,7 +923,7 @@ def _case_gate_report(ctx: Ctx) -> dict:
                 raise _Halt(
                     f"编写环清单与账本分母不一致：{bid}："
                     f"清单 {sorted(str(p.get('id') or '') for p in listed)} "
-                    f"／ 账本 {sorted(on_ledger)}（分母以账本为准，请重跑编写环计划）")
+                    f"／ 账本 {sorted(on_ledger)}（分母以账本为准，请重跑编写环计划）", "needs_input")
             for point in listed:
                 points.append(point)
                 batch_of_point[str(point.get("id") or "")] = bid
@@ -1027,7 +1046,7 @@ def h_case_gate(ctx: Ctx) -> Any:
     _write_case_delivery(ctx, report)                 # 文件永远对得上当前实测，即使本轮不呈递
     if report["hard"] or report["broken"]:
         if int(gate["round"]) >= ctx.round_cap():
-            raise _Halt("用例末门履约检查连续未清零（修复环用尽）")
+            raise _Halt("用例末门履约检查连续未清零（修复环用尽）", "needs_input")
         gate["round"] = int(gate["round"]) + 1
         issues_path = ctx.env.reviews_dir / f"case-gate-issues-r{gate['round']}.json"
         _write_json(issues_path, {"round": gate["round"], "hard": report["hard"],
@@ -1099,7 +1118,7 @@ def h_case_gate_interpret(ctx: Ctx) -> Any:
     else:
         gate["unclear"] = int(gate.get("unclear") or 0) + 1
         if gate["unclear"] > NUDGE_CAP:            # 连续待决：绝不猜批准
-            raise _Halt("用例交付门连续未给出可执行意见也未明示批准")
+            raise _Halt("用例交付门连续未给出可执行意见也未明示批准", "human_wait")
         led.status = "awaiting_review"
         _go(ctx, "case_gate")
         _patch_batches_case_ids(ctx)               # 待决轮没有 report：补号后自取一次（纯本地零付费）
@@ -1180,7 +1199,7 @@ def h_plan(ctx: Ctx) -> Any:
             # 裁定 40：case_only 的三层一律 skipped（只读上下文），空窗不是故障而是交接点。
             _go(ctx, "case_plan")
             return None
-        raise _Halt("计划窗口内没有任何需要生成的层")
+        raise _Halt("计划窗口内没有任何需要生成的层", "needs_input")
     _enter_layer(ctx, entry)
     return None
 
@@ -2070,7 +2089,7 @@ def h_gate(ctx: Ctx) -> Any:
         return ctx.turn([], "end")
     if report["hard"]:
         if int(gate["round"]) >= ctx.round_cap():
-            raise _Halt("大纲门结构检查连续未清零（修复环用尽）")
+            raise _Halt("大纲门结构检查连续未清零（修复环用尽）", "needs_input")
         gate["round"] = int(gate["round"]) + 1
         issues_path = ctx.env.reviews_dir / f"gate-issues-r{gate['round']}.json"
         _write_json(issues_path, {"round": gate["round"], "hard": report["hard"]})
@@ -2226,7 +2245,7 @@ def h_gate_interpret(ctx: Ctx) -> Any:
     else:
         gate["unclear"] = int(gate.get("unclear") or 0) + 1
         if gate["unclear"] > NUDGE_CAP:            # 连续待决：失败模式收口在 halted，绝不猜批准
-            raise _Halt("人审门连续未给出可执行意见也未明示批准")
+            raise _Halt("人审门连续未给出可执行意见也未明示批准", "human_wait")
         # 待决＝本轮不做任何决定：游标回 gate（_boot 的 awaiting_review 分支才认得出人审续步），
         # 指令只教主智能体向人转述；状态保持 awaiting_review，回写仍然零次。
         led.status = "awaiting_review"
@@ -2443,15 +2462,17 @@ def drive_turn(state: dict, config: Any, *, env: Any, task_tool: Any, writer: An
                 ctx.led.save()
                 return ctx.turn([result], "agent")
             ctx.led.save()
-        raise _Halt(f"单次驱动转场超过上限（{MAX_TRANSITIONS}）")
+        raise _Halt(f"单次驱动转场超过上限（{MAX_TRANSITIONS}）", "transient")
     except GraphBubbleUp:
         raise
     except _Halt as exc:
         if ctx.led is not None:
             ctx.led.status = "halted"
+            _book_halt(ctx, exc.kind, str(exc))
         return ctx.end(f"测试设计任务中止：{exc}")
     except Exception as exc:                       # A3：其余异常收敛 halted，不炸图
         logger.exception("case_design 驱动失败")
         if ctx.led is not None:
             ctx.led.status = "halted"
+            _book_halt(ctx, "transient", f"内部错误：{exc}")
         return ctx.end(f"测试设计任务中止（内部错误：{exc}）")
