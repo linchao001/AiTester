@@ -40,7 +40,7 @@
 | `backend/src/aitester/case_design/ledger.py` | 账本形状 | `_fresh_data()` 加 `writing` 节与 `counters.case`；加 `Ledger.next_case_seq()` |
 | `backend/src/aitester/case_design/schema.py` | 数据形状 | 加 `CaseDraft` + `validate_cases(raw)` + `parse_case_file(path)` |
 | `backend/src/aitester/case_design/writing.py` | **新模块**：编写环的纯确定性逻辑 | `plan_case_targets / denominator_points / collect_covers / run_case_checks / compose_case_delivery` |
-| `backend/src/aitester/case_design/outline.py` | 增量大纲渲染 | W3-3：新增 `_dedup_latest`，`_tree_lines` 的链/故事/点三行去重 |
+| `backend/src/aitester/case_design/outline.py` | 增量大纲渲染 | W3-3：新增 `_dedup_written`（计划原文作 `_dedup_latest`，实现期按 R-59/R-60 改名），`_tree_lines` 的链/故事/点三行去重 |
 | `backend/src/aitester/case_design/instructions.py` | 阶段指令（模型可见） | 加 `case_gen_instruction / case_opt_instruction / case_attribute_instruction / case_gate_fix_instruction`，`plan_instruction` 的 task_kind 措辞升级 |
 | `backend/src/aitester/case_design/stages.py` | 阶段处理器与驱动 | 加编写环六个 handler + 取数/前置/交付物辅助；改 `_boot`/`h_plan`/`_after_layer`/`h_writeback` 四个既有接缝；W3-2 批准改按分句 |
 | `backend/src/aitester/agents/prompts/case_design.md` | 主智能体提示词 | 第四层口径 + `covers` 认领纪律 + 末门语义（不写库） |
@@ -494,8 +494,8 @@ def test_plan_case_targets_story_chain_membership_decides_ownership():
     assert by_chain == {"ch-0001": ["pt-0001", "pt-0002"], "ch-0002": ["pt-0002"]}
 
 
-def test_duplicate_point_rows_dedup_and_last_row_wins():
-    """mixed 的分母取 `_rows_of(POINT)`（KB 存量在前、本 run 草稿在后）：同 id 两行必须并一行、取后者。
+def test_duplicate_point_rows_without_signals_fall_back_to_last_row():
+    """无 存量/草稿 信号可辨时（两行都是裸 upsert 行），mixed 分母退化为同 id 取后见行。
 
     不去重会把同一点切进两个批次 ⇒ 末门「未落实点」虚增（假漏测）；取错行会拿回写前的旧内容当分母。
     """
@@ -2695,7 +2695,13 @@ cd /d/code/github/AiTester && git add backend/src/aitester/agents/prompts/case_d
 
 **Interfaces:**
 - Consumes: `_APPROVAL_WORDS` / `_RETRY_WORDS` / `_NEGATION_MARKS`（既有，值不动）、`_outline(nodes_by_layer, report, extras)` 与 `_section(md, title)`（`test_case_design_plan.py:192-210` 既有夹具）。
-- Produces: `_CLAUSE_SPLIT_RE`（原 `_AUTH_STRIP_RE` 改名，`_is_bare_authorization` 继续用它做 `sub("")`）、`_approval_clause(text, words) -> bool`、`outline._dedup_latest(rows) -> list[dict]`。**函数签名不许外扩**：这两条是收口，不是新能力。
+- Produces: `_CLAUSE_SPLIT_RE`（原 `_AUTH_STRIP_RE` 改名，`_is_bare_authorization` 继续用它做 `sub("")`）、`_approval_clause(text, words) -> bool`、`outline._dedup_written(rows) -> list[dict]`。**函数签名不许外扩**：这两条是收口，不是新能力。
+
+> **（2026-10-08 实现期就地更正）** 本 Task 原把 W3-3 的去重函数写作 `_dedup_latest`、规则写作「最后一行胜出」。
+> 实现期由用户裁定 R-59/R-60 收窄为**「取将被写库的那一份」**：草稿优先于 KB 存量，同为草稿时取**首见行**
+> （与 `_collect_writeback_items` 的 `seen` 首见即留同序）。据此改名 `_dedup_written`，下方 Step 4 的代码块与
+> Step 5 的引用保留原文以留下决策轨迹，实作以 `outline.py:12` 的 docstring 为准；四站点（写库/呈递/分母/④门）
+> 的同源判别式见 `schema.is_draft_row` 注释。
 
 两条都是走查三**实测挡出、控制方复现过**的呈现/措辞口径缺陷（spec `:363-366`，用户裁定 R-58 并入本片，不单开收口片）：
 - **W3-2**：`_explicit_approval` 现在对**全句**扫否定标记，长句里任意一个「不／没／先／暂」即作废批准。人类写「整体看没什么问题，同意通过」时被判待决——代价是**不可逆写的门禁变得不可预测**，且走查三真机里这条是「已呈报未修」的既有缺口，不是理论风险。
