@@ -12,6 +12,8 @@
 
 **Baseline:** 代码 `8b23d9a`（docs 到 `3c700b3` = origin/main），门禁 **868 passed / 0 failed**。本片只动 `backend/src/aitester/case_design/{constants,ledger,stages}.py` 与 `backend/tests/test_case_design_{writing,driver,graph,e2e}.py`。
 
+**执行状态（2026-10-08，T27–T33 已闭合；T34 付费走查五待跑）：** T27 `e6ad849`→门禁 869 · T28 `e961a7d`→871 · T29 `ae5d1b2`→873 · T30 `c60eb8a`→878（R-78 差分口径 `a965e6e`/`64535cf`）· T31 `d60b639`→881（R-81 注入点下移到 `Ctx.instr`）· T32 `ec9fefa`→882 ＋修复轮 `c9dea3b`→883（R-82 终帧文案按族分流）· T33 `af4e05f`→886 ＋修复轮 `b129f6f`（R-83 拒绝腿改成带判别力）。全片裁定 42–47 落地，切片内评审四处 plan/spec 缺陷（R-75/R-76/R-78/R-81）派前裁、两处复审产物（R-80 补测、R-82/R-83 修复轮）当场并入本片。
+
 ---
 
 ## Global Constraints
@@ -71,7 +73,7 @@
 - Produces：`HALT_KINDS: tuple[str, ...]`、`HALT_KIND_CN: dict[str, str]`、账本 `data["halt"]` 的**形状**（T28 写它、T30 读它、T31/T32 读它的子字段）：
   `{"kind": str, "reason": str, "stage": str, "layer": str, "block": str, "round": int, "at": str, "count": int, "resume_note": str}`
 
-- [ ] **Step 1: 写失败测试**（追加到 `test_case_design_writing.py`，紧邻 `_backfill_fourth_slice` 那条测试）
+- [x] **Step 1: 写失败测试**（追加到 `test_case_design_writing.py`，紧邻 `_backfill_fourth_slice` 那条测试）
 
 ```python
 def test_halt_node_fresh_shape_and_narrow_backfill():
@@ -97,8 +99,8 @@ def test_halt_node_fresh_shape_and_narrow_backfill():
     assert broken["gate"] is None                     # 深合并会把真损坏洗成健康账本
 ```
 
-- [ ] **Step 2: 跑红** — `backend/.venv/Scripts/python -m pytest -q backend/tests/test_case_design_writing.py -k halt_node`，预期 `ImportError: HALT_KINDS`。
-- [ ] **Step 3: 落常量**（`constants.py`，`MAX_TRANSITIONS` 行之后）
+- [x] **Step 2: 跑红** — `backend/.venv/Scripts/python -m pytest -q backend/tests/test_case_design_writing.py -k halt_node`，预期 `ImportError: HALT_KINDS`。
+- [x] **Step 3: 落常量**（`constants.py`，`MAX_TRANSITIONS` 行之后）
 
 ```python
 # 断点续跑（第五片，spec 裁定 43）：族属由抛点自标，下游一律不许读 reason 文案猜。
@@ -111,7 +113,7 @@ HALT_KIND_CN: dict[str, str] = {
 }
 ```
 
-- [ ] **Step 4: 落账本节与背填**（`ledger.py`）
+- [x] **Step 4: 落账本节与背填**（`ledger.py`）
 
 ```python
 def _fresh_halt() -> dict[str, Any]:
@@ -121,8 +123,8 @@ def _fresh_halt() -> dict[str, Any]:
 ```
 `_fresh_data()` 里 `"writeback"` 之前插入 `"halt": _fresh_halt(),`；把 `_backfill_fourth_slice` **改名**为 `_backfill_ledger_slices`（它现在补的是两个片的缺节，旧名对新来者说谎），并加一行 `if "halt" not in data: data["halt"] = _fresh_halt()`；`Ledger.load` 的调用点同步改名。**不做深合并**（F1 口径原样保留，注释也在）。改名面实测：全仓只有 `test_case_design_writing.py:128` 的 **docstring** 提到旧名（无 import），一并改成 `_backfill_ledger_slices`——旧名留在测试说明里就是说谎。
 
-- [ ] **Step 5: 跑绿 + 全量门禁** — `pytest -q` 相关文件后跑 `-q` 全量，读数只增不减。
-- [ ] **Step 6: 提交**
+- [x] **Step 5: 跑绿 + 全量门禁** — `pytest -q` 相关文件后跑 `-q` 全量，读数只增不减。
+- [x] **Step 6: 提交**
 
 ```bash
 git add backend/src/aitester/case_design/constants.py backend/src/aitester/case_design/ledger.py backend/tests/test_case_design_writing.py
@@ -141,7 +143,7 @@ git commit -m "feat(case-design): halt 现场成节落账——HALT_KINDS 与账
 - Consumes: T27 的 `HALT_KINDS`、`data["halt"]` 形状。
 - Produces: `_Halt(message, kind)`（`.kind`）、`_book_halt(ctx, kind, reason)`（唯一写入处）、`ctx.led.data["halt"]` 在 halted 时**必然**带 `kind/stage/layer/block/round/at/count/reason`。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 def test_halt_books_cursor_snapshot_and_kind(tmp_path):
@@ -175,8 +177,8 @@ def test_halt_kind_validation_fails_loud():
 > 它断言的是「续跑保住账本 ⇒ 同一处第二次 halt 时 count==2」，而那要到 T30 的分流才成立——留在 T28 就是
 > 「提交时全量必红」，与门禁只增不减直接冲突。该测试**移入 T30 Step 1**，红证归属随之写清。
 
-- [ ] **Step 2: 跑红**（`-k halt_kind or halt_books or halt_count`）。
-- [ ] **Step 3: `_Halt` 带 kind**（替换 `stages.py:60-61`）
+- [x] **Step 2: 跑红**（`-k halt_kind or halt_books or halt_count`）。
+- [x] **Step 3: `_Halt` 带 kind**（替换 `stages.py:60-61`）
 
 ```python
 class _Halt(RuntimeError):
@@ -190,14 +192,14 @@ class _Halt(RuntimeError):
         self.kind = kind
 ```
 
-- [ ] **Step 4: 十二处抛点逐点标族**（只加第二个实参，**文案一字不动**——`artifact_retry` 那句 reason 被 graph 测试逐字吃着）
+- [x] **Step 4: 十二处抛点逐点标族**（只加第二个实参，**文案一字不动**——`artifact_retry` 那句 reason 被 graph 测试逐字吃着）
   - `:124` `Ctx.ask` → `"artifact_retry"`
   - `_phantom_subtree_halt` 两条 `return _Halt(...)` → `"needs_input"`
   - `:522`、`:572`、`:904`、`:1183` → `"needs_input"`
   - `:1030`、`:2073`（两道门修复环用尽）→ `"needs_input"`（裁定 47②：不开 hard 进门的口子）
   - `:1102`、`:2229`（两道门连续待决）→ `"human_wait"`
   - `:2446`（转场上限）→ `"transient"`
-- [ ] **Step 5: 落 `_book_halt`**（放在 `_now()` 之后，紧跟 `_archive`）
+- [x] **Step 5: 落 `_book_halt`**（放在 `_now()` 之后，紧跟 `_archive`）
 
 ```python
 def _book_halt(ctx: Ctx, kind: str, reason: str) -> None:
@@ -211,7 +213,7 @@ def _book_halt(ctx: Ctx, kind: str, reason: str) -> None:
         "count": (int(halt.get("count") or 0) + 1) if same else 1, "resume_note": ""})
 ```
 
-- [ ] **Step 6: 驱动两处 `except` 记账**（`stages.py:2449-2457`）
+- [x] **Step 6: 驱动两处 `except` 记账**（`stages.py:2449-2457`）
 
 ```python
     except _Halt as exc:
@@ -227,14 +229,14 @@ def _book_halt(ctx: Ctx, kind: str, reason: str) -> None:
         return ctx.end(f"测试设计任务中止（内部错误：{exc}）")
 ```
 
-- [ ] **Step 7: graph 测试补一条子断言**（`test_case_design_graph.py:154` 同一行扩写，别动 146/147）
+- [x] **Step 7: graph 测试补一条子断言**（`test_case_design_graph.py:154` 同一行扩写，别动 146/147）
 
 ```python
     assert (led is not None and led.status == "halted" and led.cursor["nudge"] == 3
             and led.data["halt"]["kind"] == "artifact_retry" and led.data["halt"]["stage"] == "plan")
 ```
 
-- [ ] **Step 8: 跑绿 + 全量门禁 + 提交**
+- [x] **Step 8: 跑绿 + 全量门禁 + 提交**
 
 ```bash
 git commit -m "feat(case-design): _Halt 带族属、十个抛点自标、_book_halt 单点落 halt 现场（裁定 43）"
@@ -252,7 +254,7 @@ git commit -m "feat(case-design): _Halt 带族属、十个抛点自标、_book_h
 - Consumes: `_approval_clause`（`:2119`，唯一实现处）。
 - Produces: `_wants_restart(text: str) -> bool`、`_RESTART_WORDS: tuple[str, ...]`。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 def test_wants_restart_truth_table():
@@ -278,7 +280,7 @@ def test_wants_restart_negation_only_kills_the_matching_clause():
     assert _wants_restart("没什么问题，重开任务吧") is True
 ```
 
-- [ ] **Step 2: 跑红** → **Step 3: 实现**（放在 `_writeback_authorized` 之后、`_is_bare_authorization` 之前）
+- [x] **Step 2: 跑红** → **Step 3: 实现**（放在 `_writeback_authorized` 之后、`_is_bare_authorization` 之前）
 
 ```python
 # 重开措辞（裁定 46）：销毁现场是不可逆动作，判据与批准同一条形状——某分句含措辞且该分句无否定/延后标记。
@@ -295,7 +297,7 @@ def _wants_restart(text: str) -> bool:
     return _approval_clause(text, _RESTART_WORDS)
 ```
 
-- [ ] **Step 4: 跑绿 + 提交** — `git commit -m "feat(case-design): _wants_restart 复用分句授权规则判明示重开（裁定 46）"`
+- [x] **Step 4: 跑绿 + 提交** — `git commit -m "feat(case-design): _wants_restart 复用分句授权规则判明示重开（裁定 46）"`
 
 ---
 
@@ -309,7 +311,7 @@ def _wants_restart(text: str) -> bool:
 - Consumes: T28 的 `data["halt"]["kind"]`、T29 的 `_wants_restart`。
 - Produces: `Ctx.halt_refusal: str`（非空＝本轮一步都不许走，驱动据此直接终局）、`_restart(ctx, old) -> Ledger`、`_resume_halted(ctx) -> bool`。
 
-- [ ] **Step 1: 写失败测试（四条，覆盖四族＋重开）**
+- [x] **Step 1: 写失败测试（四条，覆盖四族＋重开）**
 
 ```python
 def _archive_entries(env) -> list[str]:
@@ -449,14 +451,14 @@ def test_halt_count_tracks_same_spot(tmp_path):
 > （尾巴是 T32 的活），「请明说重开任务」这句出路只在 `needs_input` 的**拒绝帧**里（`_needs_input_text`）。
 > 两条都按码改断言，不改代码迁就文案。**Why**：留原断言会让实施代理当场撞红并倾向于改实现凑数。
 
-- [ ] **Step 2: 跑红**（五条同时红；记录每条的红证形态进报告）。
-- [ ] **Step 3: `Ctx` 加字段**（`stages.py:84` `transitions: int = 0` 之后）
+- [x] **Step 2: 跑红**（五条同时红；记录每条的红证形态进报告）。
+- [x] **Step 3: `Ctx` 加字段**（`stages.py:84` `transitions: int = 0` 之后）
 
 ```python
     halt_refusal: str = ""       # 非空＝本轮一步都不许走（needs_input，裁定 44），驱动直接终局
 ```
 
-- [ ] **Step 4: 抽出 `_restart` 并写续跑分流**（放在 `_boot` 之前）
+- [x] **Step 4: 抽出 `_restart` 并写续跑分流**（放在 `_boot` 之前）
 
 ```python
 def _restart(ctx: Ctx, old: Ledger) -> Ledger:
@@ -514,7 +516,7 @@ def _resume_halted(ctx: Ctx) -> bool:
 > （仍由唯一写入处记账，同处判据自然成立 ⇒ count+1、`at` 刷新、reason 不变），并把
 > `_needs_input_text(halt)` 改成读记账**之后**的节（`ctx.led.data["halt"]`），否则终帧那句「第 N 次」会停在旧值。
 
-- [ ] **Step 5: 重写 `_boot` 的 fresh 块**——**关键纪律：`fresh` 块内一律用 `ctx.led`，不许再用局部 `led`**（`_restart` 会换绑账本，局部变量会把旧字典盖回新账本——这条是本片最容易踩的坑，测试 `test_halted_new_turn_with_explicit_restart_archives` 钉它）。
+- [x] **Step 5: 重写 `_boot` 的 fresh 块**——**关键纪律：`fresh` 块内一律用 `ctx.led`，不许再用局部 `led`**（`_restart` 会换绑账本，局部变量会把旧字典盖回新账本——这条是本片最容易踩的坑，测试 `test_halted_new_turn_with_explicit_restart_archives` 钉它）。
 
 ```python
     if fresh:
@@ -540,7 +542,7 @@ def _resume_halted(ctx: Ctx) -> bool:
     ctx.led.save()
 ```
 
-- [ ] **Step 6: 驱动调用点加拒绝出口**（`stages.py:2436` 之后）
+- [x] **Step 6: 驱动调用点加拒绝出口**（`stages.py:2436` 之后）
 
 ```python
         _boot(ctx, fresh)
@@ -548,7 +550,7 @@ def _resume_halted(ctx: Ctx) -> bool:
             return ctx.end(ctx.halt_refusal)            # 零转场、零子调用（裁定 44）
 ```
 
-- [ ] **Step 7: `_needs_input_text` 先给最小可用版**（T32 再补 halt 帧尾巴；此函数放 `_resume_halted` 之后）
+- [x] **Step 7: `_needs_input_text` 先给最小可用版**（T32 再补 halt 帧尾巴；此函数放 `_resume_halted` 之后）
 
 ```python
 def _needs_input_text(halt: dict) -> str:
@@ -562,8 +564,8 @@ def _needs_input_text(halt: dict) -> str:
     ])
 ```
 
-- [ ] **Step 8: 跑绿 + 全量门禁**（`test_halt_count_tracks_same_spot` 到此处必须转绿——若仍红，说明续跑没保住账本，回到 Step 5 查局部变量残留）。既有断言核对（**按测试名锚定，行号会随追加漂移**）：`test_case_design_driver.py::test_human_revision_marks_downstream_stale_and_writeback_skips`（`carried_stale`，走 `done`）与 `test_case_design_writing_stages.py::test_case_only_blocks_on_stale_layer`／`::test_archive_moves_case_surface_with_the_rest`（显式 `_archive`）／`::test_second_task_does_not_see_prior_case_surface`，**都不应改动**；若某条因分家而红，报出来由控制方裁，不许改断言迁就。
-- [ ] **Step 9: 提交** — `git commit -m "feat(case-design): _boot 把 halted 与 done 分家——默认断点续跑、四族分流（裁定 42/44）"`
+- [x] **Step 8: 跑绿 + 全量门禁**（`test_halt_count_tracks_same_spot` 到此处必须转绿——若仍红，说明续跑没保住账本，回到 Step 5 查局部变量残留）。既有断言核对（**按测试名锚定，行号会随追加漂移**）：`test_case_design_driver.py::test_human_revision_marks_downstream_stale_and_writeback_skips`（`carried_stale`，走 `done`）与 `test_case_design_writing_stages.py::test_case_only_blocks_on_stale_layer`／`::test_archive_moves_case_surface_with_the_rest`（显式 `_archive`）／`::test_second_task_does_not_see_prior_case_surface`，**都不应改动**；若某条因分家而红，报出来由控制方裁，不许改断言迁就。
+- [x] **Step 9: 提交** — `git commit -m "feat(case-design): _boot 把 halted 与 done 分家——默认断点续跑、四族分流（裁定 42/44）"`
 
 ---
 
@@ -578,7 +580,7 @@ def _needs_input_text(halt: dict) -> str:
 - Produces: 续跑后第一条下发的文本末尾含 `【人工补充】<本轮人话>`，且下发后 `halt["resume_note"] == ""`。
   两条下发口（`ask` 与 `h_case_plan` 首批的裸 `instr`）共用这一个注入点。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 def test_resume_note_attaches_to_first_ask_then_clears(tmp_path):
@@ -637,7 +639,7 @@ def test_instr_is_the_single_injection_point(tmp_path):
     assert ctx.instr("生成计划").content == "生成计划"          # 第二条起不再带
 ```
 
-- [ ] **Step 2: 跑红** → **Step 3: 实现**（只改 `Ctx.instr` 的函数体，`Ctx.ask` 一字不动）
+- [x] **Step 2: 跑红** → **Step 3: 实现**（只改 `Ctx.instr` 的函数体，`Ctx.ask` 一字不动）
 
 ```python
     def instr(self, text: str) -> HumanMessage:
@@ -652,7 +654,7 @@ def test_instr_is_the_single_injection_point(tmp_path):
 
 `Ctx.ask` 一字不动（它本来就在最后 `return self.instr(text)`）。
 
-- [ ] **Step 4: 跑绿 + 提交** — `git commit -m "feat(case-design): Ctx.instr 单点注入续跑补充语，用后即清（裁定 45）"`
+- [x] **Step 4: 跑绿 + 提交** — `git commit -m "feat(case-design): Ctx.instr 单点注入续跑补充语，用后即清（裁定 45）"`
 
 ---
 
@@ -669,7 +671,7 @@ def test_instr_is_the_single_injection_point(tmp_path):
 - Consumes: `data["halt"]`（T28）、`HALT_KIND_CN`（T27）。
 - Produces: 中止终帧 = 基句 `测试设计任务中止：{reason}` ＋换行尾巴（停在哪儿、第几次、续跑/重开各是什么后果）。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 def test_halt_frame_tells_where_it_stopped_and_what_next(tmp_path):
@@ -690,7 +692,7 @@ def test_halt_frame_tells_where_it_stopped_and_what_next(tmp_path):
     assert "再发一句将从这里续跑" in text and "重开任务" in text
 ```
 
-- [ ] **Step 2: 跑红** → **Step 3: 实现**（`_needs_input_text` 之后）
+- [x] **Step 2: 跑红** → **Step 3: 实现**（`_needs_input_text` 之后）
 
 ```python
 def _halt_frame(ctx: Ctx, base: str) -> str:
@@ -713,7 +715,7 @@ def _halt_frame(ctx: Ctx, base: str) -> str:
 > 并加一条 `test_halt_frame_next_step_matches_family`（gate 882→883）。**Why**：终帧是人唯一读到的话，
 > 相邻两句自相矛盾等于裁定 18「豁免必须可见」的反面。**代价**：`_needs_input_text` 一处措辞「然后」→「再」。
 
-- [ ] **Step 4: 更新两处全等断言**（`test_case_design_graph.py` 的 `test_case_env_injection_runs_loop_and_halts`
+- [x] **Step 4: 更新两处全等断言**（`test_case_design_graph.py` 的 `test_case_env_injection_runs_loop_and_halts`
   与 `test_service_stream_carries_case_env_to_graph` 各一处 `==` 终帧断言）——基句改 `startswith` 钉住，新增尾句存在性断言；**除此之外不许动那两个测试的其他行**。
 
 ```python
@@ -721,7 +723,7 @@ def _halt_frame(ctx: Ctx, base: str) -> str:
     assert "现场已保留" in turns[-1]["text"]
 ```
 
-- [ ] **Step 5: 跑绿 + 全量门禁 + 提交** — `git commit -m "feat(case-design): 中止终帧说实话——基句不动、补「停在哪儿＋续跑还是重开」（裁定 47）"`
+- [x] **Step 5: 跑绿 + 全量门禁 + 提交** — `git commit -m "feat(case-design): 中止终帧说实话——基句不动、补「停在哪儿＋续跑还是重开」（裁定 47）"`
 
 ---
 
@@ -736,12 +738,12 @@ def _halt_frame(ctx: Ctx, base: str) -> str:
 - Consumes: T27–T32 全部。
 - Produces: 一条「首建跑到门 → 门待决 halted → 明示批准续跑闭合」的整链证据，一条「needs_input 拒绝 → 明示重开 → 新账本跑通」的整链证据。
 
-- [ ] **Step 0: 补 import**（`test_case_design_e2e.py:17` 那行现为
+- [x] **Step 0: 补 import**（`test_case_design_e2e.py:17` 那行现为
   `from test_case_design_driver import ScriptTask, StubKb, _end_text, _env, _j, drain`，本任务的两条测试还要用
   `_append`、`_drive`、`_env`、`simulate`、`_archive_entries`——**五个都要加进同一行**，别新起一条 import；
   少加一个就是 `NameError`，那不是产品缺陷。已实测：该文件当前**没有** `_append`/`_drive`/`simulate`。）
 
-- [ ] **Step 1: 追加 e2e 两条**（drain 级为主；图级两回合只有在同 `thread_id` 能取回上一回合 state 时才写，否则在报告里说明「本仓 checkpointer 形态不支持」并以 drain 级为准——**不许为此改生产码或伪造断言**）
+- [x] **Step 1: 追加 e2e 两条**（drain 级为主；图级两回合只有在同 `thread_id` 能取回上一回合 state 时才写，否则在报告里说明「本仓 checkpointer 形态不支持」并以 drain 级为准——**不许为此改生产码或伪造断言**）
 
 ```python
 def test_e2e_gate_halt_then_resume_closes_without_reburn(tmp_path):
@@ -795,14 +797,18 @@ def test_e2e_needs_input_refuse_then_restart_replans(tmp_path):
 ```
 
 **R-83（T33 复审裁定，plan-mandated 已并入本片）**：评审复现出「把 `_resume_halted` 的
-`needs_input` 拒绝支整段删掉」这个变异下，原 brief 文本的拒绝腿**照绿**——因为 `_go("plan", …)`
-之后同一张坏计划在同一回合再炸一次 `needs_input`，对外读数仍是 halted／零子调用／零写入／零归档。
-故补两条真正带判别力的断言（游标原样 + history 里不许出现 `resumed-from-halted`，`stages.py:273`
-只在续跑支追加）与一条 `halt["count"] == 2`（裁定 44「拒绝也记账」在 e2e 层的人证）。
+`needs_input` 拒绝支整段删掉」这个变异下，原 brief 文本的拒绝腿**照绿**——坏计划不是回 `h_plan`
+再炸，而是随续跑支一路走下去：游标早已被 `init_task` 换成 `gen/<entry_layer>`（记账时 `halt["stage"]`
+即 `gen`），放行后 `_go` 重新装配这张游标，本回合重放到点层入口的守卫（`stages.py:526`）才再炸
+`needs_input`，游标停在 `audit/story`。控制方探针实测两相读数：真码 `halted/needs_input/gen`、
+变异 `halted/needs_input/audit`，两相**都是** `CALLS 0 / UPSERTS 0 / ARC_DIFF 0`——对外读数一致，
+所以拒绝腿要补两条真正带判别力的断言（游标原样 + history 里不许出现 `resumed-from-halted`，
+`stages.py:273` 只在续跑支追加）与一条 `halt["count"] == 2`（裁定 44「拒绝也记账」在 e2e 层的人证；
+变异下因停留处从 `gen` 变成 `audit` 而回落为 1）。
 同时撤掉那条 `archive` 目录 `is_dir()`：R-78 已定它第一轮就存在，恒真、且注释「只有这句才销毁现场」
 把话说错给了假人证——该注释移到真正的差分读数上。T30 的 driver 测试一直是这条规则的正主，
 本裁定只是让 e2e 的注释不再吹它没证的东西。
-- [ ] **Step 2: 追加一条 `_reset_gate_unclear` 直测**（`backend/tests/test_case_design_driver.py` 末尾；
+- [x] **Step 2: 追加一条 `_reset_gate_unclear` 直测**（`backend/tests/test_case_design_driver.py` 末尾；
   名字加进该文件顶部的 `from aitester.case_design.stages import (...)` 那组，**不许在测试体内起局部 import**——
   本切片已两次删过这种冗余）。**R-80：裁定 44 那句「另一道门的账不许顺手洗白」至今无人证**——
   T30 那条 human_wait 测试只断言自己那道门归零，一个「两道门一起洗」的实现照样绿；
@@ -823,9 +829,9 @@ def test_reset_gate_unclear_only_touches_the_named_gate(tmp_path):
     assert led.data["writing"]["gate"]["unclear"] == 0
 ```
 
-- [ ] **Step 3: 全量门禁** — `backend/.venv/Scripts/python -m pytest -q`，记录读数（本片实到基线：T27 869 → T28 871 → T29 873 → T30 878 → T31 881 → T32 882 → 修复轮 883；T33 再加三条 ⇒ **预期 886**）；纯净树复现一次（裁定 23）。
-- [ ] **Step 4: 计划文本回填**：本文件所有已完成 step 勾 `[x]`，头部补「执行状态」一行（提交号／门禁读数）。
-- [ ] **Step 5: 提交并推送** — `git push origin master:main`（本仓提交与推送常授权，`project-repo-remote`）。
+- [x] **Step 3: 全量门禁** — `backend/.venv/Scripts/python -m pytest -q`，记录读数（本片实到基线：T27 869 → T28 871 → T29 873 → T30 878 → T31 881 → T32 882 → 修复轮 883；T33 再加三条 ⇒ **预期 886**）；纯净树复现一次（裁定 23）。
+- [x] **Step 4: 计划文本回填**：本文件所有已完成 step 勾 `[x]`，头部补「执行状态」一行（提交号／门禁读数）。
+- [x] **Step 5: 提交并推送** — `git push origin master:main`（本仓提交与推送常授权，`project-repo-remote`）。
 
 ---
 
