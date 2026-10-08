@@ -89,6 +89,7 @@ class Ctx:
     case: dict[str, Any] = field(default_factory=dict)
     ticks: int = 1
     transitions: int = 0
+    halt_refusal: str = ""       # 非空＝本轮一步都不许走（needs_input，裁定 44），驱动直接终局
     _kb_cache: dict[str, list[dict]] = field(default_factory=dict)
 
     @property
@@ -218,8 +219,72 @@ def _go(ctx: Ctx, stage: str, *, layer: str = "", block: str = "", round: int = 
                 "source": source, "nudge": 0, "asked": False})
 
 
+def _restart(ctx: Ctx, old: Ledger) -> Ledger:
+    """销毁现场、开新账（裁定 42 里唯一该归档的那条路）：done 的新回合，或 halted 被明示重开。"""
+    carried = [l for l in LAYERS if old.layer(l)["state"] == "stale_pending"]
+    _archive(ctx.env)
+    led = Ledger.fresh(ctx.env.design)
+    led.data["carried_stale"] = carried
+    ctx.led = led
+    return led
+
+
+def _reset_gate_unclear(led: Ledger, stage: str) -> None:
+    """续跑复位待决计数（裁定 44）：只复位游标那道门的那一个，另一道门的账不许顺手洗白。"""
+    if stage == "gate_interpret":
+        led.data["gate"]["unclear"] = 0
+    elif stage == "case_gate_interpret":
+        led.data["writing"]["gate"]["unclear"] = 0
+
+
+def _resume_halted(ctx: Ctx) -> bool:
+    """halted 的新回合（裁定 42/44）：默认从断点续跑。返回 False＝本轮一步都不该走。
+
+    续跑复用 `_go` 是因为它清整张游标：nudge/asked 归零（该重开的重开），
+    而 round 由调用方**原样传回**——断一次白送 5 轮就是换个姿势重烧（裁定 44）。
+    """
+    led = ctx.led
+    halt = led.data["halt"]
+    if _wants_restart(_human_text(ctx.state_messages)):
+        new = _restart(ctx, led)
+        new.data["history"].append(f"restarted-from-halted@{_now()}")
+        return True
+    kind = str(halt.get("kind") or "transient")
+    if kind == "needs_input":
+        # 拒绝放行也要把「停在同一处」的读数说实（spec 走查五判据 ③：`halt["count"]` 递增）：
+        # 这一族不会重放，但人连着发几句「继续」时，终帧那句「第 N 次」必须跟着涨。
+        _book_halt(ctx, kind, str(halt.get("reason") or ""))
+        ctx.halt_refusal = _needs_input_text(ctx.led.data["halt"])
+        return False
+    cur = dict(led.cursor)
+    _go(ctx, cur["stage"], layer=cur["layer"], block=cur["block"],
+        round=int(cur["round"] or 0), source=str(cur.get("source") or "block"))
+    if kind == "human_wait":
+        _reset_gate_unclear(led, cur["stage"])
+    elif kind in ("artifact_retry", "transient"):
+        led.data["halt"]["resume_note"] = _human_text(ctx.state_messages)   # 裁定 45，T31 消费
+    led.data["history"].append(f"resumed-from-halted@{_now()} kind={kind}")
+    return True
+
+
+def _needs_input_text(halt: dict) -> str:
+    """停在「续跑也无解」那一族：终帧说实话——停在哪、为什么、要人先做什么、本轮什么都没花。"""
+    where = f"{halt.get('stage') or '-'}/{halt.get('layer') or '-'}/{halt.get('block') or '-'}"
+    return "\n".join([
+        f"测试设计任务停在 {where}（第 {int(halt.get('round') or 0)} 轮）：{halt.get('reason') or ''}",
+        f"这是第 {int(halt.get('count') or 1)} 次停在同一处。这类停顿续跑也无解——"
+        "请先修正上面的业务信息或目标范围，然后明说「重开任务」开启新任务。"
+        "本轮未做任何生成、未写入知识库、未归档现场。",
+    ])
+
+
 def _boot(ctx: Ctx, fresh: bool) -> None:
-    """载入/初始化账本；fresh（新用户回合）时按旧状态决定新任务 / 续拼人审 / 重试回写。"""
+    """载入/初始化账本；fresh（新用户回合）时按旧状态决定新任务 / 断点续跑 / 续拼人审 / 重试回写。
+
+    `done` 与 `halted` 分家（裁定 42）：前者是任务已了结，新回合开新账；后者默认从断点续跑，
+    只有措辞明示重开才销毁现场。整个 fresh 块一律读 `ctx.led`——`_restart` 会换绑账本，
+    局部变量会把旧字典盖回新账本（R-70）。
+    """
     env, led = ctx.env, Ledger.load(ctx.env.design)
     loaded = led is not None
     if led is None:
@@ -228,18 +293,19 @@ def _boot(ctx: Ctx, fresh: bool) -> None:
             _archive(env)
     ctx.led = led
     if fresh:
-        if led.status in ("done", "halted"):
-            carried = [l for l in LAYERS if led.layer(l)["state"] == "stale_pending"]
-            _archive(env)
-            led = Ledger.fresh(ctx.env.design)
-            led.data["carried_stale"] = carried
-            ctx.led = led
-        elif led.status == "awaiting_review":
-            if led.data["writing"].get("status") == "awaiting_review":
+        ctx.led.data["halt"]["resume_note"] = ""       # 补充语只活一个回合（裁定 45）
+        if ctx.led.status == "done":
+            _restart(ctx, ctx.led)
+        elif ctx.led.status == "halted":
+            if not _resume_halted(ctx):
+                ctx.led.save()                         # needs_input：状态原样 halted
+                return
+        elif ctx.led.status == "awaiting_review":
+            if ctx.led.data["writing"].get("status") == "awaiting_review":
                 _go(ctx, "case_gate_interpret")    # 末门续步：批准还要过机器账，见 h_case_gate_interpret
             else:
                 _go(ctx, "gate_interpret")         # 人审续步：审 gate-int → 回写或优化环
-        elif led.status == "writeback_failed":
+        elif ctx.led.status == "writeback_failed":
             # B-F1：续跑按本轮人话分流——批准+意见混写（「同意，把 st-0002 拆成两条」）
             # 绝不许被当成纯授权直接不可逆回写、意见静默丢弃。只有**裸授权**（重试/批准
             # 词之外零内容）才直回写（不白烧一次评审子调用）；其余一律先过 gate_interpret，
@@ -249,16 +315,16 @@ def _boot(ctx: Ctx, fresh: bool) -> None:
                 _go(ctx, "writeback")
             else:
                 _go(ctx, "gate_interpret")
-        elif led.status == "active" and loaded:
+        elif ctx.led.status == "active" and loaded:
             # B-F2/R-31：上一回合没跑完（取消/崩溃）的续跑留痕。旧写法先赋 "interrupted"
             # 再无条件覆盖回 "active"、中间没有 save——磁盘账本永远看不到 interrupted，
             # 契约 §9「六态可观测」是假闭环。裁定清偿最小形态：删死赋值，往账本既有
             # history 追加带时间戳痕迹，仍由下面 led.save() 单点落盘；不新增状态词。
-            led.data["history"].append(f"resumed-from-interrupted@{_now()}")
+            ctx.led.data["history"].append(f"resumed-from-interrupted@{_now()}")
         # 「重入驾驶=active」只在**新回合**成立：非 fresh 的图内重入（待决转述轮等）
         # 必须原样保留 awaiting_review，否则 h_gate 的 B-F4 守卫拿不到等待态事实。
-        led.status = "active"
-    led.save()
+        ctx.led.status = "active"
+    ctx.led.save()
 
 
 def _layer_of_id(node_id: str) -> str | None:
@@ -2467,6 +2533,8 @@ def drive_turn(state: dict, config: Any, *, env: Any, task_tool: Any, writer: An
     try:
         env.ensure_dirs()
         _boot(ctx, fresh)
+        if ctx.halt_refusal:
+            return ctx.end(ctx.halt_refusal)            # 零转场、零子调用（裁定 44）
         while ctx.transitions < MAX_TRANSITIONS:
             ctx.transitions += 1
             result = _STAGE_HANDLERS[ctx.cur["stage"]](ctx)

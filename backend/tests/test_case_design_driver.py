@@ -1861,3 +1861,118 @@ def test_wants_restart_negation_only_kills_the_matching_clause():
     """W3-2 的教训反向复用：前一分句的「没」不许连坐后一分句的明示重开。"""
     from aitester.case_design.stages import _wants_restart
     assert _wants_restart("没什么问题，重开任务吧") is True
+
+
+# ---- 第五片 T30：_boot 把 halted 与 done 分家——默认断点续跑、四族分流（裁定 42/44）----
+
+def test_halted_new_turn_resumes_without_archiving(tmp_path):
+    """裁定 42 的正身：中断后再发一句不销毁现场。走查四为这条赔了 572 call。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    state = {"messages": [HumanMessage("生成测试设计")], "case": {}}
+    bad = {"task_kind": "x", "entry_layer": "chain", "terminal_layer": "point",
+           "target_subtree": "", "source_files": [], "note": ""}
+    for _ in range(4):
+        _append(state, _drive(env, state, ScriptTask()))
+        simulate(env, plan=bad)
+    _append(state, _drive(env, state, ScriptTask()))                 # → halted
+    assert Ledger.load(env.design).data["counters"] == {"chain": 0, "story": 0, "point": 0, "case": 0}
+
+    turn = _drive(env, {"messages": [HumanMessage("换个说法再试")], "case": {}}, ScriptTask())
+    assert turn["case"]["route"] == "agent"                          # 续跑：重新下发，不是重开账本
+    assert not (env.design / "archive").exists()                     # 现场一个文件都没搬走
+    assert (env.design / "plan.json").is_file()
+    led = Ledger.load(env.design)
+    assert led.status == "active" and led.cursor["stage"] == "plan"
+    # 预算重开的真读数：本轮是续跑后的**首问**，故 nudge 归 0 而 asked 已置真。
+    # 这条同时是「清游标」的差分证据——若 _go 没清游标，本轮 ask 会在 nudge=3≥NUDGE_CAP 当场再 halted。
+    assert led.cursor["nudge"] == 0 and led.cursor["asked"] is True
+    assert any(h.startswith("resumed-from-halted@") for h in led.data["history"])
+
+
+def test_halted_new_turn_with_explicit_restart_archives(tmp_path):
+    """明示重开＝今天那条路：归档＋fresh＋carried_stale 携带，一并保住既有语义。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    state = {"messages": [HumanMessage("生成测试设计")], "case": {}}
+    _append(state, _drive(env, state, ScriptTask()))
+    simulate(env, plan={"task_kind": "design", "entry_layer": "chain", "terminal_layer": "chain",
+                        "target_subtree": "", "source_files": [], "note": "只链层"})
+    _append(state, _drive(env, state, ScriptTask()))                 # gen 阶段推进
+    led = Ledger.load(env.design)
+    led.status = "halted"
+    led.data["halt"].update({"kind": "artifact_retry", "stage": led.cursor["stage"],
+                             "layer": led.cursor["layer"], "block": led.cursor["block"],
+                             "round": int(led.cursor["round"] or 0), "reason": "手搭", "count": 1})
+    led.layer("story")["state"] = "stale_pending"
+    led.save()
+
+    _drive(env, {"messages": [HumanMessage("作废这次，重开任务")], "case": {}}, ScriptTask())
+    assert (env.design / "archive").is_dir()
+    fresh = Ledger.load(env.design)
+    assert fresh.data["task"] == {} and fresh.data["carried_stale"] == ["story"]
+
+
+def test_human_wait_halt_resume_goes_back_to_the_gate(tmp_path):
+    """门连续待决而 halted 后，一句「同意通过」必须从 gate_interpret 接上放行，不是重烧设计环。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask())                                     # 跑到 awaiting_review
+    for _ in range(4):                                               # NUDGE_CAP=3 → 第 4 次待决 halted
+        _drive(env, {"messages": [HumanMessage("我再想想")], "case": {}}, ScriptTask())
+    led = Ledger.load(env.design)
+    assert led.status == "halted" and led.data["halt"]["kind"] == "human_wait"
+    assert led.cursor["stage"] == "gate_interpret" and led.data["gate"]["unclear"] == 4
+    assert kb.upserts == []
+
+    turn = _drive(env, {"messages": [HumanMessage("同意通过")], "case": {}}, ScriptTask())
+    assert turn["case"]["route"] == "end"
+    assert not (env.design / "archive").exists()
+    led = Ledger.load(env.design)
+    assert led.status == "done" and kb.upserts                        # 解读 1 call → 回写，零重烧
+    assert led.data["gate"]["unclear"] == 0
+
+
+def test_needs_input_halt_refuses_and_costs_nothing(tmp_path):
+    """裁定 44 的反面：同游标重放必再炸的那族，续跑一步都不许走——零转场、零子调用、现场不动。"""
+    kb = StubKb(layers={"chain": [{"id": "ch-0001", "type": "chain", "parent": "", "level": 1}],
+                        "story": [], "point": []})
+    env = _env(tmp_path, kb)
+    task = ScriptTask()
+    state = {"messages": [HumanMessage("只更新 ch-9999")], "case": {}}
+    _append(state, _drive(env, state, task))
+    simulate(env, plan={"task_kind": "design", "entry_layer": "story", "terminal_layer": "point",
+                        "target_subtree": "ch-9999", "source_files": [], "note": "窄任务"})
+    frames: list[dict] = []
+    _append(state, _drive(env, state, task, writer=frames.append))
+    led = Ledger.load(env.design)
+    assert led.status == "halted" and led.data["halt"]["kind"] == "needs_input"
+    assert "在链路树里不存在" in _end_text(frames)          # halted 终帧带 reason（T28 已落）
+
+    calls, upserts = len(task.calls), len(kb.upserts)
+    frames2: list[dict] = []
+    _drive(env, {"messages": [HumanMessage("继续")], "case": {}}, task, writer=frames2.append)
+    assert len(task.calls) == calls and len(kb.upserts) == upserts     # 判据 ① 的离线同型
+    refusal = _end_text(frames2)
+    assert "重开任务" in refusal and "本轮未做任何生成" in refusal   # 「怎么出去」由拒绝帧说（T32 只补 halted 帧尾巴）
+    led2 = Ledger.load(env.design)
+    assert led2.status == "halted" and led2.data["halt"]["count"] == 2  # 拒绝不改状态、只说实话
+    assert not (env.design / "archive").exists()
+
+
+def test_halt_count_tracks_same_spot(tmp_path):
+    """同一处停两次，count 必须说真话——终帧那句「第 N 次」是给人的成本读数（裁定 18 可见性同族）。
+    本条从 T28 移来：只有续跑真的保住账本（T30），第二次 halt 才会落在同一处（红证归属见 T28 注）。"""
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    state = {"messages": [HumanMessage("生成测试设计")], "case": {}}
+    bad = {"task_kind": "x", "entry_layer": "chain", "terminal_layer": "point",
+           "target_subtree": "", "source_files": [], "note": ""}
+    for _ in range(2):                                   # 两整轮「重问到超限」
+        for _ in range(4):
+            _append(state, _drive(env, state, ScriptTask()))
+            simulate(env, plan=bad)
+        _append(state, _drive(env, state, ScriptTask()))    # → halted
+        state = {"messages": [HumanMessage("再试一次")], "case": {}}   # 新回合＝续跑（本任务前是归档）
+    halt = Ledger.load(env.design).data["halt"]
+    assert halt["kind"] == "artifact_retry" and halt["count"] == 2
