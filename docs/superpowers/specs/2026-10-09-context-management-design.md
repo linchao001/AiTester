@@ -136,7 +136,7 @@ def cap_content(text: str, *, tool: str, usage: ContextUsage | None) -> str:
 - `Composer.tsx` 的百分比条改吃 done 帧 / 会话行的 `context`：`occupancy / window`，`occupancy_source == "estimated"` 时换一种样式并写「估算」；缺 `context` 节时显示「—」，**不显示 0%**。
 - 截断在步序行可见（原长/保留/省略三个数）。
 
-> **实施澄清（第一片 C6，2026-10-09）**：「三个数可见」本片交付在 **composer 的上下文 tooltip** 里，逐条列到工具名（`工具名 原 X→留 Y（省 Z）`）；**不在步序行**。机制归因：步序行的 `detail` 是**参数摘要**（`orchestration/subagent.py:36` `detail_of`），且 step 帧按契约**不外泄工具正文**（`orchestration/agent_graph.py:281`——`result` 只进 `tool_traces` 落盘、不进 UI 事件）。要在步序行内联展示三数，得给 step 帧新增契约字段并动 `_STEP_KEYS`，超出本片「一把尺 + 一道闸」的范围 ⇒ 与 §7 的「工具结果落盘 + 文件指针回喂」同批留第二片。§6 判据② 的「可见」据此读作：**界面上（tooltip）看得见三数 + 落盘 `context.truncated` 逐条留痕**，反向钉在 `test_frontend_context_display.py`。
+> **实施澄清（第一片 C6，2026-10-09）**：「三个数可见」本片交付在 **composer 的上下文 tooltip** 里，逐条列到工具名（`工具名 原 X→留 Y（省 Z）`）；**不在步序行**。机制归因三条，逐条核过：① 步序行的 `detail` 是**参数摘要**（`orchestration/subagent.py:36` `detail_of` = `json.dumps(args)[:DETAIL_MAX]`）；② step 帧按契约**不外泄工具正文**（`orchestration/agent_graph.py:281`——`result` 只进 `tool_traces` 落盘、不进 UI 事件），而截断标记只前插进 ToolMessage 正文（`context/budget.py` 的 `TRUNCATION_MARK`）；③ `Truncation`（`context/usage.py:14-23`）**没有回合归属**，不带 `round`/`call_id` ⇒ 现有协议下三个数**无法按步配对**（同一工具第 1 次没超、第 2 次超，按执行顺序硬配必错配）。要在步序行内联展示，得给 step 帧新增契约字段并动 `_STEP_KEYS`，还要给 `Truncation` 加回合号并由 `cap_result` 调用点传入 ⇒ 越过本片「一把尺 + 一道闸」的范围，与 §7 的「工具结果落盘 + 文件指针回喂」同批留第二片。§6 判据② 的「可见」据此读作：**界面上（tooltip）看得见三数 + 落盘 `context.truncated` 逐条留痕**，反向钉在 `test_frontend_context_display.py`。
 
 ---
 
