@@ -1,6 +1,6 @@
 # 会话历史迁入项目空间 · 设计
 
-日期：2026-10-09　状态：**设计已确认，待实施**
+日期：2026-10-09　状态：**已实现**
 
 现状依据：`services/session_store.py`（单根 `backend/data/sessions`，`index.json` + `sess_*.jsonl`）、`memory/file_memory.py`、`services/chat.py`（`HISTORY_MAX=40`、`_persist` / `_STEP_KEYS`）、`orchestration/agent_graph.py`（`tool_traces` 含 `result`，SSE `step` 刻意不外泄）、`interaction/sessions.py`（list 已要 `agent_id`+`project_id`；messages/delete 仅 `session_id`）、`main.py`（`SessionStore(DATA_DIR / "sessions")`）、`interaction/projects.py`（删项目后 `delete_by_project`）。
 

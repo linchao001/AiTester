@@ -24,7 +24,8 @@ from aitester.services.pending import (
     ResumeNotReadyError,
 )
 from aitester.services.project_config import ProjectConfigError
-from aitester.services.session_store import SessionStore
+from aitester.services.session_locator import SessionLocator
+from aitester.services.session_store import SessionStore, open_session_store
 
 
 class _Scripted(ChunkedStreamMixin):
@@ -58,7 +59,7 @@ def _call_round(*paths: str, text: str = "") -> AIMessage:
 
 def _svc(tmp_path: Path, svc_proj, provider) -> ChatService:
     return ChatService(provider=provider, agent_runtime=_runtime(tmp_path),
-                       sessions=SessionStore(tmp_path / "sessions"), projects=svc_proj)
+                       sessions=SessionLocator(svc_proj), projects=svc_proj)
 
 
 def _hold(tmp_path: Path, svc_proj, pid: str, perm_mode: str, run_id: str,
@@ -253,7 +254,7 @@ def test_drop_session_clears_entries_and_remembered() -> None:
 def test_resume_carries_forward_the_hung_segment_steps_and_prefix(tmp_path, project) -> None:
     """续跑接着算：前一段已执行的过程行与已投递正文不能因为换了一段流就丢。"""
     svc_proj, pid, root = project
-    store = SessionStore(tmp_path / "sessions")
+    store = open_session_store(root, "case_design")
     first = AIMessage(content="先写个界内的", tool_calls=[
         {"id": "k1", "name": "write", "args": {"file_path": "notes.md", "content": "n"},
          "type": "tool_call"}])
@@ -276,8 +277,8 @@ def test_stop_during_a_live_pending_fold_lands_the_prefix_as_stopped(tmp_path, p
     走 finish.reply 会落一条空正文、stopped=False 的「已完成回答」：用户看到的半句没了，
     气泡还会当收尾渲染。done 帧必须照发——前端靠它收流并让授权卡退场。
     """
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
+    svc_proj, pid, root = project
+    store = open_session_store(root, "case_design")
     svc = _svc(tmp_path, svc_proj,
                _Scripted([_call_round("../escape.md", text="我先想想"), AIMessage(content="好的")]))
     prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
@@ -296,7 +297,7 @@ def test_stop_during_a_live_pending_fold_lands_the_prefix_as_stopped(tmp_path, p
 
 def test_failed_resume_releases_entry_and_thread(tmp_path, project) -> None:
     """图跑挂不留尸体：条目和线程一起摘，否则那条 pending 带着已消费的决策永远 400。"""
-    svc_proj, pid, _ = project
+    svc_proj, pid, root = project
     svc = _svc(tmp_path, svc_proj, _Scripted([_call_round("../a.md"), RuntimeError("续跑炸了")]))
     prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
     list(svc.stream_turn(prepared, run_id="cs11"))
@@ -310,7 +311,7 @@ def test_failed_resume_releases_entry_and_thread(tmp_path, project) -> None:
 
 def test_free_mode_never_holds(tmp_path, project) -> None:
     """默认档零行为（红线）：gate 不在场、事件流照旧收到 done、pending 表空。"""
-    svc_proj, pid, _ = project
+    svc_proj, pid, root = project
     svc = _svc(tmp_path, svc_proj, _Scripted([AIMessage(content="直答")]))
     prepared = svc.prepare("", "生成用例", "case_design", pid, "free")
     assert prepared.gate is None and prepared.perm_mode == "free"
@@ -322,7 +323,7 @@ def test_free_mode_never_holds(tmp_path, project) -> None:
 
 def test_invalid_perm_mode_detail_verbatim(tmp_path, project) -> None:
     from aitester.orchestration.auth_rules import PERM_MODE_DETAIL, PermModeError
-    svc_proj, pid, _ = project
+    svc_proj, pid, root = project
     svc = _svc(tmp_path, svc_proj, _Scripted([AIMessage(content="直答")]))
     with pytest.raises(PermModeError) as exc:
         svc.prepare("", "hi", "case_design", pid, "yolo")
@@ -332,7 +333,7 @@ def test_invalid_perm_mode_detail_verbatim(tmp_path, project) -> None:
 def test_boundary_out_of_bounds_holds_without_persisting(tmp_path, project) -> None:
     """裁定 7+8：挂起即断流、一条不落；界外文件确实还没被写出去（走查项 4 的单测锁）。"""
     svc_proj, pid, root = project
-    store = SessionStore(tmp_path / "sessions")
+    store = open_session_store(root, "case_design")
     svc = _svc(tmp_path, svc_proj, _Scripted([_call_round("../escape.md"), AIMessage(content="好的")]))
     prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
     events = list(svc.stream_turn(prepared, run_id="cs1"))
@@ -347,8 +348,8 @@ def test_boundary_out_of_bounds_holds_without_persisting(tmp_path, project) -> N
 
 def test_approve_then_resume_persists_exactly_one_row(tmp_path, project) -> None:
     """裁定 8 的正面锁：批准续跑到收尾，磁盘只有一 user 一 assistant；线程收摊。"""
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
+    svc_proj, pid, root = project
+    store = open_session_store(root, "case_design")
     svc = _svc(tmp_path, svc_proj, _Scripted([_call_round("../escape.md"), AIMessage(content="写好了")]))
     prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
     list(svc.stream_turn(prepared, run_id="cs2"))
@@ -365,8 +366,8 @@ def test_approve_then_resume_persists_exactly_one_row(tmp_path, project) -> None
 
 
 def test_reject_then_resume_answers_without_writing(tmp_path, project) -> None:
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
+    svc_proj, pid, root = project
+    store = open_session_store(root, "case_design")
     svc = _svc(tmp_path, svc_proj, _Scripted([_call_round("../escape.md"), AIMessage(content="好的，不写了")]))
     prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
     list(svc.stream_turn(prepared, run_id="cs3"))
@@ -384,7 +385,7 @@ def test_reject_then_resume_answers_without_writing(tmp_path, project) -> None:
 
 def test_second_interrupt_appends_to_the_same_entry(tmp_path, project) -> None:
     """两条待批串行挂：第二条的 wait 追加进同一条目，已答的不丢、去重按 call_id。"""
-    svc_proj, pid, _ = project
+    svc_proj, pid, root = project
     svc = _svc(tmp_path, svc_proj,
                _Scripted([_call_round("../a.md", "../b.md", text="第一段思考"),
                           AIMessage(content="两个都写了")]))
@@ -406,7 +407,7 @@ def test_abandoned_resume_feeds_the_same_decision(tmp_path, project) -> None:
     烧掉之后队列里下一条「已答未喂」会被喂进上一条的中断位——位置匹配（实测），
     最坏情形是用户拒过的操作被当成批准执行。
     """
-    svc_proj, pid, _ = project
+    svc_proj, pid, root = project
     svc = _svc(tmp_path, svc_proj, _Scripted([_call_round("../a.md"), AIMessage(content="写好了")]))
     prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
     list(svc.stream_turn(prepared, run_id="cs7"))
@@ -421,8 +422,8 @@ def test_abandoned_resume_feeds_the_same_decision(tmp_path, project) -> None:
 
 def test_stop_while_pending_persists_prefix_and_kills_resume(tmp_path, project) -> None:
     """裁定 10 第二条：待批期间停止 → 落 stopped 截断行、条目摘除、再续跑必 404 文案。"""
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
+    svc_proj, pid, root = project
+    store = open_session_store(root, "case_design")
     svc = _svc(tmp_path, svc_proj,
                _Scripted([_call_round("../escape.md", text="我先想想"), AIMessage(content="好的")]))
     prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
@@ -456,7 +457,7 @@ def test_resume_reuses_the_same_project_guard_detail(tmp_path, project) -> None:
 
 def test_drop_session_releases_pending_and_thread(tmp_path, project) -> None:
     """验收 10 的服务侧：删会话级联摘 pending 并释放检查点线程。"""
-    svc_proj, pid, _ = project
+    svc_proj, pid, root = project
     svc, sid = _hold(tmp_path, svc_proj, pid, "boundary", "cs8",
                      [_call_round("../escape.md"), AIMessage(content="好的")])
     assert svc.pending.peek("cs8") is not None

@@ -27,7 +27,6 @@ def _app(tmp_path: Path, provider):
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
         kb_manager=_NoopKbManager(),
     )
@@ -83,7 +82,7 @@ def test_task_delegation_end_to_end(tmp_path: Path) -> None:
     assert all("派子调查" not in str(m.content) for m in provider.calls[1])
     # 主上下文只收摘要：父 2 的末条就是 task 的结果消息
     assert provider.calls[2][-1].content == "子摘要"
-    rows = client.get(f"/api/chat/sessions/{done['session_id']}/messages").json()["messages"]
+    rows = client.get(f"/api/chat/sessions/{done['session_id']}/messages", params={"agent_id": "case_design", "project_id": pid}).json()["messages"]
     assert [r["role"] for r in rows] == ["user", "assistant"]
 
 
@@ -132,7 +131,7 @@ def test_child_outside_write_waits_through_parent_approval(tmp_path: Path) -> No
     done = second[-1][1]
     assert done["reply"] == "主答" and done["stopped"] is False
     assert (tmp_path / "out.md").read_text(encoding="utf-8") == "x"
-    rows = client.get(f"/api/chat/sessions/{sid}/messages").json()["messages"]
+    rows = client.get(f"/api/chat/sessions/{sid}/messages", params={"agent_id": "case_design", "project_id": pid}).json()["messages"]
     assert [m["role"] for m in rows] == ["user", "assistant"]
     assert client.get("/api/chat/pending", params={"agent_id": "case_design",
                                                    "project_id": pid}).json()["runs"] == []

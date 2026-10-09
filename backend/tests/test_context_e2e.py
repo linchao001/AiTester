@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -26,7 +28,8 @@ from aitester.context.budget import CAP_ENV
 from aitester.context.usage import ContextUsage
 from aitester.orchestration import build_agent_graph, stream_graph
 from aitester.services import ChatService
-from aitester.services.session_store import SessionStore
+from aitester.services.session_locator import SessionLocator
+from aitester.services.session_store import SessionStore, open_session_store
 
 SNAP_KEYS = {"window", "rounds", "peak_occupancy", "occupancy_source",
              "spent_input", "spent_output", "truncated", "error"}
@@ -41,7 +44,7 @@ def test_gate_and_meter_work_in_one_turn(tmp_path, project, monkeypatch):
     svc_proj, pid, root = project
     (root / "big.txt").write_text(
         "\n".join(f"第{i:03d}行数据内容示例" for i in range(400)), encoding="utf-8")
-    store = SessionStore(tmp_path / "sessions")
+    store = open_session_store(root, "case_design")
     svc = ChatService(
         provider=_Scripted([
             AIMessage(content="", tool_calls=[
@@ -49,7 +52,7 @@ def test_gate_and_meter_work_in_one_turn(tmp_path, project, monkeypatch):
                  "type": "tool_call"}]),
             AIMessage(content="看完了"),
         ]),
-        agent_runtime=_runtime(tmp_path), sessions=store, projects=svc_proj)
+        agent_runtime=_runtime(tmp_path), sessions=SessionLocator(svc_proj), projects=svc_proj)
     prepared = svc.prepare("", "读大文件", "case_design", pid)
     done = list(svc.stream_turn(prepared))[-1]
 
@@ -101,6 +104,7 @@ def test_sse_done_frame_carries_the_snapshot(tmp_path):
         AIMessage(content="已写入"),
     ]))
     pid = _pid(application, tmp_path)
+    root = Path(application.state.project_config.get(pid)["dir"])
 
     with TestClient(application).stream(
         "POST", "/api/chat/send/stream",
@@ -113,14 +117,14 @@ def test_sse_done_frame_carries_the_snapshot(tmp_path):
     data = frames[-1][1]
     assert data["context"] is not None             # 非空先钉：两边都缺也算「等值」
     assert set(data["context"]) == SNAP_KEYS
-    rows = SessionStore(tmp_path / "sessions").messages(data["session_id"])
+    rows = open_session_store(root, "case_design").messages(data["session_id"])
     assert data["context"] == rows[-1].context     # 帧上那句与盘上那行同一份快照
 
 
 def test_disconnect_row_carries_the_snapshot(tmp_path, project):
     """断开收尾只落盘不发 done：用户重开页面时，读数只能在会话行里。"""
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
+    svc_proj, pid, root = project
+    store = open_session_store(root, "case_design")
     svc = _service(tmp_path, svc_proj)                # MockProvider：第一帧 delta
     prepared = svc.prepare("", "生成用例", "case_design", pid)
     stream = svc.stream_turn(prepared)

@@ -47,7 +47,6 @@ def _isolated_client(
         model_config_path=tmp_path / name,
         capability_config_path=tmp_path / cap_name,
         projects_path=tmp_path / "p.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     return TestClient(application)
@@ -96,7 +95,6 @@ def test_send_uses_injected_provider_and_deltas_match_reply(tmp_path: Path) -> N
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
         kb_manager=_NoopKbManager(),
     )
@@ -120,7 +118,6 @@ def test_send_with_unknown_agent_returns_404(tmp_path: Path) -> None:
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     application.state.chat_service = ChatService(
@@ -143,7 +140,6 @@ def test_send_with_legacy_agent_id_returns_404(tmp_path: Path) -> None:
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     application.state.chat_service = ChatService(
@@ -182,7 +178,6 @@ def test_send_uses_agent_prompt_and_default_agent_id(tmp_path: Path) -> None:
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
         kb_manager=_NoopKbManager(),   # 直通缝：同上（不传则真 manager 把本回合翻进 loop）
     )
@@ -225,7 +220,6 @@ def test_send_upstream_failure_travels_as_error_event(tmp_path: Path) -> None:
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None),
     )
     application.state.chat_service = ChatService(
@@ -249,13 +243,11 @@ def test_chat_service_is_per_app_instance(tmp_path: Path) -> None:
     app_a = create_app(
         model_config_path=tmp_path / "a.json",
         capability_config_path=tmp_path / "a.cap.json",
-        sessions_dir=tmp_path / "sessions-a",
         settings=Settings(_env_file=None),
     )
     app_b = create_app(
         model_config_path=tmp_path / "b.json",
         capability_config_path=tmp_path / "b.cap.json",
-        sessions_dir=tmp_path / "sessions-b",
         settings=Settings(_env_file=None),
     )
     client_a, client_b = TestClient(app_a), TestClient(app_b)

@@ -36,3 +36,9 @@ def test_count_by_project_sums_sessions_across_agents(tmp_path) -> None:
 def test_count_by_project_missing_history_is_zero(tmp_path) -> None:
     svc, pid, _root = _projects(tmp_path)
     assert SessionLocator(svc).count_by_project(pid) == 0
+
+
+def test_for_agent_reuses_same_store_instance(tmp_path) -> None:
+    svc, pid, _root = _projects(tmp_path)
+    loc = SessionLocator(svc)
+    assert loc.for_agent(pid, "case_design") is loc.for_agent(pid, "case_design")

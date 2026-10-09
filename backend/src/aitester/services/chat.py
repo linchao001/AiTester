@@ -62,20 +62,32 @@ def _public_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _steps_for_disk(
     outcome: dict[str, Any] | None, public: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """优先用 finish.tool_traces（含 result）；没有则退回对外 steps（可能无 result）。"""
+    """用 finish.tool_traces 给本段 steps 补 result；续跑时 public 含前段，traces 只覆盖尾部。"""
     traces = (outcome or {}).get("tool_traces")
     if not isinstance(traces, list) or not traces:
         return list(public)
-    out: list[dict[str, Any]] = []
-    for t in traces:
-        out.append({
+    out = [dict(s) for s in public]
+    if len(out) >= len(traces):
+        base = len(out) - len(traces)
+        for i, t in enumerate(traces):
+            out[base + i] = {
+                "tool": t["tool"],
+                "ok": t["ok"],
+                "round": t["round"],
+                "detail": t["detail"],
+                "result": str(t.get("result", "")),
+            }
+        return out
+    return [
+        {
             "tool": t["tool"],
             "ok": t["ok"],
             "round": t["round"],
             "detail": t["detail"],
             "result": str(t.get("result", "")),
-        })
-    return out
+        }
+        for t in traces
+    ]
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,8 @@ from aitester.services.agent_runtime import AgentInstance, AgentRuntime
 from aitester.services.capability_config import CapabilityConfigService
 from aitester.services.model_config import ModelConfigService
 from aitester.services.project_config import ProjectConfigError, ProjectService
-from aitester.services.session_store import SessionStore
+from aitester.services.session_locator import SessionLocator
+from aitester.services.session_store import SessionStore, open_session_store
 from aitester.storage import FileJsonConfigRepository
 from streaming_fakes import CancelAfterProvider, ChunkedStreamMixin, local_tools
 
@@ -43,7 +44,7 @@ def _runtime(tmp_path: Path) -> AgentRuntime:
 
 def _service(tmp_path: Path, svc_proj, provider=None) -> ChatService:
     return ChatService(provider=provider or MockProvider(), agent_runtime=_runtime(tmp_path),
-                       sessions=SessionStore(tmp_path / "sessions"), projects=svc_proj)
+                       sessions=SessionLocator(svc_proj), projects=svc_proj)
 
 
 class _Scripted(ChunkedStreamMixin):
@@ -65,7 +66,7 @@ class _Scripted(ChunkedStreamMixin):
 
 def test_prepare_and_send_guard_share_one_detail(tmp_path, project) -> None:
     """第 2 片消费对称性的直接应用：流式路径不得重写一遍守门文案。"""
-    svc_proj, pid, _ = project
+    svc_proj, pid, root = project
     svc = _service(tmp_path, svc_proj)
     with pytest.raises(ProjectConfigError) as a:
         svc.prepare("", "hi", "case_design", "")
@@ -75,10 +76,10 @@ def test_prepare_and_send_guard_share_one_detail(tmp_path, project) -> None:
 
 
 def test_stream_turn_yields_events_then_persists_on_done(tmp_path, project) -> None:
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
+    svc_proj, pid, root = project
+    store = open_session_store(root, "case_design")
     svc = ChatService(provider=MockProvider(), agent_runtime=_runtime(tmp_path),
-                      sessions=store, projects=svc_proj)
+                      sessions=SessionLocator(svc_proj), projects=svc_proj)
     prepared = svc.prepare("", "生成用例", "case_design", pid)
     events = list(svc.stream_turn(prepared))
     assert events[0]["type"] == "delta"
@@ -95,8 +96,8 @@ def test_stream_turn_yields_events_then_persists_on_done(tmp_path, project) -> N
 
 
 def test_control_cancel_marks_done_stopped_and_persists_prefix(tmp_path, project) -> None:
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
+    svc_proj, pid, root = project
+    store = open_session_store(root, "case_design")
     control = RunControl()
     provider = CancelAfterProvider(AIMessage(content="0123456789"), control, after=1)
     svc = _service(tmp_path, svc_proj, provider=provider)
@@ -110,8 +111,8 @@ def test_control_cancel_marks_done_stopped_and_persists_prefix(tmp_path, project
 
 def test_disconnect_persists_truncated_row(tmp_path, project) -> None:
     """浏览器断开 == 生成器 close()：界面不看了，磁盘仍要留下他看到的那半截。"""
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
+    svc_proj, pid, root = project
+    store = open_session_store(root, "case_design")
     svc = _service(tmp_path, svc_proj)                # MockProvider："[mock] 生成用例" 共 3 块
     prepared = svc.prepare("", "生成用例", "case_design", pid)
     stream = svc.stream_turn(prepared)
@@ -129,7 +130,7 @@ def test_disconnect_multi_round_persists_last_round_prefix(tmp_path, project) ->
     （后写的非工具轮 content 覆盖前面的）一致：中间轮文本折成 📝 步骤、不落正文，
     不许被"顺手修成"拼接全部轮次。"""
     svc_proj, pid, root = project
-    store = SessionStore(tmp_path / "sessions")
+    store = open_session_store(root, "case_design")
     provider = _Scripted([
         AIMessage(content="核查中", tool_calls=[{"name": "write", "args": {
             "file_path": "t.txt", "content": "v"}, "id": "c1", "type": "tool_call"}]),
@@ -140,7 +141,7 @@ def test_disconnect_multi_round_persists_last_round_prefix(tmp_path, project) ->
                                            system_prompt=find_agent("case_design").prompt,
                                            provider=provider, tools=local_tools(root),
                                            build_graph=build_agent_graph))
-    svc = ChatService(sessions=store, projects=svc_proj, agent_runtime=runtime)
+    svc = ChatService(sessions=SessionLocator(svc_proj), projects=svc_proj, agent_runtime=runtime)
     prepared = svc.prepare("", "写文件", "case_design", pid)
     stream = svc.stream_turn(prepared)
     # 消费到第二条 delta（round 1 的 delta、round 1 的 step、round 2 首个 delta 都已投递）
@@ -161,8 +162,8 @@ def test_disconnect_multi_round_persists_last_round_prefix(tmp_path, project) ->
 
 def test_close_after_done_persists_turn_once(tmp_path, project) -> None:
     """Task 7 的 SSE 路由就是「收到 done 就 break」的消费者：close() 不得二次落盘。"""
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
+    svc_proj, pid, root = project
+    store = open_session_store(root, "case_design")
     svc = _service(tmp_path, svc_proj)
     prepared = svc.prepare("", "生成用例", "case_design", pid)
     stream = svc.stream_turn(prepared)
@@ -192,8 +193,8 @@ class _Boom(ChunkedStreamMixin):
 
 def test_stream_failure_persists_nothing(tmp_path, project) -> None:
     """流中 ProviderError 原样上抛（路由转 error 事件），且一条也不落盘——与迁移前一致。"""
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
+    svc_proj, pid, root = project
+    store = open_session_store(root, "case_design")
     svc = _service(tmp_path, svc_proj, provider=_Boom())
     prepared = svc.prepare("", "hi", "case_design", pid)
     with pytest.raises(ProviderError):
@@ -203,7 +204,7 @@ def test_stream_failure_persists_nothing(tmp_path, project) -> None:
 
 def test_send_fold_keeps_trace_and_model(tmp_path, project) -> None:
     """一次性壳保留 trace/model（SSE 协议不带它们，服务层与既有断言仍要）。"""
-    svc_proj, pid, _ = project
+    svc_proj, pid, root = project
     svc = _service(tmp_path, svc_proj)
     result = svc.send("s1", "生成用例", "case_design", pid)
     assert result["trace"] == [
@@ -228,7 +229,7 @@ def test_send_fold_keeps_tool_trace_entries(tmp_path, project) -> None:
                                            system_prompt=find_agent("case_design").prompt,
                                            provider=provider, tools=local_tools(root),
                                            build_graph=build_agent_graph))
-    svc = ChatService(sessions=SessionStore(tmp_path / "sessions"),
+    svc = ChatService(sessions=SessionLocator(svc_proj),
                       projects=svc_proj, agent_runtime=runtime)
     result = svc.send("s1", "写文件", "case_design", pid)
     assert result["trace"] == ["services", "context", "orchestration", "adapters",
@@ -261,7 +262,7 @@ def test_node_receives_control_via_config_injected_by_service(tmp_path, project)
             seen.append((cfg.get("configurable") or {}).get(RUN_CONTROL_KEY) is control)
             return super().stream_messages(messages)
 
-    svc_proj, pid, _ = project
+    svc_proj, pid, root = project
     svc = _service(tmp_path, svc_proj, provider=_Spy())
     prepared = svc.prepare("", "hi", "case_design", pid)
     list(svc.stream_turn(prepared, control=control))

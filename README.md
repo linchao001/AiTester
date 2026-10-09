@@ -88,7 +88,7 @@ uv run python -m aitester.main
 - `GET/POST/PUT/DELETE /api/projects`（项目 CRUD，JSON 落盘；本地文件目录与知识库配置创建后不可修改）
   项目字段由「名称 / 描述 / 本地文件目录 / 启用智能体 / 知识库」构成；知识库字段只存**别名 `kb` 且不可改**，
   界面不回显底层知识库标识（集中解析只活在后端）；聊天页已按项目取会话并统计每项目会话数，删除项目会连带回收其会话
-- 聊天页 `/chat`：会话落盘（`backend/data/sessions`）、列表/搜索/分组/删除、多轮记忆（最近 40 条进 prompt）、
+- 聊天页 `/chat`：会话落盘到项目目录 `{项目.dir}/session_history/<agent_id>/`（`index.json` + `sess_*.jsonl`，含工具全量 `result`；SSE/读历史 API 不回 `result`）、列表/搜索/分组/删除、多轮记忆（最近 40 条进 prompt）、
   真实工具调用过程展示；会话按「智能体 × 项目」归属，切项目即切会话，
   「当前智能体」下拉只列当前项目启用的智能体；智能体的文件工具与命令工具都以项目目录为工作起点，产出物落进项目；
   **边界执法由用户自控**：composer 的 🛡 芯片三档（档位存 `aitester.chat.permMode`，默认 `free`）——
@@ -110,8 +110,9 @@ uv run python -m aitester.main
   能力配置（智能体默认模型、携带工具、工具启停）存 `backend/data/capability_config.json`
   （同样 gitignore，不含密钥），首次启动自动生成种子：种子启用态由本机探测推导，
   跑不了的工具不会以启用态出厂
-- `backend/data/`（含 `sessions/`）由**单一后端进程**读写：同时起两个后端会互相看不见对方的会话，
-  且后写者会用自己内存里的索引整文件覆盖 `sessions/index.json`
+- `backend/data/`（模型/能力/项目配置）与各项目下的 `session_history/` 均假定**单一后端进程**写索引：
+  多进程共写同一项目目录会互相覆盖 `session_history/<agent>/index.json`；删除 AiTester 项目配置
+  **不会**删除项目目录内的聊天历史
 
 > 目录不可达：智能体产出物会丢失，到项目页确认路径（`/chat` 发送会被拦下并给出中文提示）。
 

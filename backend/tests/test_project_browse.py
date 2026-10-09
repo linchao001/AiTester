@@ -28,7 +28,6 @@ def _app(tmp_path: Path):
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.json",
         projects_path=tmp_path / "projects.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
         kb_manager=_NoopKbManager(),
     )

@@ -20,7 +20,7 @@ from aitester.services.model_config import ModelConfigService
 from aitester.services.pending import PendingRegistry
 from aitester.services.project_config import ProjectService
 from aitester.services.run_registry import RunRegistry
-from aitester.services.session_store import SessionStore
+from aitester.services.session_locator import SessionLocator
 from aitester.storage import FileJsonConfigRepository
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -32,7 +32,6 @@ def create_app(
     projects_path: Path | None = None,
     settings: Settings | None = None,
     kb_manager=None,
-    sessions_dir: Path | None = None,
 ) -> FastAPI:
     s = settings or get_settings()
     model_config = ModelConfigService(
@@ -74,7 +73,7 @@ def create_app(
     application.state.agent_runtime = AgentRuntime(
         capability_config, model_config, application.state.file_observations, kb=kb
     )
-    sessions = SessionStore(sessions_dir or DATA_DIR / "sessions")
+    sessions = SessionLocator(project_config)
     application.state.sessions = sessions
     # 在途回合注册表：路由持它（stream_turn 只收 RunControl 形参，服务不认识 run_id）
     application.state.run_registry = RunRegistry()

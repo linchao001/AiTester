@@ -30,7 +30,6 @@ def _client(tmp_path, kb):
     app = create_app(
         model_config_path=tmp_path / "models.json",
         capability_config_path=tmp_path / "caps.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None, kb_embedding_api_key=""),
         kb_manager=kb,
     )
@@ -89,7 +88,6 @@ def test_kb_get_bases(tmp_path):
 def test_chat_send_returns_drafts(tmp_path):
     app = create_app(
         model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
     draft = {"op": "create", "path": "a.md", "abs_display": "P", "summary": "s",
              "content": "c", "base": None, "mtime": 0}
@@ -113,7 +111,6 @@ def test_chat_send_returns_drafts(tmp_path):
 def test_chat_send_drafts_defaults_empty(tmp_path):
     app = create_app(
         model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
     # 一次性口的「缺 drafts 键 → 默认空列表」迁到流上：没有 draft 事件就是同一口径
     app.state.chat_service = SimpleNamespace(
@@ -134,7 +131,6 @@ def test_chat_send_skips_malformed_drafts(tmp_path):
     # 终审项 5 原口径迁到流上：缺必填键/非 dict 的畸形草案逐条丢弃，整条流不塌，回复不丢
     app = create_app(
         model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None), kb_manager=_RecordingKbManager())
     valid = {"op": "create", "path": "a.md", "abs_display": "P",
              "summary": "s", "content": "c", "base": None, "mtime": 0}

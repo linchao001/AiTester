@@ -1,7 +1,7 @@
 """会话管理三端点：只服务已落盘的 sess_* 会话。
 
-临时键（kb-console 等）在此一律 404——它们的真相不在 sessions 目录（spec 兼容裁定）。
-detail 中文且可照做；不泄露 sessions 目录以外的任何绝对路径。
+临时键（kb-console 等）在此一律 404——它们的真相在项目 session_history（spec 兼容裁定）。
+detail 中文且可照做；不泄露项目目录以外的任何绝对路径。
 """
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -14,14 +14,15 @@ from aitester.interaction.schemas import (
     SessionsResponse,
     StepInfo,
 )
+from aitester.services.model_config import ConfigNotFoundError
+from aitester.services.session_locator import SessionLocator
 from aitester.services.session_store import (
     MISSING_SESSION_DETAIL,
     ChatMessage,
-    SessionStore,
 )
 
 
-def _store(request: Request) -> SessionStore:
+def _locator(request: Request) -> SessionLocator:
     return request.app.state.sessions  # type: ignore[return-value]
 
 
@@ -40,10 +41,13 @@ def sessions_list(
 ) -> SessionsResponse:
     # 未知或平台智能体 → 空列表 200：列表是「此处没有会话」，不是错误。
     # project_id 必填不砸 /kb：三端点按第 1 片口径只服务已落盘的 sess_* 会话，临时键一律 404/空表
-    # model_validate 而非 **vars：与读路径 steps 同款口径，Session 数据类日后多出字段也不会炸
+    try:
+        store = _locator(request).for_agent(project_id, agent_id)
+    except ConfigNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
     return SessionsResponse(
         sessions=[
-            SessionInfo.model_validate(vars(s)) for s in _store(request).list(agent_id, project_id)
+            SessionInfo.model_validate(vars(s)) for s in store.list(agent_id, project_id)
         ]
     )
 
@@ -51,6 +55,7 @@ def sessions_list(
 def _to_message(m: ChatMessage) -> ChatMessageInfo:
     # 只读路径容错（裁定 3）：手工编辑或旧格式的落盘行逐条丢弃畸形 steps，不整响应 500，
     # 其余合法消息照常返回；与 drafts 同款 model_validate 口径——非 dict 元素也归 ValidationError
+    # StepInfo 无 result 字段：Pydantic 默认忽略多余键，磁盘全量 result 不会进 API
     steps: list[StepInfo] = []
     for s in m.steps or []:
         try:
@@ -65,8 +70,16 @@ def _to_message(m: ChatMessage) -> ChatMessageInfo:
 
 
 @router.get("/{session_id}/messages", response_model=SessionMessagesResponse)
-def sessions_messages(request: Request, session_id: str) -> SessionMessagesResponse:
-    store = _store(request)
+def sessions_messages(
+    request: Request,
+    session_id: str,
+    agent_id: str = Query(min_length=1),
+    project_id: str = Query(min_length=1),
+) -> SessionMessagesResponse:
+    try:
+        store = _locator(request).for_agent(project_id, agent_id)
+    except ConfigNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
     if store.get(session_id) is None:
         raise _missing()
     return SessionMessagesResponse(
@@ -76,8 +89,17 @@ def sessions_messages(request: Request, session_id: str) -> SessionMessagesRespo
 
 
 @router.delete("/{session_id}", status_code=204)
-def sessions_delete(request: Request, session_id: str) -> None:
-    if not _store(request).delete(session_id):
+def sessions_delete(
+    request: Request,
+    session_id: str,
+    agent_id: str = Query(min_length=1),
+    project_id: str = Query(min_length=1),
+) -> None:
+    try:
+        store = _locator(request).for_agent(project_id, agent_id)
+    except ConfigNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
+    if not store.delete(session_id):
         raise _missing()
     # 级联（裁定 10 第三条）：会话没了，挂在它上面的待批与检查点线程一起收摊
     request.app.state.chat_service.drop_session(session_id)

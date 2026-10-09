@@ -23,7 +23,6 @@ def _default_app(tmp_path: Path):
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
         kb_manager=_NoopKbManager(),
     )
@@ -102,7 +101,7 @@ def test_wait_frame_then_approve_resume_to_single_done(tmp_path: Path) -> None:
     kinds = [e for e, _ in events]
     assert kinds[-1] == "done" and kinds.count("done") == 1
     assert events[0][0] == "start" and events[0][1]["run_id"] == run_id   # 续跑沿用同一个 run_id
-    rows = client.get(f"/api/chat/sessions/{session_id}/messages").json()["messages"]
+    rows = client.get(f"/api/chat/sessions/{session_id}/messages", params={"agent_id": "case_design", "project_id": pid}).json()["messages"]
     assert [m["role"] for m in rows] == ["user", "assistant"]
     assert _pending(client, pid) == []
 
@@ -176,7 +175,7 @@ def test_stop_during_pending_then_resume_is_404(tmp_path: Path) -> None:
     r = client.post("/api/chat/stop", json={"run_id": run_id})
     assert r.status_code == 200 and r.json() == {"ok": True}
     assert _pending(client, pid) == []
-    rows = client.get(f"/api/chat/sessions/{sid}/messages").json()["messages"]
+    rows = client.get(f"/api/chat/sessions/{sid}/messages", params={"agent_id": "case_design", "project_id": pid}).json()["messages"]
     assert rows[-1]["content"] == "我先想想" and rows[-1]["stopped"] is True
     r2 = client.post("/api/chat/resume/stream", json={"run_id": run_id})
     assert r2.status_code == 404
@@ -210,7 +209,7 @@ def test_delete_session_cascades_pending(tmp_path: Path) -> None:
     second = _stream(client, {"message": "再写一个", "agent_id": "case_design",
                               "project_id": pid, "session_id": sid, "perm_mode": "boundary"})
     assert _pending(client, pid) != []
-    assert client.delete(f"/api/chat/sessions/{sid}").status_code == 204
+    assert client.delete(f"/api/chat/sessions/{sid}", params={"agent_id": "case_design", "project_id": pid}).status_code == 204
     assert _pending(client, pid) == []
 
 

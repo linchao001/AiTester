@@ -191,7 +191,6 @@ def test_service_stream_carries_case_env_to_graph(tmp_path: Path) -> None:
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
         kb_manager=_KbOn(tmp_path / "kb-root"),
     )

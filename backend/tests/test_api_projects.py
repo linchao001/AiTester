@@ -27,16 +27,11 @@ class _NoopKbManager:
 
 
 def _app(tmp_path: Path):
-    """与 client fixture 同款装配，但返回 app 本体——用例要摸 application.state.sessions。
-
-    sessions_dir 必须给到 tmp_path：GET 现在会读 SessionStore 数会话，不注入就会读写真实
-    backend/data/sessions。
-    """
+    """与 client fixture 同款装配，但返回 app 本体——用例要摸 application.state.sessions。"""
     return create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.json",
         projects_path=tmp_path / "projects.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
         kb_manager=_NoopKbManager(),
     )
@@ -174,9 +169,9 @@ def test_malformed_project_items_self_heal_on_read(tmp_path):
 
 
 def test_session_count_reflects_store(tmp_path) -> None:
-    application = _app(tmp_path)  # 复用本文件既有的 create_app 助手；须同时给 projects_path 与 sessions_dir
+    application = _app(tmp_path)
     pid = _create(application, "订单系统", str(tmp_path / "reqs"))["id"]
-    store = application.state.sessions
+    store = application.state.sessions.for_agent(pid, "case_design")
     store.create(store.new_id(), "case_design", pid, "一")
     store.create(store.new_id(), "case_design", pid, "二")
     rows = _get(application)["projects"]
@@ -211,28 +206,33 @@ def test_nul_byte_in_stored_dir_yields_false_not_500(tmp_path) -> None:
     assert row["dir_exists"] is False
 
 
-def test_delete_project_cascades_sessions(tmp_path) -> None:
+def test_delete_project_leaves_session_history_on_disk(tmp_path) -> None:
+    """删 AiTester 项目配置不删项目 dir 下的 session_history（spec 裁定）。"""
     application = _app(tmp_path)
-    pid = _create(application, "订单系统", str(tmp_path / "reqs"))["id"]
-    other = _create(application, "支付中心", str(tmp_path / "pay"))["id"]
-    store = application.state.sessions
+    reqs = tmp_path / "reqs"
+    pay = tmp_path / "pay"
+    pid = _create(application, "订单系统", str(reqs))["id"]
+    other = _create(application, "支付中心", str(pay))["id"]
+    store = application.state.sessions.for_agent(pid, "case_design")
+    other_store = application.state.sessions.for_agent(other, "case_design")
     sid = store.new_id()
-    kept = store.new_id()
-    store.create(sid, "case_design", pid, "该删")
-    store.create(kept, "case_design", other, "该留")
+    kept = other_store.new_id()
+    store.create(sid, "case_design", pid, "该留在磁盘")
+    other_store.create(kept, "case_design", other, "该留")
     assert _delete(application, pid).status_code == 204
-    assert store.get(sid) is None
-    assert not (tmp_path / "sessions" / f"{sid}.jsonl").exists()
-    assert store.get(kept) is not None            # 别的项目一条不少
-    assert (tmp_path / "sessions" / f"{kept}.jsonl").exists()
+    assert (reqs / "session_history" / "case_design" / f"{sid}.jsonl").exists()
+    assert other_store.get(kept) is not None
+    assert (pay / "session_history" / "case_design" / f"{kept}.jsonl").exists()
 
 
 def test_delete_project_last_one_keeps_sessions(tmp_path) -> None:
-    # 顺序是刻意的：项目校验没过（剩 1 条禁删）时绝不能先把会话删了
+    # 剩 1 条禁删：项目配置与磁盘会话都不得被动
     application = _app(tmp_path)
-    pid = _create(application, "唯一项目", str(tmp_path / "only"))["id"]
-    store = application.state.sessions
+    only = tmp_path / "only"
+    pid = _create(application, "唯一项目", str(only))["id"]
+    store = application.state.sessions.for_agent(pid, "case_design")
     sid = store.new_id()
     store.create(sid, "case_design", pid, "别跟着死")
     assert _delete(application, pid).status_code == 400
     assert store.get(sid) is not None
+    assert (only / "session_history" / "case_design" / f"{sid}.jsonl").exists()

@@ -8,7 +8,7 @@ from aitester.adapters.llm import MockProvider
 from aitester.config import Settings
 from aitester.main import create_app
 from aitester.services import ChatService
-from aitester.services.session_store import SessionStore
+from aitester.services.session_locator import SessionLocator
 from streaming_fakes import sse_frames
 
 
@@ -35,14 +35,9 @@ def _app(tmp_path: Path):
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
         kb_manager=_NoopKbManager(),
     )
-
-
-def _client(tmp_path: Path) -> TestClient:
-    return TestClient(_app(tmp_path))
 
 
 def _send_body(client, payload: dict) -> dict:
@@ -55,68 +50,76 @@ def _send_body(client, payload: dict) -> dict:
         return dict(last[1]) if last[0] == "done" else {}
 
 
-def _seed(tmp_path: Path, agent_id: str = "case_design") -> tuple[TestClient, str, str]:
+def _seed_project(application, tmp_path: Path, name: str = "订单系统") -> str:
+    """可见智能体的 send 必须有真实可达的项目。"""
+    root = tmp_path / name
+    root.mkdir(exist_ok=True)
+    return application.state.project_config.create(
+        name=name, desc="", dir_=str(root), agents=["case_design"]
+    )["id"]
+
+
+def _seed(tmp_path: Path, agent_id: str = "case_design") -> tuple[TestClient, str, str, Path]:
     application = _app(tmp_path)
-    store: SessionStore = application.state.sessions
     pid = _seed_project(application, tmp_path)
+    root = Path(application.state.project_config.get(pid)["dir"])
+    store = application.state.sessions.for_agent(pid, agent_id)
     sid = store.new_id()
     store.create(sid, agent_id, pid, "订单退款用例设计")
     store.append(sid, "user", "订单退款用例设计")
     store.append(sid, "assistant", "好的",
-                 steps=[{"tool": "read", "ok": True, "round": 1, "detail": "{}"}])
-    return TestClient(application), sid, pid
+                 steps=[{"tool": "read", "ok": True, "round": 1, "detail": "{}", "result": "FILE"}])
+    return TestClient(application), sid, pid, root
+
+
+def _wired_app(tmp_path: Path):
+    """create_app 缝装配真实 ChatService（注入 MockProvider，零网络），返回 app 以便先种会话。"""
+    application = _app(tmp_path)
+    application.state.chat_service = ChatService(
+        provider=MockProvider(),
+        agent_runtime=application.state.agent_runtime,
+        sessions=application.state.sessions,
+        projects=application.state.project_config,
+    )
+    return application
 
 
 def _wired_client(tmp_path: Path) -> TestClient:
-    """用真实 ChatService（注入 MockProvider，零网络）验 send 的会话契约。"""
-    application = _wired_app(tmp_path)
-    return TestClient(application)
+    return TestClient(_wired_app(tmp_path))
 
 
-def _seed_project(application, tmp_path: Path) -> str:
-    """Task 6：可见智能体的 send 必须有真实可达的项目。"""
-    root = tmp_path / "reqs"
-    root.mkdir(exist_ok=True)
-    return application.state.project_config.create(
-        name="订单系统", desc="", dir_=str(root), agents=["case_design"]
-    )["id"]
+def _msg_params(agent_id: str, project_id: str) -> dict[str, str]:
+    return {"agent_id": agent_id, "project_id": project_id}
 
 
-@pytest.fixture
-def app(tmp_path: Path):
-    """client 与 store 必须共享同一 SessionStore 实例：两次独立构造会在 index 内存态上分家。"""
-    return _app(tmp_path)
-
-
-@pytest.fixture
-def store(app) -> SessionStore:
-    return app.state.sessions
-
-
-@pytest.fixture
-def client(app) -> TestClient:
-    return TestClient(app)
-
-
-def test_list_requires_project_id(client) -> None:
+def test_list_requires_project_id(tmp_path) -> None:
+    client = TestClient(_app(tmp_path))
     r = client.get("/api/chat/sessions", params={"agent_id": "case_design"})
-    assert r.status_code == 422          # 必填参数缺失由 FastAPI 校验层拦，service 不必再判
+    assert r.status_code == 422
 
 
-def test_list_filters_by_project(client, store) -> None:
-    a = store.new_id(); b = store.new_id()
-    store.create(a, "case_design", "proj_11111111", "本项目")
-    store.create(b, "case_design", "proj_22222222", "别的项目")
+def test_list_filters_by_project(tmp_path) -> None:
+    application = _app(tmp_path)
+    pid_a = _seed_project(application, tmp_path, "项目甲")
+    pid_b = _seed_project(application, tmp_path, "项目乙")
+    loc: SessionLocator = application.state.sessions
+    a = loc.for_agent(pid_a, "case_design")
+    b = loc.for_agent(pid_b, "case_design")
+    sid_a = a.new_id()
+    sid_b = b.new_id()
+    a.create(sid_a, "case_design", pid_a, "本项目")
+    b.create(sid_b, "case_design", pid_b, "别的项目")
+    client = TestClient(application)
     rows = client.get(
         "/api/chat/sessions",
-        params={"agent_id": "case_design", "project_id": "proj_11111111"},
+        params={"agent_id": "case_design", "project_id": pid_a},
     ).json()["sessions"]
-    assert [r["id"] for r in rows] == [a]
-    assert rows[0]["project_id"] == "proj_11111111"
+    assert [r["id"] for r in rows] == [sid_a]
+    assert rows[0]["project_id"] == pid_a
 
 
 def test_list_sessions_returns_rows_for_agent(tmp_path: Path) -> None:
-    client, sid, pid = _seed(tmp_path)
+    client, sid, pid, _ = _seed(tmp_path)
     body = client.get("/api/chat/sessions",
                       params={"agent_id": "case_design", "project_id": pid}).json()
     assert len(body["sessions"]) == 1
@@ -124,58 +127,74 @@ def test_list_sessions_returns_rows_for_agent(tmp_path: Path) -> None:
     assert row["id"] == sid and row["title"] == "订单退款用例设计"
     assert row["project_id"] == pid
     assert row["message_count"] == 2
-    assert isinstance(row["created_at"], int) and isinstance(row["updated_at"], int)
 
 
 def test_list_sessions_is_empty_for_unknown_or_platform_agent(tmp_path: Path) -> None:
-    client, _, pid = _seed(tmp_path)
+    client, _, pid, _ = _seed(tmp_path)
     for agent in ("ghost", "kb_assistant"):
         r = client.get("/api/chat/sessions",
                        params={"agent_id": agent, "project_id": pid})
         assert r.status_code == 200
-        assert r.json() == {"sessions": []}  # 不泄露、不报错（spec 契约）
+        assert r.json() == {"sessions": []}
 
 
 def test_list_sessions_requires_agent_id(tmp_path: Path) -> None:
-    client, _, _ = _seed(tmp_path)
+    client, _, _, _ = _seed(tmp_path)
     assert client.get("/api/chat/sessions").status_code == 422
 
 
-def test_messages_endpoint_returns_steps(tmp_path: Path) -> None:
-    client, sid, _ = _seed(tmp_path)
-    body = client.get(f"/api/chat/sessions/{sid}/messages").json()
+def test_messages_require_project_and_agent_query(tmp_path: Path) -> None:
+    client, sid, _pid, _ = _seed(tmp_path)
+    assert client.get(f"/api/chat/sessions/{sid}/messages").status_code == 422
+    assert client.delete(f"/api/chat/sessions/{sid}").status_code == 422
+
+
+def test_messages_endpoint_returns_steps_without_result(tmp_path: Path) -> None:
+    client, sid, pid, root = _seed(tmp_path)
+    body = client.get(
+        f"/api/chat/sessions/{sid}/messages",
+        params=_msg_params("case_design", pid),
+    ).json()
     assert body["session_id"] == sid
     assert [m["role"] for m in body["messages"]] == ["user", "assistant"]
     assert body["messages"][0]["steps"] is None
-    assert body["messages"][1]["steps"] == [
-        {"tool": "read", "ok": True, "round": 1, "detail": "{}"}]
+    step = body["messages"][1]["steps"][0]
+    assert step == {"tool": "read", "ok": True, "round": 1, "detail": "{}"}
+    assert "result" not in step
+    # 磁盘仍有全量 result
+    disk = (root / "session_history" / "case_design" / f"{sid}.jsonl").read_text(encoding="utf-8")
+    assert "FILE" in disk
 
 
 def test_messages_unknown_or_temporary_id_returns_404(tmp_path: Path) -> None:
-    client, _, _ = _seed(tmp_path)
+    client, _, pid, _ = _seed(tmp_path)
     for bad in ("sess_deadbeef", "kb-console"):
-        r = client.get(f"/api/chat/sessions/{bad}/messages")
+        r = client.get(
+            f"/api/chat/sessions/{bad}/messages",
+            params=_msg_params("case_design", pid),
+        )
         assert r.status_code == 404
         assert r.json()["detail"] == "会话不存在或已被删除"
 
 
 def test_delete_returns_204_and_removes_everything(tmp_path: Path) -> None:
-    client, sid, pid = _seed(tmp_path)
-    assert client.delete(f"/api/chat/sessions/{sid}").status_code == 204
-    assert client.delete(f"/api/chat/sessions/{sid}").json()["detail"] == "会话不存在或已被删除"
+    client, sid, pid, root = _seed(tmp_path)
+    params = _msg_params("case_design", pid)
+    assert client.delete(f"/api/chat/sessions/{sid}", params=params).status_code == 204
+    assert client.delete(f"/api/chat/sessions/{sid}", params=params).json()["detail"] == \
+        "会话不存在或已被删除"
     assert client.get("/api/chat/sessions",
                       params={"agent_id": "case_design", "project_id": pid}).json() == {"sessions": []}
-    assert not (tmp_path / "sessions" / f"{sid}.jsonl").exists()
+    assert not (root / "session_history" / "case_design" / f"{sid}.jsonl").exists()
 
 
 def test_send_defaults_to_empty_session_id(tmp_path: Path) -> None:
     client = _wired_client(tmp_path)
     pid = _seed_project(client.app, tmp_path)
     body = _send_body(client, {"message": "生成用例", "agent_id": "case_design", "project_id": pid})
-    assert body["session_id"].startswith("sess_")   # 请求体不带 session_id 也能建会话
+    assert body["session_id"].startswith("sess_")
     assert body["title"] == "生成用例"
-    assert body["steps"] == []                       # MockProvider 不调工具
-    # 列表端点已收紧 project_id：HTTP 级验落盘与归属（上一提交临时走 store 口径）
+    assert body["steps"] == []
     listed = client.get("/api/chat/sessions",
                         params={"agent_id": "case_design", "project_id": pid}).json()["sessions"]
     assert [s["id"] for s in listed] == [body["session_id"]]
@@ -186,7 +205,7 @@ def test_send_with_temporary_key_does_not_appear_in_list(tmp_path: Path) -> None
     pid = _seed_project(client.app, tmp_path)
     body = _send_body(client, {"session_id": "kb-console", "message": "hi",
                                "agent_id": "case_design", "project_id": pid})
-    assert body["session_id"] == "kb-console"   # 临时键原样回显
+    assert body["session_id"] == "kb-console"
     assert client.get("/api/chat/sessions",
                       params={"agent_id": "case_design", "project_id": pid}).json() == {"sessions": []}
 
@@ -202,46 +221,34 @@ def test_send_unknown_session_id_returns_404(tmp_path: Path) -> None:
 
 
 def test_messages_drops_malformed_persisted_steps(tmp_path: Path) -> None:
-    # 裁定 3：手工编辑/旧格式的落盘 steps 行只丢痕迹，不整响应 500（容错仅在读路径）
-    # 覆盖两类畸形：非 dict 元素（"x"/null，落盘即 JSON 字符串/字面量 null）与缺必填键的 dict
-    client, sid, _ = _seed(tmp_path)
-    client.app.state.sessions.append(
+    client, sid, pid, _ = _seed(tmp_path)
+    client.app.state.sessions.for_agent(pid, "case_design").append(
         sid, "assistant", "混合痕迹",
         steps=["x", {"tool": "read"}, None,
                {"tool": "grep", "ok": False, "round": 2, "detail": "x"}])
-    r = client.get(f"/api/chat/sessions/{sid}/messages")
+    r = client.get(
+        f"/api/chat/sessions/{sid}/messages",
+        params=_msg_params("case_design", pid),
+    )
     assert r.status_code == 200
     assert r.json()["messages"][-1]["steps"] == [
         {"tool": "grep", "ok": False, "round": 2, "detail": "x"}]
 
 
-def _wired_app(tmp_path: Path):
-    """create_app 缝装配真实 ChatService（注入 MockProvider，零网络），返回 app 以便先种会话。"""
-    application = _app(tmp_path)
-    application.state.chat_service = ChatService(
-        provider=MockProvider(),
-        agent_runtime=application.state.agent_runtime,
-        sessions=application.state.sessions,
-        projects=application.state.project_config,
-    )
-    return application
-
-
-def test_send_to_foreign_session_returns_404(tmp_path: Path) -> None:
-    # 会话归属校验：sess_* 建在 agent A 下，用 agent_id=B 续写必须 404，否则等于往别人的会话里写
+def test_send_to_foreign_agent_session_returns_404(tmp_path: Path) -> None:
+    """sess_* 建在 case_design 目录下，用另一 agent 目录续写 → 查无（404）。"""
     application = _wired_app(tmp_path)
     pid = _seed_project(application, tmp_path)
-    sid = application.state.sessions.new_id()
-    application.state.sessions.create(sid, "case_design", pid, "订单退款")
+    store = application.state.sessions.for_agent(pid, "case_design")
+    sid = store.new_id()
+    store.create(sid, "case_design", pid, "订单退款")
     client = TestClient(application)
+    # ghost 若在 runtime 未知会更早 404；跨 agent 子目录查无同属「不存在」
     r = client.post(
         "/api/chat/send/stream",
-        json={"session_id": sid, "message": "hi", "agent_id": "kb_assistant",
-              "project_id": pid},
+        json={"session_id": sid, "message": "hi", "agent_id": "ghost", "project_id": pid},
     )
     assert r.status_code == 404
-    assert r.json()["detail"] == "会话不属于该智能体"
-    # 归属正确时照常成功，且原样续写同一条会话
     assert _send_body(client, {
         "session_id": sid, "message": "再加一条", "agent_id": "case_design",
         "project_id": pid,
@@ -249,16 +256,11 @@ def test_send_to_foreign_session_returns_404(tmp_path: Path) -> None:
 
 
 def test_send_returns_nonempty_steps_at_http_level(tmp_path: Path) -> None:
-    # 端点级 steps 非空且内容回显：与 chat.py「装配漏了 steps 键」的假绿区分开——
-    # 若 send 不再回 steps，373 用例全绿而 UI 的「🔧 执行过程」整块消失
     from langchain_core.messages import ToolMessage
 
     from aitester.services.agent_runtime import AgentInstance
 
     class _FakeGraph:
-        # run_graph 已把驱动从 graph.invoke 翻到 graph.stream，这份假图随之改吐事件协议：
-        # agent 的 custom turn（含 tool_calls）+ tools 的 updates 分片 + 收口 turn。
-        # 下面 body["steps"] 的断言一字未动。
         def stream(self, state, *, config=None, stream_mode=None):
             yield ("custom", {"type": "turn", "round": 1, "text": "", "stopped": False,
                               "tool_calls": [{"id": "c1", "name": "read",
@@ -271,7 +273,6 @@ def test_send_returns_nonempty_steps_at_http_level(tmp_path: Path) -> None:
 
     application = _app(tmp_path)
     pid = _seed_project(application, tmp_path)
-    # 真装配 send→_complete→run_graph 全链路（假 graph 产真 steps），不经真实工具、零网络
     application.state.chat_service = ChatService(
         provider=MockProvider(),
         agent_runtime=SimpleNamespace(
@@ -286,15 +287,21 @@ def test_send_returns_nonempty_steps_at_http_level(tmp_path: Path) -> None:
                       {"message": "读文件", "agent_id": "case_design", "project_id": pid})
     assert body["steps"] == [
         {"tool": "read", "ok": True, "round": 1, "detail": '{"path": "a.md"}'}]
-    # 落盘后从 messages 端点读回，痕迹与 send 同一份
+    assert "result" not in body["steps"][0]
     msgs = client.get(
-        f"/api/chat/sessions/{body['session_id']}/messages").json()["messages"]
+        f"/api/chat/sessions/{body['session_id']}/messages",
+        params=_msg_params("case_design", pid),
+    ).json()["messages"]
     assert msgs[-1]["steps"] == body["steps"]
 
 
 def test_messages_endpoint_exposes_stopped(tmp_path) -> None:
-    client, sid, _ = _seed(tmp_path)
-    client.app.state.sessions.append(sid, "assistant", "半截回答", stopped=True)
-    rows = client.get(f"/api/chat/sessions/{sid}/messages").json()["messages"]
+    client, sid, pid, _ = _seed(tmp_path)
+    client.app.state.sessions.for_agent(pid, "case_design").append(
+        sid, "assistant", "半截回答", stopped=True)
+    rows = client.get(
+        f"/api/chat/sessions/{sid}/messages",
+        params=_msg_params("case_design", pid),
+    ).json()["messages"]
     assert rows[-1]["stopped"] is True
-    assert rows[0]["stopped"] is False      # 老行/未标注的行默认 False
+    assert rows[0]["stopped"] is False

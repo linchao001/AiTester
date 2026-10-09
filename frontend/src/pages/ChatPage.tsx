@@ -203,7 +203,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     setActiveId(id);
     if (!id) { setMessages([]); setCtxSnap(null); return; }
     try {
-      const j = await getSessionMessages(id);
+      const j = await getSessionMessages(id, agentId, projectId);
       if (seq !== openSeq.current) return;
       setMessages(j.messages);
       // meter 跟的是「这条会话最后一次的读数」：倒找第一条 assistant 行，老 jsonl 行没有该节 ⇒ 「—」
@@ -220,7 +220,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     } finally {
       if (seq === openSeq.current) loadingRef.current = false;
     }
-  }, [toast]);
+  }, [agentId, projectId, toast]);
 
   const guard = useCallback((): boolean => {
     // 无 health 即 /api/health 还没成功过（App 会重试到成功），此时发送必失败，先给可见提示
@@ -431,7 +431,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     if (!window.confirm(`删除会话「${row?.title ?? id}」？删除后不可恢复。`)) return;
     mutRef.current = true;                 // 两次 await 期间锁住切智能体/选中：尾部会自动开会话，交叉了就把正文开在别的智能体的会话上
     try {
-      await deleteChatSession(id);
+      await deleteChatSession(id, agentId, projectId);
       // 先就地摘掉这一行：整表刷新失败时侧栏也不会留着一条已删的会话
       setSessions((prev) => prev.filter((s) => s.id !== id));
       toast(`已删除会话「${row?.title ?? id}」`);
@@ -443,7 +443,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     } finally {
       mutRef.current = false;
     }
-  }, [activeId, guard, reloadPending, reloadSessions, sessions, openSession, toast]);
+  }, [activeId, agentId, guard, projectId, reloadPending, reloadSessions, sessions, openSession, toast]);
 
   const copy = useCallback(async (text: string) => {
     try {

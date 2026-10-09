@@ -46,7 +46,6 @@ def _app(tmp_path: Path, provider=None):
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
-        sessions_dir=tmp_path / "sessions",
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
         kb_manager=_NoopKbManager(),
     )
@@ -93,7 +92,7 @@ def test_stream_event_sequence_and_single_terminal(tmp_path: Path) -> None:
     assert done["steps"] == [] and done["stopped"] is False
     assert done["title"] == "生成用例"
     sid = done["session_id"]
-    rows = client.get(f"/api/chat/sessions/{sid}/messages").json()["messages"]
+    rows = client.get(f"/api/chat/sessions/{sid}/messages", params={"agent_id": "case_design", "project_id": pid}).json()["messages"]
     assert [r["role"] for r in rows] == ["user", "assistant"]
 
 
@@ -309,7 +308,8 @@ def test_client_abort_lands_truncated_row_and_frees_the_run(tmp_path: Path, monk
         rows: list[dict] = []
         for _ in range(60):                 # 断开方要到停笔点才收摊：给它 3 秒，够慢机
             rows = client.get(
-                f"/api/chat/sessions/{found.group(1).decode()}/messages"
+                f"/api/chat/sessions/{found.group(1).decode()}/messages",
+                params={"agent_id": "case_design", "project_id": pid},
             ).json().get("messages", [])
             if len(rows) >= 2:
                 break

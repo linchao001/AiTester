@@ -492,13 +492,32 @@ export function getSessions(agentId: string, projectId: string): Promise<{ sessi
     `${sessionsApi()}?${new URLSearchParams({ agent_id: agentId, project_id: projectId }).toString()}`);
 }
 
-export function getSessionMessages(sessionId: string): Promise<{ session_id: string; messages: ChatMessage[] }> {
-  return apiFetch<{ session_id: string; messages: ChatMessage[] }>(sessionsApi(`/${sessionId}/messages`));
+export function getSessionMessages(
+  sessionId: string,
+  agentId: string,
+  projectId: string,
+): Promise<{ session_id: string; messages: ChatMessage[] }> {
+  return apiFetch<{ session_id: string; messages: ChatMessage[] }>(
+    `${sessionsApi(`/${sessionId}/messages`)}?${new URLSearchParams({
+      agent_id: agentId,
+      project_id: projectId,
+    }).toString()}`,
+  );
 }
 
 /** 204 由 apiFetch 短路成 null（与 deleteProject 同款），失败时抛 ApiError。 */
-export function deleteChatSession(sessionId: string): Promise<null> {
-  return apiFetch<null>(sessionsApi(`/${sessionId}`), { method: "DELETE" });
+export function deleteChatSession(
+  sessionId: string,
+  agentId: string,
+  projectId: string,
+): Promise<null> {
+  return apiFetch<null>(
+    `${sessionsApi(`/${sessionId}`)}?${new URLSearchParams({
+      agent_id: agentId,
+      project_id: projectId,
+    }).toString()}`,
+    { method: "DELETE" },
+  );
 }
 
 export interface Project {
