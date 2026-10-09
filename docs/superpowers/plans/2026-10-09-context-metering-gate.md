@@ -1721,7 +1721,7 @@ cd frontend && npm run build
 
 Expected: 全绿（基线 888 → 本片累计 **+43 左右**：C1 7 / C2 5 / C3 12 / C4 7 / C5 7 / C6 3 / C7 2，末读数以实跑为准，只增不减）；前端 build 0 error。把两个读数原样写进本计划末尾「执行状态」段。
 
-- [ ] **Step 4: 提交 + 推送**
+- [x] **Step 4: 提交 + 推送**
 
 ```bash
 git add backend/tests/test_context_e2e.py docs/superpowers/plans/2026-10-09-context-metering-gate.md docs/superpowers/specs/2026-10-09-context-management-design.md
@@ -1838,4 +1838,5 @@ git push origin master:main
   - **四条新测试各钉什么**：`test_gate_and_meter_work_in_one_turn`（闸与尺同回合：`truncated` 恰一条 `read`、`kept+dropped==original`，done 帧读数与磁盘行**同一份**快照）、`test_case_design_graph_and_main_loop_share_the_ruler`（CM-5：两张图接在同一本累加件上，`rounds` 2→4）、`test_sse_done_frame_carries_the_snapshot`（追加 A：SSE 帧载荷 `data["context"]` 非空**且**与磁盘行等值）、`test_disconnect_row_carries_the_snapshot`（追加 B：GeneratorExit 收尾行带八字段快照，且 `"done" not in seen`）。
   - **变异自跑（三次，每次都还原并复绿）**：① 把 case_design 那张图换成未包 `MeteredProvider` 的 provider ⇒ `assert 2 == (2 + 2)` **红**（追加 C.2 要求的 CM-5 差分证明）；② 摘掉 `interaction/router.py:166` 那行 `"context": event["context"]` ⇒ `KeyError: 'context'` **红**（追加 A 的正向钉不是装饰）；③ `services/chat.py:250` 落盘的 `context=snapshot` 改 `context=None` ⇒ 第一/三/四条 **3 failed**、第二条（不碰落盘）仍绿——四处读数各归其位。还原后 `git diff -- backend/src` 为空、四条复绿。
   - **spec 回填**：新增文末「## 实施澄清（第一片，C7 登记）」一节，登记 P-1（账本 `ledger.json` 不另抄每回合读数摘要，收窄 §5 第 6 条后半句，代价与第二片归属照实）；§3.8 那条 C6 澄清**未重抄、未改写**，新节用一行指向它。
-  - **Step 4（提交与推送）**：见下一条（提交号只能事后登记，故本行由收口的第二笔文档提交补上）。
+  - **Step 4（提交与推送）**：测试与两份文档回填 = `8e5f7a1`（3 files，+169/-2，`backend/tests/test_context_e2e.py` 新建），`git push origin master:main` ⇒ `ea091a9..8e5f7a1  main` 成功；本行与本节由收口的第二笔文档提交落地（提交号只能事后登记，不留自指的假哈希）。
+  - **照实登记的三处欠账（C7 未越权处理）**：① C1–C6 的 step 框**仍是全未勾**——那是各任务自己的回填债，C7 不替别人作保，勾了就是二手见证；② Step 3 那句「Expected 888 → 本片累计 +43（C7 +2）」是计划期估值，实际每段读数只在控制方 ledger（`.superpowers/sdd/2026-10-09-context-metering-gate/progress.md`）与本节里生效，C7 因追加 A/B 是 +4 不是 +2；③ 本文与 spec 的 `file:line` 坐标写到 `9010294`/C5 时代码位，本片未逐条复核，行号会漂，以符号名为准。
