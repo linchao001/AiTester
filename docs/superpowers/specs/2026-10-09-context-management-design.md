@@ -226,3 +226,56 @@ def cap_content(text: str, *, tool: str, usage: ContextUsage | None) -> str:
   - **为什么不在本片做**：账本是**断点续跑的真相源**，往里加一节就要动 `Ledger` 的窄背填与版本判定——正是第五片（T27–T34）刚收口的那族风险；收益只有长循环自查方便。⇒ 与 §5 第 4 条、§7 的第二片边界同批做。
   - **代价（照实，不许粉）**：长循环跨多次驱动激活时，**账本自身答不出「上一次激活时占用多少」**；只能从该会话行的 `context` 反查，而那是人审面、不是模型自查面。第二片若要给驱动自查用，应与「工具结果落盘 + 按需回喂」一起设计（那才是长循环真正缺的东西），别单点往账本加节。
   - **归属**：第二片。
+
+---
+
+## 走查一（第一片）
+
+**环境与前置**（2026-10-09）：隔离实例 8014（`uvicorn aitester.main:app --port 8014`，独立日志），前端另起 `vite --port 5199` + `VITE_PROXY_TARGET=http://127.0.0.1:8014`；用户端口 8000/5173 与 `scripts/dev.ps1` 全程未动（实测两者全程拒连）。免费预检四条全过（`pytest -q` 949 passed、`git status` 只剩 4 个约定未跟踪、8014 空闲、导入不炸）；`AITESTER_TOKEN_WARM` 未关（真机截断读数 `original=20829` 即词表口径的旁证）。走查提示只写业务事实，判据一词未进提示。
+
+### 判据① 真值到位——**达成**（干净回合）；另测出「被中止回合恒报估算」的机制
+
+- **干净回合（1 轮、无工具）**：`occupancy_source = "actual"`，`window 1048576 / rounds 1 / peak 1675 / spent_input 1675 / spent_output 83 / truncated [] / error null`。`peak` 与 `spent_input` 即 DeepSeek 回传的 `usage.prompt_tokens`——本链路 `meter.input_tokens_of` 只从 `usage_metadata` 取数，没有第二个来源。
+- **含工具回合（2 轮）**：`actual`，`peak 9881`（第二轮真实 prompt tokens）。
+- **端点确实回 usage（直连实测）**：`openai` 客户端**不带 `stream_options`** 流式请求，87 块、末块带 `usage`（prompt 32 / completion 86）⇒ DeepSeek 不请求也回，`stream_usage` 那面旗不是必要条件。
+- **真图三处同源**：done 帧快照与会话 `.jsonl` 那行逐字相同（离线侧 `test_context_e2e.py` 两条钉死；真机侧同一快照对象经 `_persist` 双出口）。
+- **被中止回合为什么恒报 `estimated`（离线复现 + 真机同构）**：同一本账跑 4 轮、第 4 轮消费到第 1 块即停（照 `_stream_round` 的取消口径）⇒ `peak 1873 / source estimated / spent_out 60`：`spent_out>0` 证明真值确实到过账，但**被中止那一轮**依 R-C1 不许写估算（`metered.py` 的 `finally` 只在流跑完时 `note_response(real…)`）；一回合内消息只增不减 ⇒ **末轮估算必经是 peak**，整回合遂报 `estimated`。真机同构：判据① 首跑（事故见下）`rounds 83 / peak 129220(估) / spent_input 4181939 / spent_output 60004 / truncated []`——6.0 万输出真值的存在本身就证明流式 usage 在真机通路上是通的。（帧 `round` 号到 84、账 `rounds=83`：两者口径不同，`_round_no` = 1 + ToolMessage 条数，账 = provider 请求次数，差 1 非缺陷。）
+- **并发子智能体共账本时样本会错位（离线复现，登记呈报）**：`note_response` 只替换 `[-1]`，两个并发回合交错时后到的真值会盖住别人的样本（实测：父 900 估算存活、子 5000 估算被父真值 1500 顶掉）。读数仍在、归属已错。⇒ 呈报项。
+
+### 判据② 闸门真管——**达成**
+
+- 业务话术让 `read` 读约 130 KB 的 KB 文件：产物经字节地板后 `original 20829`（估算）> `cap 12000` ⇒ 截断一次：`truncated [{"tool":"read","original":20829,"kept":9556,"dropped":11273}]`，恒等式 `9556+11273=20829` 成立、`dropped>0`。
+- **模型没有假称拿到全文**：它自报「本次读取约 2 万 token，已截断…后半部分还有更多问答未展示」。
+- `detail` 未被截坏：`steps[0].detail = {"file_path": "knowledge/_gold_qa/bz_qa.json"}`（参数摘要；产物正文从不进步序帧，§3.8 澄清）。
+- **界面三个数**：口径在 composer tooltip（§3.8 澄清）；真机 DOM 实测 tooltip 逐字 `上下文占用 129220 / 1M tokens（估算·本回合 83 次调用·累计输入 4181939、输出 60004）`（该会话无截断；截断串渲染由 `test_frontend_context_display.py` 反向钉）。
+- **`TOOL_OUTPUT_TOKEN_CAP` 默认 12000 的实测分布（P-5 校准依据）**：① 真机截断发生在 20829→9556（省 54%），截断后那一轮真值 prompt = 9881；② 被中止的长循环 268 个 `call` 帧、`truncated` 为空——常规 `read`/`grep` 产物够不到 12000。**读数口径**：12000 是「131072 窗口一成」的固定常数，而本机配置窗 1048576 ⇒ 相对窗口偏紧（约 1.1%），对「别把上下文吃爆」仍成立。本片不动常数（CM-2 只动工具产物），窗口相对化归第二片。
+
+### 判据③ 呈递诚实（到线只报不拦）——**达成**
+
+- 同会话连发 5 轮（含工具轮）：**5/5 全 `actual`**，`rounds` 1–2、`peak` 1675 → 9881 → 3163 → 2627 → 3035，**没有任何一轮被拦下**（无 `error`、无拒绝文案、`stopped` 全 false）。每回合一本账，peak 随该回合的轮次上升；跨回合不累计是 CM-6 的口径（长循环内的上升由被中止那次 `rounds 83 / peak 129220` 另证）。界面在 12% 占用时照常可发——本片除工具产物闸外**不存在拦回合的代码路径**，与 CM-2 一致。
+- **前端读数与实际来源相符（真机 DOM）**：estimated 会话渲染 `class="ctx-meter est"`、`≈12%`、`bar width:12%`，tooltip 逐字含「估算」；新会话无读数显示「—」；actual 分支由 C6 反向钉逐字节钉死（真机未再驱动浏览器看 actual 分支，登记为限制）。
+- **CM-3 换真值的收益（同一回合三种口径对比）**：改造前前端假尺（`estTokens` = CJK 数 + 非 CJK/4，只数可见文本、看不见工具产物）算出 **447**；后端词表估算（系统提示 + 用户话）**460**；同回合 DeepSeek 真值 **1754**（第一轮）与 **9881**（第二轮，含 20829→9556 的截断产物）。⇒ 差距不在分词（447 vs 460），在**数不到的东西**：工具产物旧口径贡献 0，真值里它是大头。
+
+### 判据④ 零假绿——**达成**（原定手法造不出这一档，改用等价档位）
+
+- 原定「临时关 `stream_usage`」**造不出不返 usage 的档**：实测（直连、无 `stream_options`）DeepSeek 仍回 usage；真机把 `model_config.py` 暂改 `stream_usage=False` 重启后跑一轮也仍是 `actual`（peak 1675 / out 47）⇒ 立即还原（`git diff` 0 字节）。
+- 改用**真正不返 usage 的档位**：本机 OpenAI 兼容流式端点（逐块无 `usage`），被检对象全是生产件（真 `ChatOpenAI`、真 HTTP、真 `MeteredProvider`）。① 直连 provider：`source=estimated`、`spent_output=0`、`error=None`；② 再过真图（`build_agent_graph` + 真 `read` 工具，2 轮）：`source=estimated`、`rounds=2`、`truncated=0`、末帧 `finish`。**零假绿成立**：没有真值就停在估算，不冒领。
+- 「落盘行不得出现 actual」：平台智能体回合不落盘（裁定 7），真机侧没有该行可查；等价保证由离线钉给出——帧与行是**同一份快照**（`test_sse_done_frame_carries_the_snapshot` 先钉非空再钉等值；`test_gate_and_meter_work_in_one_turn` 钉行 == 帧），帧为 `estimated` 则行不可能是 `actual`。
+
+### 成本读数（按裁定只报数不设线）
+
+- 判据①②③④ 正向部分：**6 个 `call` 帧**、6 次 LLM 请求，输入 29 938 tokens、输出 2 631 tokens（j1 1 轮 / j2 2 轮 / j3 三期各 2 轮 / j4 1 轮）。
+- **判据① 事故（照实登记，计划外支出）**：首跑把提示发给了 `case_design` 智能体 ⇒ 第五片的断点续跑语义启动长循环（账 83 轮、268 个 `call` 帧、输入 4 181 939、输出 60 004），被 `/chat/stop` 中止；`git status` 干净、产出只落在探针项目目录内。此事故同时产出了上文中「被中止回合恒报估算」的真机读数。
+- 直连探针两次（usage 在不在、不请求是否也回）：输入合计 67、输出 107。
+
+### 清场与基线
+
+- 只杀自己起的实例：8014 两代 PID 25720/33080 与 vite 5199 的 35292 逐个核对后杀；用户端口 8000/5173 与 `scripts/dev.ps1` 全程未动（端口实测始终为空）。
+- 删探针项目「读数走查」`proj_96006d2f`（连带其会话 `sess_92615660`）后：`projects.json = 9116cdf85e322fb1f74ef692c0336921`、`sessions/index.json = bd78c88524cff1a5f345bb9c27ec8451`，**与走查前基线逐字节相同**。
+- 真实 KB：递归文件计数 **1802**（85 个目录含根）、**无任何文件 mtime ≥ 今天**（最新 2026-10-03 21:07）、`git status` 干净 ⇒ 本片对 KB **零文件级改动**。计划里记的 1803 不重现（差 1，无文件级证据可归因；今天只有 `business/{chains,stories,test_points}`（三目录现均 0 文件）与 `.git` 的**目录级** mtime 变化）⇒ 登记呈报。
+
+### 呈报项（走查中发现、本片不修，等点头才开片）
+
+1. **被中止/中断的那一轮恒报估算，且它必经是峰值** ⇒ 单调增长的长会话（恰是最需要读数的场景）在「用户按过停止」的回合里整回合只有 `estimated`。机制 = R-C1 的「跑完才有资格写真值」+ 消息只增不减。修法方向（第二片）：给被中止轮一个显式标注（如 `aborted_rounds: n`），或让快照区分「峰值来源轮是否中止」。
+2. **并发子智能体共用一本账时样本错位**（`note_response` 只换 `[-1]`）⇒ 读数归属错。修法方向：按 `call_id`/线程配对样本，或给 `ContextUsage` 加锁 + 独立槽位。
+3. **KB 文件计数 1802 vs 计划所记 1803**（详见「清场与基线」）。

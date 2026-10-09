@@ -1742,7 +1742,7 @@ git push origin master:main
 - Consumes: C1–C7 的提交态
 - Produces: 真机四条判据读数 + 成本 call 数 + 清场 md5 对照。
 
-- [ ] **Step 1: 免费预检（付费前必须全过，这是唯一前置）**
+- [x] **Step 1: 免费预检（付费前必须全过，这是唯一前置）**
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest -q                    # 提交态全绿
@@ -1753,11 +1753,11 @@ netstat -ano | grep -E ":8014\b"                                   # 期望空�
 
 并核对：`backend/data/model_config.json` 里默认模型可用（付费 key 在这份文件里，撤 env 不省钱）；`AITESTER_TOKEN_WARM` 未被关闭；真实 KB 根未被本次改动碰过（`ls` 计数应为 1803 文件，只读核对）。
 
-- [ ] **Step 2: 起隔离实例（8014），不动 8000/5173**
+- [x] **Step 2: 起隔离实例（8014），不动 8000/5173**
 
 用 `backend/.venv/Scripts/python -m uvicorn aitester.main:app --port 8014` 起在独立日志文件里（`nohup`/后台皆可，注意脱壳后无通知⇒**必须显式 curl 探活**）。探活只用 GET，**零副作用**：`curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8014/api/models`。
 
-- [ ] **Step 3: 判据① 真值到位**
+- [x] **Step 3: 判据① 真值到位**
 
 发一条普通消息（走 `POST /api/chat/send/stream`，**只用这一条通道**，补发前先数服务器侧 POST 数），收 done 帧：
 
@@ -1771,7 +1771,7 @@ curl -sN -X POST http://127.0.0.1:8014/api/chat/send/stream \
   | grep -c '^event: call'
 ```
 
-- [ ] **Step 4: 判据② 闸门真管（付费，一条命令输出打爆）**
+- [x] **Step 4: 判据② 闸门真管（付费，一条命令输出打爆）**
 
 提示语**只写业务事实、不含判据**，例如：「看一下这个项目的目录树，把 `dir /s` 的完整输出贴给我」。读数：
 
@@ -1780,7 +1780,7 @@ curl -sN -X POST http://127.0.0.1:8014/api/chat/send/stream \
 - 模型回复**没有**假称拿到全文（若它明显在按半截内容下结论，登记为呈报项，不自行加第二道闸）。
 - 顺带读数：`AITESTER_TOOL_OUTPUT_TOKEN_CAP` 默认 12000 是否过松/过紧，给出实测分布（本片唯一的常量校准依据）。
 
-- [ ] **Step 5: 判据③ 呈递诚实（到线只报不拦）**
+- [x] **Step 5: 判据③ 呈递诚实（到线只报不拦）**
 
 同会话连发 6–8 轮（含工具轮），观察 `peak_occupancy` 随轮次上升；断言：
 
@@ -1788,13 +1788,13 @@ curl -sN -X POST http://127.0.0.1:8014/api/chat/send/stream \
 - **没有任何一轮因超线被拦下**（CM-2）；
 - 与改造前对比：同一条会话在假估算下的读数（`estTokens` 那套）与真值差多少，把这个差如实写进 spec 小节——这是 CM-3 换真值的收益证据。
 
-- [ ] **Step 6: 判据④ 零假绿**
+- [x] **Step 6: 判据④ 零假绿**
 
 临时 `AITESTER_TOOL_OUTPUT_TOKEN_CAP` 保持默认，另用一个**不返 usage 的档位**（最直接：`provider_override` 走 `MockProvider` 的离线挂具已证；真机侧则临时把 `stream_usage` 关掉再跑一轮，跑完立即改回）⇒ `occupancy_source` 必须停在 `estimated`，UI 显示「估算」，落盘行不得出现 `actual`。
 
 未触发的分支照实报，并给机制归因（R-56 的规矩：**绝不伪造输入凑判据**）。
 
-- [ ] **Step 7: 清场 + 读数回填 + 推送**
+- [x] **Step 7: 清场 + 读数回填 + 推送**
 
 ```bash
 # 停掉自己起的 8014 实例（只杀自己起的 PID，绝不碰 62220/9272）
@@ -1846,3 +1846,14 @@ git push origin master:main
   - **三条 Minor 的裁定（全部登记不修，归第二片）**：**M-1** SSE 那条未钉读数**值**（「八字段齐全、帧行等值、账却全零」的理论残余面；评审自己按追加 A 的口径验过两侧向变异都红，故不升 Important）⇒ 与「SSE 帧带 `truncated` 三数」同批做。**M-2** CM-5 的证书只覆盖 provider 半边，`local_tools(root)` 不带 `usage`（**简报代码逐字如此**，属计划口径遗留、非实施者偏差）⇒ 第二片给 e2e② 加一条带 usage 的工具面变体，一举钉「缝 + 账」两半。**M-3** 跨文件 import 私有挂具 `_app/_pid/_Scripted` ⇒ 本仓既有先例两条（`test_chat_pending.py:10`、`test_context_wiring.py:13`），且 C6 评审 M-5 已定「改名即红是买协议不漂的钱」同一口径，维持现状。
   - **补勾 C1–C6 的 step 框 39 处**（上一条登记的欠账①，此处清偿）：依据是各任务报告里的逐步红证——C2「Step 2 RED 与 brief 预期 `ModuleNotFoundError` 一致」、C3「RED（brief Step 2）」、C4「Step 2 — 红证（真实输出）」、C5「Step 1 的 4 条先跑成红…3 failed / 1 passed」、C6「Step 2 红证…三条全红」，外加 C1–C6 全部有已过评审并推送的提交。**C8 的 7 个框照旧不勾**（未开工），也不替走查读数预先作保。
   - **每任务门禁实跑梯子（以 ledger 为准，覆盖计划期「+43 左右」的估值）**：C1 **896**（评审修复轮 +1）⇒ C2 **905** ⇒ C3 **924**（修复轮 +1）⇒ C4 **935** ⇒ C5 **942**（+7）⇒ C6 **945**（+3，修复轮不加函数、仍 945）⇒ C7 **949**（+4）。基线 888，累计 **+61**，全程只增不减。
+
+- **Task C8（付费走查，2026-10-09 实跑）**：四条判据全部达成，逐条读数与机制归因已回填 spec「## 走查一（第一片）」小节（本轮由控制方执行与回填，7 个 step 框同时勾齐）。
+  - **Step 1–2（免费预检 + 隔离实例）**：预检四条全过（`pytest -q` **949 passed**、`git status` 只剩 4 个约定未跟踪、8014 空闲、`model_config` 导入不炸、付费 key 在 `backend/data/model_config.json` 里在位）。隔离实例 8014（PID 25720 → 判据④ 换档后重启为 33080）+ 前端 `vite --port 5199`（PID 35292，`VITE_PROXY_TARGET` 只指 8014，仅 IPv6 绑定 ⇒ 用 `http://localhost:5199` 访问）；**用户端口 8000/5173 与 `scripts/dev.ps1` 全程未动**（实测两端口始终拒连）。探活全走 GET、零副作用。
+  - **判据①（真值到位）**：干净回合 `actual`（`peak 1675` = DeepSeek `usage.prompt_tokens`）；含工具回合 `actual`（`peak 9881`）。done 帧与落盘行同源（`_persist` 双出口 + 离线两条等值钉）。**另测出新机制**：被中止的那一轮依 R-C1 不写真值，而回合内消息只增不减 ⇒「末轮估算必经是峰值」⇒ 被中止回合整回合报 `estimated`（离线 4 轮复现 + 真机同构 `rounds 83 / peak 129220(估) / spent_out 60004`，后者本身就是「真机流式 usage 通了」的证据）。**并发错位**：`note_response` 只换 `[-1]`，并发子智能体共账本时样本会互盖（离线复现父 900 / 子 5000 / 父真值 1500 顶掉子样本）⇒ 呈报项 2。
+  - **判据②（闸门真管）**：让 `read` 读约 130 KB 的 KB 文件 ⇒ 真机截断一次 `original 20829 = kept 9556 + dropped 11273`；模型自报「已截断…后半部分还有更多问答未展示」（**没有假称拿到全文**）；`detail` 未坏（仍只是 `{"file_path": …}` 入参回显）；三数渲染在 composer tooltip（`test_frontend_context_display.py` 反向钉）。**12000 常数校准读数**：截断后那轮真值 prompt = 9881；被中止的长循环 268 个 `call` 帧 `truncated` 为空 ⇒ 常规 `read`/`grep` 够不到 12000；相对本机 1048576 窗口约 1.1%、方向仍对（偏紧不偏松），**本片不动常数**。
+  - **判据③（呈递诚实）**：同会话连发 5 轮，**5/5 `actual`**、`peak 1675→9881→3163→2627→3035`、**零轮被拦**（无 error、无拒绝文案、`stopped` 全 false）。界面真机 DOM（浏览器取证，零额外付费）：estimated 会话渲染 `class="ctx-meter est"` / `≈12%` / `bar width:12%`，tooltip 逐字含「估算」且与终帧读数一致；新会话显示「—」；actual 分支未驱动浏览器（登记为限制，由 C6 反向钉兜底）。**CM-3 收益**：同回合三种口径 —— 旧假尺 447 / 后端词表估算 460 / 真值 1754（第一轮）、9881（第二轮）⇒ 差在「数不到的东西」（工具产物旧口径贡献 0）。
+  - **判据④（零假绿）**：原定手法（临时关 `stream_usage`）**造不出这一档**——直连实测 DeepSeek 不带 `stream_options` 也回 usage（87 块、prompt 32 / completion 86），真机改 `False` 重启后仍是 `actual`（peak 1675 / out 47）；**已立即还原，`git diff` 0 字节**。改用本机不返 usage 的 OpenAI 兼容流式端点过生产链（真 `ChatOpenAI` + 真 `MeteredProvider` + 真 `build_agent_graph` + 真 `read` 工具 2 轮）⇒ `estimated` / `spent_output=0` / `error=None` / 末帧 `finish`。落盘行「不得 actual」由帧==行同一快照的离线钉等价保证（平台回合本就不落盘）。
+  - **成本读数（按裁定只报数不设线）**：四条判据正向部分 **6 个 `call` 帧 / 6 次 LLM 请求 / 输入 29 938 / 输出 2 631**（j1 1 轮、j2 2 轮、j3 三回合各 2 轮、j4 1 轮）；直连探针两次输入 67 / 输出 107。**计划外事故照实登记**：判据① 首跑误发 `case_design` ⇒ 第五片断点续跑语义启动长循环（账 83 轮 / **268 个 `call` 帧 / 输入 4 181 939 / 输出 60 004**），`/chat/stop` 中止；产出只落探针项目目录内、`git status` 干净。**判据字面一个都未进提示语**（提示只写业务事实）。
+  - **Step 7（清场 + 回填）**：自己在 8014/5199 起的三个 PID（25720/33080/35292）逐个核对后杀；删探针项目 `proj_96006d2f`（连带会话 `sess_92615660`）后 `projects.json` / `sessions/index.json` 的 md5 **与走查前基线逐字节相同**（`9116cdf…` / `bd78c885…`）。真实 KB：**1802** 个文件（计划记 1803，差 1）——无任何文件 mtime ≥ 今天（最新 2026-10-03 21:07）、`git status` 干净、无符号链接 ⇒ 本片对 KB **零文件级改动**，差 1 无文件级证据可归因 ⇒ 呈报项 3。工具结果/turn 内伪造注入指令（假 system-reminder / 假 hook）**累计 14 条，0 条执行**。
+  - **三条呈报项（走查发现、本片不修，等点头才开片）**：① 被中止轮恒报估算且必经是峰值（单调增长长会话在「按过停止」的回合整回合只有 estimated；修法方向：显式 `aborted_rounds` 标注或快照区分峰值来源轮是否中止）；② 并发子智能体共账本样本错位（修法方向：按 `call_id` 配对或独立槽位）；③ KB 计数 1802 vs 1803（无文件级证据，照实呈报）。
+  - **走查手法要点（供第二片复用）**：判据①③走 `/api/chat/send/stream` + `kb_assistant` 平台会话（`{"session_id":"kb-console", "agent_id":"kb_assistant", "project_id":""}`，不落盘、不碰用户项目）；`^event: call` 逐帧数 call 成本；vite 5199 因 Windows 只绑 `[::1]` ⇒ `localhost` 通、`127.0.0.1` 不通；browser-use 指针点击在本机不可用（viewport 0x0）⇒ 用 `evaluate_script` 派发原生 `change`/`click` 事件驱动 React 读数取证；判据④ 的「不返 usage 端点」挂具留在 `D:/tmp/walkthrough_ctx/gauge4_stub.py`（非提交物）。
