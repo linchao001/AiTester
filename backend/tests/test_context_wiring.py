@@ -18,7 +18,8 @@ from aitester.adapters.tools import build_default_registry
 from aitester.context.usage import ContextUsage
 from aitester.memory import FileMemoryStore
 from aitester.services import ChatService
-from aitester.services.session_store import ChatMessage, SessionStore
+from aitester.services.session_locator import SessionLocator
+from aitester.services.session_store import ChatMessage, SessionStore, open_session_store
 
 
 def test_registry_injects_one_ledger_into_every_tool():
@@ -71,16 +72,16 @@ def test_agent_instance_carries_one_ledger_for_provider_and_tools(tmp_path):
 
 def test_done_frame_context_matches_the_persisted_line(tmp_path, project):
     """终帧与落盘必须同源同一份快照——两处分算就是「门上的话会说谎」同族。"""
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
+    svc_proj, pid, root = project
+    loc = SessionLocator(svc_proj)
     svc = ChatService(provider=MockProvider(), agent_runtime=_runtime(tmp_path),
-                      sessions=store, projects=svc_proj)
+                      sessions=loc, projects=svc_proj)
     prepared = svc.prepare("", "生成用例", "case_design", pid)
     done = list(svc.stream_turn(prepared))[-1]
     ctx = done["context"]
     assert ctx["rounds"] >= 1 and ctx["peak_occupancy"] > 0
     assert ctx["occupancy_source"] == "estimated"     # Mock 不返 usage：不许冒领真值
-    assert store.messages(prepared.session_id)[-1].context == ctx
+    assert open_session_store(root, "case_design").messages(prepared.session_id)[-1].context == ctx
 
 
 def test_resume_continues_the_same_ledger(tmp_path, project):
@@ -89,8 +90,8 @@ def test_resume_continues_the_same_ledger(tmp_path, project):
     续跑复用 `entry.prepared`（`services/chat.py:382`），所以 `prepared.usage` 就是那本
     正在被写的账——先读它拿挂起时的回合数，再看续跑后的终帧是否在同一本上往上加。
     """
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
+    svc_proj, pid, root = project
+    loc = SessionLocator(svc_proj)
     svc = ChatService(
         provider=_Scripted([
             AIMessage(content="", tool_calls=[
@@ -99,7 +100,7 @@ def test_resume_continues_the_same_ledger(tmp_path, project):
                  "type": "tool_call"}]),
             AIMessage(content="写好了"),
         ]),
-        agent_runtime=_runtime(tmp_path), sessions=store, projects=svc_proj)
+        agent_runtime=_runtime(tmp_path), sessions=loc, projects=svc_proj)
     prepared = svc.prepare("", "写界外", "case_design", pid, "boundary")
     list(svc.stream_turn(prepared, run_id="ctx_resume"))      # 发到挂起，第一段没有 done 帧
     r1 = prepared.usage.rounds
@@ -109,4 +110,4 @@ def test_resume_continues_the_same_ledger(tmp_path, project):
     done = list(stream)[-1]
     assert done["type"] == "done"
     assert done["context"]["rounds"] > r1                     # 同一本账接着记
-    assert store.messages(prepared.session_id)[-1].context == done["context"]
+    assert open_session_store(root, "case_design").messages(prepared.session_id)[-1].context == done["context"]

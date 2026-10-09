@@ -13,6 +13,8 @@ from aitester.services.agent_runtime import AgentRuntime
 from aitester.services.capability_config import CapabilityConfigService
 from aitester.services.model_config import ModelConfigService
 from aitester.services.project_config import ProjectConfigError, ProjectService
+from aitester.services.session_locator import SessionLocator
+from aitester.services.session_store import SessionStoreError, open_session_store
 from aitester.storage import FileJsonConfigRepository
 from streaming_fakes import CHUNK_CHARS, ChunkedStreamMixin
 
@@ -40,6 +42,10 @@ def project(tmp_path):
     svc = ProjectService(FileJsonConfigRepository(tmp_path / "projects.json"))
     created = svc.create(name="订单系统", desc="", dir_=str(root), agents=["case_design"])
     return svc, created["id"], root
+
+
+def _locator(svc_proj) -> SessionLocator:
+    return SessionLocator(svc_proj)
 
 
 def test_echo_full_chain_trace_and_reply() -> None:
@@ -214,7 +220,6 @@ from types import SimpleNamespace
 from aitester.memory import FileMemoryStore, InMemoryMemoryStore
 from aitester.orchestration.agent_graph import build_agent_graph
 from aitester.services.agent_runtime import AgentInstance
-from aitester.services.session_store import SessionStore, SessionStoreError
 
 
 def _sentinel_runtime():
@@ -259,7 +264,7 @@ class _RecordingService(ChatService):
 def test_send_with_empty_session_id_generates_sess_id(tmp_path, project) -> None:
     svc_proj, pid, _ = project
     svc = _RecordingService(provider=MockProvider(),
-                            sessions=SessionStore(tmp_path / "sessions"),
+                            sessions=_locator(svc_proj),
                             projects=svc_proj)
     svc.agent_runtime = _sentinel_runtime()
     result = svc.send("", "生成登录用例", "case_design", pid)
@@ -269,9 +274,9 @@ def test_send_with_empty_session_id_generates_sess_id(tmp_path, project) -> None
 
 
 def test_failed_send_leaves_no_session_on_disk(tmp_path, project) -> None:
-    svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
-    svc = ChatService(provider=MockProvider(), sessions=store, projects=svc_proj)
+    svc_proj, pid, root = project
+    loc = _locator(svc_proj)
+    svc = ChatService(provider=MockProvider(), sessions=loc, projects=svc_proj)
 
     def _boom(agent_id, session_id, provider_override=None, cwd="."):
         raise ProviderConfigError("未配置模型")
@@ -279,24 +284,26 @@ def test_failed_send_leaves_no_session_on_disk(tmp_path, project) -> None:
     svc.agent_runtime = SimpleNamespace(build=_boom)
     with pytest.raises(ProviderConfigError):
         svc.send("", "hi", "case_design", pid)
-    assert store.list("case_design", pid) == []  # 400 一次不得留 0 消息幽灵会话
+    assert loc.for_agent(pid, "case_design").list("case_design", pid) == []
+    assert not (root / "session_history").exists() or \
+        loc.for_agent(pid, "case_design").list("case_design", pid) == []
 
 
 def test_send_with_temporary_key_stays_in_memory(tmp_path, project) -> None:
     svc_proj, pid, _ = project
-    store = SessionStore(tmp_path / "sessions")
-    svc = _RecordingService(provider=MockProvider(), sessions=store, projects=svc_proj)
+    loc = _locator(svc_proj)
+    svc = _RecordingService(provider=MockProvider(), sessions=loc, projects=svc_proj)
     svc.agent_runtime = _sentinel_runtime()
     result = svc.send("kb-console", "hi", "case_design", pid)  # 非 sess_ 形态：临时键
     assert result["session_id"] == "kb-console"
     assert result["title"] == ""                          # 临时键不在索引里
     assert isinstance(svc.seen_memory[0], InMemoryMemoryStore)
-    assert store.list("case_design", pid) == []
+    assert loc.for_agent(pid, "case_design").list("case_design", pid) == []
 
 
 def test_send_with_unknown_sess_id_raises(tmp_path, project) -> None:
     svc_proj, pid, _ = project
-    svc = ChatService(provider=MockProvider(), sessions=SessionStore(tmp_path / "sessions"),
+    svc = ChatService(provider=MockProvider(), sessions=_locator(svc_proj),
                       projects=svc_proj)
     svc.agent_runtime = _sentinel_runtime()
     with pytest.raises(SessionStoreError) as exc_info:
@@ -304,15 +311,17 @@ def test_send_with_unknown_sess_id_raises(tmp_path, project) -> None:
     assert exc_info.value.detail == "会话不存在或已被删除"
 
 
-def test_platform_agent_never_uses_file_memory(tmp_path) -> None:
-    svc = _RecordingService(provider=MockProvider(), sessions=SessionStore(tmp_path / "sessions"))
+def test_platform_agent_never_uses_file_memory(tmp_path, project) -> None:
+    svc_proj, _pid, _ = project
+    svc = _RecordingService(provider=MockProvider(), sessions=_locator(svc_proj),
+                            projects=svc_proj)
     svc.agent_runtime = _sentinel_runtime()
     svc.send("kb-console", "hi", "kb_assistant")
     assert isinstance(svc.seen_memory[0], InMemoryMemoryStore)
 
 
 def test_history_is_trimmed_to_last_history_max(tmp_path, project) -> None:
-    svc_proj, pid, _ = project
+    svc_proj, pid, root = project
     seen: list[list] = []
 
     class _SpyProvider(ChunkedStreamMixin):
@@ -329,13 +338,13 @@ def test_history_is_trimmed_to_last_history_max(tmp_path, project) -> None:
             seen.append(list(messages))
             return AIMessage(content="[spy] 收到")
 
-    store = SessionStore(tmp_path / "sessions")
+    store = open_session_store(root, "case_design")
     sid = store.new_id()
     store.create(sid, "case_design", pid, "标题")
     for i in range(45):
         store.append(sid, "user", f"问{i}")
         store.append(sid, "assistant", f"答{i}")
-    svc = ChatService(provider=_SpyProvider(), sessions=store, projects=svc_proj)
+    svc = ChatService(provider=_SpyProvider(), sessions=_locator(svc_proj), projects=svc_proj)
     svc.agent_runtime = _sentinel_runtime()
     svc.send(sid, "新问题", "case_design", pid)
     contents = [m.content for m in seen[0]]
@@ -345,14 +354,14 @@ def test_history_is_trimmed_to_last_history_max(tmp_path, project) -> None:
     assert contents[1] == "问25"        # 90 条里的第 51 条，更早的 50 条进不了 prompt
     assert contents[-2] == "答44"
     assert contents[-1] == "新问题"
-    assert len(store.messages(sid)) == 92  # 磁盘保留全量（本轮 user+assistant 已追加）
+    assert len(open_session_store(root, "case_design").messages(sid)) == 92
 
 
 def test_send_stores_failed_tool_step(tmp_path, project) -> None:
     """ok=False 必须原样落到持久化的 steps：缺省兜底会把失败工具伪装成成功。"""
     from langchain_core.messages import ToolMessage
 
-    svc_proj, pid, _ = project
+    svc_proj, pid, root = project
     expected = {"tool": "read", "ok": False, "round": 1,
                 "detail": '{"file_path": "missing.txt"}'}
 
@@ -369,16 +378,17 @@ def test_send_stores_failed_tool_step(tmp_path, project) -> None:
             yield ("custom", {"type": "turn", "round": 2, "text": "读取失败",
                               "stopped": False, "tool_calls": []})
 
-    store = SessionStore(tmp_path / "sessions")
-    svc = ChatService(provider=MockProvider(), sessions=store, projects=svc_proj)
+    svc = ChatService(provider=MockProvider(), sessions=_locator(svc_proj), projects=svc_proj)
     svc.agent_runtime = SimpleNamespace(
         build=lambda agent_id, session_id, provider_override=None, cwd=".": AgentInstance(
             agent_id=agent_id, system_prompt="p", provider=MockProvider(), tools=[],
             build_graph=lambda provider, tools: _FakeGraph()))
     result = svc.send("", "读文件", "case_design", pid)
-    assert result["steps"] == [expected]
-    stored = store.messages(result["session_id"])
-    assert stored[1].steps == [expected]  # 落盘的不只是内存返回值
+    assert result["steps"] == [expected]  # API/done 无 result
+    stored = open_session_store(root, "case_design").messages(result["session_id"])
+    disk = stored[1].steps[0]
+    assert {k: disk[k] for k in ("tool", "ok", "round", "detail")} == expected
+    assert disk["result"] == "工具执行失败"  # 全量落盘
 
 
 # ── 第 2 片：项目解析、目录验真与双归属校验（Task 6）──────────────────────────
@@ -387,7 +397,7 @@ def test_send_stores_failed_tool_step(tmp_path, project) -> None:
 def test_send_requires_project_for_visible_agent(tmp_path, project) -> None:
     svc, _pid, _ = project
     chat = ChatService(provider=MockProvider(), agent_runtime=_runtime(tmp_path),
-                       sessions=SessionStore(tmp_path / "sessions"), projects=svc)
+                       sessions=_locator(svc), projects=svc)
     with pytest.raises(ProjectConfigError) as exc:
         chat.send("", "生成用例", "case_design", "")         # 空 project_id：显式传，不靠签名默认值
     assert "项目" in exc.value.detail
@@ -397,7 +407,7 @@ def test_send_rejects_unreachable_project_dir(tmp_path, project) -> None:
     svc, pid, root = project
     root.rmdir()                                            # 目录被移走/删掉：发送必须响亮失败
     chat = ChatService(provider=MockProvider(), agent_runtime=_runtime(tmp_path),
-                       sessions=SessionStore(tmp_path / "sessions"), projects=svc)
+                       sessions=_locator(svc), projects=svc)
     with pytest.raises(ProjectConfigError) as exc:
         chat.send("", "生成用例", "case_design", pid)
     assert str(root) in exc.value.detail and "项目页" in exc.value.detail
@@ -416,7 +426,7 @@ def test_send_rejects_malformed_project_dir_as_400_not_500(tmp_path, project) ->
     repo.save(data)
     broken = ProjectService(FileJsonConfigRepository(tmp_path / "projects.json"))
     chat = ChatService(provider=MockProvider(), agent_runtime=_runtime(tmp_path),
-                       sessions=SessionStore(tmp_path / "sessions"), projects=broken)
+                       sessions=_locator(broken), projects=broken)
     with pytest.raises(ProjectConfigError) as exc:
         chat.send("", "生成用例", "case_design", pid)
     assert "项目页" in exc.value.detail
@@ -426,10 +436,27 @@ def test_send_builds_instance_with_project_cwd(tmp_path, project) -> None:
     svc, pid, root = project
     runtime = _recording_runtime()                          # 记 kwargs 的 runtime 替身
     chat = ChatService(agent_runtime=runtime,
-                       sessions=SessionStore(tmp_path / "sessions"), projects=svc)
+                       sessions=_locator(svc), projects=svc)
     sid = chat.send("", "生成用例", "case_design", pid)["session_id"]
     assert runtime.calls[-1]["cwd"] == str(root)
-    assert chat.sessions.get(sid).project_id == pid          # 延迟建会话也把归属落进去
+    assert chat.sessions.for_agent(pid, "case_design").get(sid).project_id == pid
+
+
+def test_persist_writes_tool_result_under_project_session_history(tmp_path, project) -> None:
+    svc_proj, pid, root = project
+    svc = ChatService(provider=MockProvider(), sessions=_locator(svc_proj), projects=svc_proj)
+    svc.agent_runtime = _sentinel_runtime()
+    prepared = svc.prepare("", "hi", "case_design", pid)
+    svc._persist(
+        prepared, "reply",
+        [{"tool": "read", "ok": True, "round": 1, "detail": "{}", "result": "BODY"}],
+        False,
+    )
+    hist = root / "session_history" / "case_design"
+    assert (hist / "index.json").is_file()
+    rows = open_session_store(root, "case_design").messages(prepared.session_id)
+    assert rows[0].agent_id == "case_design" and rows[0].session_id == prepared.session_id
+    assert rows[1].steps[0]["result"] == "BODY"
 
 
 def test_send_expands_tilde_project_dir_before_handing_over_cwd(
@@ -452,7 +479,7 @@ def test_send_expands_tilde_project_dir_before_handing_over_cwd(
     created = svc.create(name="波浪号项目", desc="", dir_="~/work/reqs", agents=["case_design"])
     runtime = _recording_runtime()
     chat = ChatService(provider=MockProvider(), agent_runtime=runtime,
-                       sessions=SessionStore(tmp_path / "sessions"), projects=svc)
+                       sessions=_locator(svc), projects=svc)
     chat.send("", "生成用例", "case_design", created["id"])
     cwd = str(runtime.calls[-1]["cwd"])
     assert "~" not in cwd                                    # 字面 `~` 绝不进落点
@@ -467,18 +494,18 @@ def test_send_rejects_project_mismatch(tmp_path, project) -> None:
     (tmp_path / "pay").mkdir()
     other = svc.create(name="支付中心", desc="", dir_=str(tmp_path / "pay"),
                        agents=["case_design"])["id"]
-    store = SessionStore(tmp_path / "sessions")
     chat = ChatService(provider=MockProvider(), agent_runtime=_runtime(tmp_path),
-                       sessions=store, projects=svc)
+                       sessions=_locator(svc), projects=svc)
     sid = chat.send("", "一", "case_design", pid)["session_id"]
     with pytest.raises(SessionStoreError) as exc:
-        chat.send(sid, "二", "case_design", other)           # 往别的项目的会话里写
-    assert "项目" in exc.value.detail
+        chat.send(sid, "二", "case_design", other)           # 别的项目目录下查无此 sid
+    # 会话按项目 dir 隔离后，跨项目续写表现为「不存在」而非全局索引上的归属不符
+    assert exc.value.detail == "会话不存在或已被删除"
 
 
 def test_platform_agent_ignores_project(tmp_path, project) -> None:
     svc, _pid, _ = project
     chat = ChatService(provider=MockProvider(), agent_runtime=_runtime(tmp_path),
-                       sessions=SessionStore(tmp_path / "sessions"), projects=svc)
+                       sessions=_locator(svc), projects=svc)
     result = chat.send("kb-console", "记一笔", "kb_assistant", "")  # 空 project_id：/kb 链路不破（spec 裁定 7）
     assert result["session_id"] == "kb-console"

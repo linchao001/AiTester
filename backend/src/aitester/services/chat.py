@@ -29,9 +29,9 @@ from aitester.services.project_config import (
     ProjectService,
     dir_exists,
 )
+from aitester.services.session_locator import SessionLocator
 from aitester.services.session_store import (
     MISSING_SESSION_DETAIL,
-    SessionStore,
     SessionStoreError,
     is_session_id,
 )
@@ -45,12 +45,37 @@ HISTORY_MAX = 40
 
 logger = logging.getLogger(__name__)
 
-# done/step 事件里喂给 UI 与磁盘的过程块字段：严格取键，缺字段即 KeyError（不兜默认防假绿）
+# done/step 事件里喂给 UI 的过程块字段：严格取键，缺字段即 KeyError（不兜默认防假绿）
 _STEP_KEYS = ("tool", "ok", "round", "detail")
+# 磁盘多 result（全量工具输出）；对外 API/SSE 仍只暴露 _STEP_KEYS
+_DISK_STEP_KEYS = ("tool", "ok", "round", "detail", "result")
 
 # wait 事件喂给 pending 队列的字段：严格取键，缺字段即 KeyError（与 _STEP_KEYS 同口径）。
 # subagent 是 R3 的来源标注：父层 None、子层为卡片出处；pending 表原样透给 /chat/pending。
 _WAIT_KEYS = ("call_id", "tool", "action", "target", "command", "cwd", "subagent")
+
+
+def _public_steps(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{k: s[k] for k in _STEP_KEYS} for s in steps]
+
+
+def _steps_for_disk(
+    outcome: dict[str, Any] | None, public: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """优先用 finish.tool_traces（含 result）；没有则退回对外 steps（可能无 result）。"""
+    traces = (outcome or {}).get("tool_traces")
+    if not isinstance(traces, list) or not traces:
+        return list(public)
+    out: list[dict[str, Any]] = []
+    for t in traces:
+        out.append({
+            "tool": t["tool"],
+            "ok": t["ok"],
+            "round": t["round"],
+            "detail": t["detail"],
+            "result": str(t.get("result", "")),
+        })
+    return out
 
 
 @dataclass(frozen=True)
@@ -90,7 +115,7 @@ class ChatService:
         context: ContextBuilder | None = None,
         repo: Repository | None = None,
         agent_runtime: AgentRuntime | None = None,
-        sessions: SessionStore | None = None,
+        sessions: SessionLocator | None = None,
         projects: ProjectService | None = None,
         pending: PendingRegistry | None = None,
     ) -> None:
@@ -169,12 +194,15 @@ class ChatService:
             project = self._guard_project(project_id)
             pid = (project_id or "").strip()
         sid = (session_id or "").strip()
+        store = None
+        if self.sessions is not None and not platform and pid:
+            store = self.sessions.for_agent(pid, agent_id)
         if not sid:
-            if self.sessions is None or platform:
+            if store is None:
                 raise ProviderConfigError("请指定会话 id 或通过 create_app 装配会话存储")
-            sid = self.sessions.new_id()
-        elif self.sessions is not None and is_session_id(sid):
-            existing = self.sessions.get(sid)
+            sid = store.new_id()
+        elif store is not None and is_session_id(sid):
+            existing = store.get(sid)
             if existing is None:
                 raise SessionStoreError(MISSING_SESSION_DETAIL)
             # 会话归属校验：sess_* 续写前先判等 agent_id，否则任何 agent_id 都能往别人的会话里写；
@@ -182,7 +210,7 @@ class ChatService:
             if existing.agent_id != agent_id:
                 raise SessionStoreError("会话不属于该智能体")
             # 第二维（第 2 片）：项目归属同判据；平台智能体不落的会话不参与比对
-            if not platform and existing.project_id != pid:
+            if existing.project_id != pid:
                 raise SessionStoreError("会话不属于该项目")
 
         # 装配落点：可见智能体用项目 dir（产出物归位），平台智能体沿用 _build_platform_agent 内部算的 workspace
@@ -196,13 +224,13 @@ class ChatService:
             cwd=str(Path(project["dir"]).expanduser()) if project is not None else ".",
         )
 
-        use_file = self.sessions is not None and is_session_id(sid) and not platform
+        use_file = store is not None and is_session_id(sid) and not platform
         memory: MemoryStore
         if use_file:
             # 延迟导入：file_memory 经 services 回指本包，顶层导入会在循环链上炸开（memory/__init__ 顺序约束同源）
             from aitester.memory import FileMemoryStore
 
-            memory = FileMemoryStore(self.sessions, pid)
+            memory = FileMemoryStore(store, pid)
         else:
             memory = self.memory
 
@@ -320,17 +348,30 @@ class ChatService:
             reply = (base_prefix + (visible[max(visible)] if visible else "")
                      if hung else str(outcome["reply"]))
             stopped = True if hung else bool(outcome["stopped"])
-            snapshot = self._persist(prepared, reply, steps, stopped)
+            disk_steps = _steps_for_disk(outcome, steps)
+            snapshot = self._persist(prepared, reply, disk_steps, stopped)
+            # 对外始终无 result：有 traces 时从 disk 剥离；否则沿用收集期的 public steps
+            public = (
+                _public_steps(disk_steps)
+                if any("result" in s for s in disk_steps)
+                else steps
+            )
             outcome = None               # 已落盘：done 帧后再被 close() 不得二次落盘
             self._release(thread_id, entry)
-            stored = (
-                self.sessions.get(prepared.session_id)
-                if self.sessions is not None else None
-            )
+            stored = None
+            if (
+                self.sessions is not None
+                and prepared.project_id
+                and prepared.agent_id
+                and is_session_id(prepared.session_id)
+            ):
+                stored = self.sessions.for_agent(
+                    prepared.project_id, prepared.agent_id
+                ).get(prepared.session_id)
             yield {
                 "type": "done",
                 "reply": reply,
-                "steps": steps,
+                "steps": public,
                 "session_id": prepared.session_id,
                 "title": stored.title if stored is not None else "",
                 "stopped": stopped,
@@ -349,8 +390,12 @@ class ChatService:
             if outcome is not None:
                 # 断开这一路没有 done 帧可带：快照落进磁盘那一行就到此为止（返回值弃掉
                 # 是有意的，不是漏接——用户不在，读数只能等他重开会话时从磁盘读）
-                self._persist(prepared, base_prefix + (visible[max(visible)] if visible else ""),
-                              steps, stopped=True)
+                self._persist(
+                    prepared,
+                    base_prefix + (visible[max(visible)] if visible else ""),
+                    _steps_for_disk(outcome, steps),
+                    stopped=True,
+                )
             # 断开 == 停止（第 4 片同语义）：留下的条目一律作废，线程也不再等批准
             self._release(thread_id, entry)
             raise
