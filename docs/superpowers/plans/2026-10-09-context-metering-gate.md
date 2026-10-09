@@ -1617,7 +1617,7 @@ git commit -m "feat(context): 上下文条改吃后端真值快照——删掉�
 - Consumes: C1–C6 全部
 - Produces: 一条不花钱的端到端证据链：一次带工具截断的回合 ⇒ done 帧读数、落盘行读数、前端可渲染形状三者一致；**主会话图与 case_design 图共用同一把尺的差分证明**。
 
-- [ ] **Step 1: 端到端测试——一条回合里闸与尺同时工作**
+- [x] **Step 1: 端到端测试——一条回合里闸与尺同时工作**
 
 ```python
 # backend/tests/test_context_e2e.py
@@ -1704,7 +1704,15 @@ def test_case_design_graph_and_main_loop_share_the_ruler(tmp_path):
 
 > **为什么最后一条断言不追「标记出现在终帧里」**：`done["steps"][*]["detail"]` 是工具**入参**的回显（`test_chat_stream.py:236` 既有断言就是这个形状），截断标记只存在于回喂模型的 `ToolMessage` 正文——它既不进 `reply` 也不进 `steps`。所以本条把证据分两处钉：**闸真砍了**由 `ctx["truncated"]` 的非空记账 + C3 对 `cap_content`/`cap_result` 的逐字标记测试共同保证；**读数三处同源**由上面那行 `line.context == ctx` 保证。早先草稿里那句 `... or True`（等于没断言）已删除——留它是假绿，不是保险。
 
-- [ ] **Step 3: 跑门禁并登记读数**
+> **执行登记（C7 实施代理，2026-10-09）**：上面两块代码逐字落进 `backend/tests/test_context_e2e.py`，与本步文本的差异只有三处，方向全是**变强**或**追加**：
+> ① `assert ctx["rounds"] >= 2` → `== 2`——实测一次带工具回合就是 2 轮（工具轮 + 收尾轮），按追加 C.1「rounds 字面值以实测为准、必须钉成精确等值」收紧；
+> ② 追加 A/B 两条强制测试同文件落地：`test_sse_done_frame_carries_the_snapshot`（SSE 帧载荷 `data["context"]` 正向钉：非空 **且**与磁盘行等值，`session_id` 从末帧取）、`test_disconnect_row_carries_the_snapshot`（GeneratorExit 收尾行带读数 + `"done" not in seen` 的口径差）；
+> ③ 相应多 import `sse_frames`（`streaming_fakes`）、`_app`/`_pid`（`test_chat_stream_api`）、`_service`（`test_chat_stream`）、`TestClient`——跨文件复用夹具的先例是 `test_chat_pending.py:10`、`test_context_wiring.py:13`，没有另起挂具。
+> 简报的两条预测 `after_react == 2`、`usage.rounds == after_react + 2` **与实测一致**（case_design 图在 `case_env=None` 直通拓扑下同样是 2 个 provider 轮：driver 不烧 provider），故未延长脚本、未改数值。
+
+- [x] **Step 3: 跑门禁并登记读数**
+
+> 照实登记：本任务**没有 Step 2**（计划正文的编号跳，不是漏执行——不补假勾）。追加 A/B 已把原拟「Step 2 的第二条端到端」扩成 4 条测试，故本片累计 **+4** 而非本文所写 +2。
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest -q
@@ -1823,3 +1831,11 @@ git push origin master:main
 ## 执行状态
 
 （开工后由控制方逐任务追加：每片 commit 区间、门禁读数、评审计数、走查读数。头部两行留「计划状态」。）
+
+- **Task C7（离线端到端收口，2026-10-09 实跑）**：
+  - **后端门禁**：`cd backend && .venv/Scripts/python -m pytest -q` ⇒ **949 passed / 0 failed in 75.73s**（基线 945 ⇒ +4，只增不减；删/松/跳任何既有断言 = 0 处，`git diff` 只含一个新测试文件与这两份文档）。
+  - **前端构建**：`cd frontend && npm run build` ⇒ **0 error**（`tsc && vite build`，58 modules transformed、`dist/assets/index-*.css 38.90 kB`、`index-*.js 246.77 kB`、built in 570ms）。**本片前端零改动**（`git status` 里 frontend 一条都没有），构建只是照 Step 3 走一遍留数。
+  - **四条新测试各钉什么**：`test_gate_and_meter_work_in_one_turn`（闸与尺同回合：`truncated` 恰一条 `read`、`kept+dropped==original`，done 帧读数与磁盘行**同一份**快照）、`test_case_design_graph_and_main_loop_share_the_ruler`（CM-5：两张图接在同一本累加件上，`rounds` 2→4）、`test_sse_done_frame_carries_the_snapshot`（追加 A：SSE 帧载荷 `data["context"]` 非空**且**与磁盘行等值）、`test_disconnect_row_carries_the_snapshot`（追加 B：GeneratorExit 收尾行带八字段快照，且 `"done" not in seen`）。
+  - **变异自跑（三次，每次都还原并复绿）**：① 把 case_design 那张图换成未包 `MeteredProvider` 的 provider ⇒ `assert 2 == (2 + 2)` **红**（追加 C.2 要求的 CM-5 差分证明）；② 摘掉 `interaction/router.py:166` 那行 `"context": event["context"]` ⇒ `KeyError: 'context'` **红**（追加 A 的正向钉不是装饰）；③ `services/chat.py:250` 落盘的 `context=snapshot` 改 `context=None` ⇒ 第一/三/四条 **3 failed**、第二条（不碰落盘）仍绿——四处读数各归其位。还原后 `git diff -- backend/src` 为空、四条复绿。
+  - **spec 回填**：新增文末「## 实施澄清（第一片，C7 登记）」一节，登记 P-1（账本 `ledger.json` 不另抄每回合读数摘要，收窄 §5 第 6 条后半句，代价与第二片归属照实）；§3.8 那条 C6 澄清**未重抄、未改写**，新节用一行指向它。
+  - **Step 4（提交与推送）**：见下一条（提交号只能事后登记，故本行由收口的第二笔文档提交补上）。

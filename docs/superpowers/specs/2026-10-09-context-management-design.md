@@ -212,3 +212,17 @@ def cap_content(text: str, *, tool: str, usage: ContextUsage | None) -> str:
 `adapters/tools/base.py:6`（`AiTooler`）｜ `command_tools/runner.py:26`（1MB，stdout 与 stderr 各自应用）｜ `file_tools/read.py:25-26,105`、`search.py:48-52`、`edit.py:51`（`content_and_artifact`）
 `orchestration/subagent.py:140-173`（回收正文无上限）｜ `adapters/tools/subagent_tools/task.py:64,84`
 `frontend/src/pages/chat/utils.ts:6-10,14,17-27`、`Composer.tsx:37-40,70`、`ChatPage.tsx:92,95`
+
+---
+
+## 实施澄清（第一片，C7 登记）
+
+本节只登记**第一片实际交付与本 spec 原文有差**的条目。§3.8 里那条由控制方所写的「实施澄清（第一片 C6）」（截断三数交付在上下文 tooltip、不在步序行）**以那一节为准，此处不重抄、不改写**；§6 走查判据② 的「可见」口径同样只受那一节收窄。
+
+- **CM-澄清-1（收窄 §5 第 6 条后半句）**：case_design 的**账本 `ledger.json` 里不另抄每回合读数摘要**。
+  - **收窄对象逐字**：§5 第 6 条「它的账本 `history` 里另记读数摘要，供长循环自查（本片只保证「能读到」，账本记账格式由实施计划定）」——**「能读到」已交付**，**「账本里另记摘要」不在第一片**，格式因此也无需定。
+  - **「能读到」靠什么保证（机制，不是措辞）**：case_design 的 provider 与工具面都由装配根 `AgentRuntime.build` 造的**同一个** `ContextUsage` 贯穿——`services/agent_runtime.py:93` `_metered_pair` 包出 `MeteredProvider(inner, usage)`，`:107` `build_default_registry(usage=usage)` 把同一本注进每个 `AiTooler`；专属图与 react 图都从 `stream_graph(build, provider, tools, messages)` 那一个入口进去，所以缝在图**之外**（CM-5）。读数出账两处可见：done 帧与会话行共用 `_persist` 算出的那一份快照（`services/chat.py:247`、`:337`）。
+  - **离线证据（第一片，不花钱）**：`backend/tests/test_context_e2e.py` 的 `test_case_design_graph_and_main_loop_share_the_ruler` 把两张图接在同一本账上（实测 `rounds` 2→4，逐字钉死）；`test_gate_and_meter_work_in_one_turn` 钉闸与尺同回合、且 `done["context"] == 磁盘行的 context`。
+  - **为什么不在本片做**：账本是**断点续跑的真相源**，往里加一节就要动 `Ledger` 的窄背填与版本判定——正是第五片（T27–T34）刚收口的那族风险；收益只有长循环自查方便。⇒ 与 §5 第 4 条、§7 的第二片边界同批做。
+  - **代价（照实，不许粉）**：长循环跨多次驱动激活时，**账本自身答不出「上一次激活时占用多少」**；只能从该会话行的 `context` 反查，而那是人审面、不是模型自查面。第二片若要给驱动自查用，应与「工具结果落盘 + 按需回喂」一起设计（那才是长循环真正缺的东西），别单点往账本加节。
+  - **归属**：第二片。
