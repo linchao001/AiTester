@@ -28,12 +28,13 @@ class FileMemoryStore:
         content: str,
         steps: list[dict] | None = None,
         stopped: bool = False,
+        context: dict | None = None,
     ) -> None:
         agent_id, sid = self._split(session_id)
         if self._store.get(sid) is None:
             # 首条消息建会话（延迟落盘裁定）：失败发送不留 0 消息幽灵会话
             self._store.create(sid, agent_id, self._project_id, content if role == "user" else "")
-        self._store.append(sid, role, content, steps, stopped)
+        self._store.append(sid, role, content, steps, stopped, context)
 
     def recall(self, session_id: str) -> list[dict[str, str]]:
         _, sid = self._split(session_id)

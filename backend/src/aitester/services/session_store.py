@@ -71,6 +71,9 @@ class ChatMessage:
     steps: list[dict[str, Any]] | None = None
     # 第 4 片：被停止的回答。老 jsonl 行没这个键 → from_dict 读缺省 False，零迁移
     stopped: bool = False
+    # 上下文管理第一片：本回合的上下文读数快照。老 jsonl 行没这个键 → from_dict 读缺省
+    # None，零迁移（与 stopped 同一先例）
+    context: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -78,12 +81,14 @@ class ChatMessage:
     @staticmethod
     def from_dict(raw: dict[str, Any]) -> ChatMessage:
         steps = raw.get("steps")
+        raw_context = raw.get("context")
         return ChatMessage(
             role=str(raw.get("role") or ""),
             content=str(raw.get("content") or ""),
             ts=int(raw.get("ts") or 0),
             steps=steps if isinstance(steps, list) else None,
             stopped=raw.get("stopped") is True,   # 只认真 True，脏数据不伪装成被停止
+            context=raw_context if isinstance(raw_context, dict) else None,
         )
 
 
@@ -267,11 +272,13 @@ class SessionStore:
         content: str,
         steps: list[dict[str, Any]] | None = None,
         stopped: bool = False,
+        context: dict[str, Any] | None = None,
     ) -> None:
         path = self._path(session_id)
         ts = _now_ms()
         line = ChatMessage(
-            role=role, content=content, ts=ts, steps=steps or None, stopped=stopped
+            role=role, content=content, ts=ts, steps=steps or None, stopped=stopped,
+            context=context,
         ).to_dict()
         # jsonl 先写、index 后记：中途崩溃只丢一次计数更新，消息本身不丢
         with self._lock:

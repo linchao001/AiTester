@@ -1,3 +1,4 @@
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -5,6 +6,7 @@ from fastapi import FastAPI
 
 from aitester.adapters.tools import FileObservationStore
 from aitester.config import Settings, get_settings
+from aitester.context import meter
 from aitester.interaction.kb_browse import router as kb_browse_router
 from aitester.interaction.pick_dir import router as pick_dir_router
 from aitester.interaction.project_browse import router as project_browse_router
@@ -54,6 +56,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         kb.start()
+        # 词表冷取实测要 141 秒：只在后台预热，绝不在回合里现取。失败即退字符兜底，
+        # 估算照样出数（context/meter.warm 自己记因），所以这里不判定、不阻断启动。
+        threading.Thread(target=meter.warm, name="token-warm", daemon=True).start()
         try:
             yield
         finally:

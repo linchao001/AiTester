@@ -162,6 +162,8 @@ def _stream_response(runs: RunRegistry, run_id: str, session_id: str,
                             "session_id": event["session_id"],
                             "title": event["title"],
                             "stopped": event["stopped"],
+                            # 上下文读数快照：严格取键（缺键即 KeyError，与其余字段同口径）
+                            "context": event["context"],
                         })
                     else:                                   # delta / call
                         yield _frame(kind, {k: v for k, v in event.items() if k != "type"})

@@ -9,6 +9,7 @@ import pytest
 from aitester.agents import find_agent
 from aitester.adapters.llm import MockProvider, ProviderConfigError
 from aitester.adapters.llm import openai_compat
+from aitester.adapters.llm.metered import MeteredProvider
 from aitester.adapters.tools import build_default_registry
 from aitester.adapters.tools.file_tools import FileObservationStore
 from aitester.config import Settings
@@ -101,7 +102,12 @@ def test_provider_override_skips_model_resolution(tmp_path: Path) -> None:
     runtime, _, _ = _runtime(tmp_path)  # 全局也没配 Key
     mock = MockProvider()
     instance = runtime.build("case_design", "s1", provider_override=mock)
-    assert instance.provider is mock
+    # C5：注入的替身也被计量缝包上（否则离线端到端永远量不到），但包的就是那一个替身——
+    # 短路语义没变：仍然不解析模型，窗口因此是「未知」的 0
+    assert isinstance(instance.provider, MeteredProvider)
+    assert instance.provider._inner is mock
+    assert instance.provider.usage is instance.usage
+    assert instance.usage.window == 0
     assert _FakeChat.last == {}
 
 
@@ -142,6 +148,7 @@ def test_registry_uses_given_cwd_and_shared_observations(
         kb: Any = None,
         agent_id: str = "console",
         task: Any = None,
+        usage: Any = None,                       # C5 新形参：替身的形状要跟住真实签名，否则透传一断链就没人说
     ) -> Any:
         captured.update(
             {"cwd": cwd, "session_id": session_id, "observed": observed, "kb": kb, "agent_id": agent_id}
@@ -182,6 +189,7 @@ def test_registry_uses_project_cwd_when_given(
         kb: Any = None,
         agent_id: str = "console",
         task: Any = None,
+        usage: Any = None,                       # C5 新形参：替身的形状要跟住真实签名，否则透传一断链就没人说
     ) -> Any:
         captured.update(
             {"cwd": cwd, "session_id": session_id, "observed": observed, "kb": kb, "agent_id": agent_id}
@@ -217,7 +225,10 @@ def test_instances_are_independent_objects(tmp_path: Path) -> None:
     a = runtime.build("case_design", "s1", provider_override=mock)
     b = runtime.build("case_design", "s1", provider_override=mock)
     assert a is not b
-    assert a.provider is b.provider  # 注入的是同一个 mock，但实例本身各自新建
+    # C5 之后一回合一个计量缝：共用同一个包装对象就是共用同一本账，两回合的读数必须互不串味
+    assert a.provider is not b.provider
+    assert a.provider._inner is b.provider._inner is mock   # 注入的仍是同一个 mock
+    assert a.usage is not b.usage and a.provider.usage is a.usage
     assert a.tools and len(a.tools) == len(b.tools)
     assert [t.tool_id() for t in a.tools] == [t.tool_id() for t in b.tools]
     assert all(x is not y for x, y in zip(a.tools, b.tools))  # 工具对象也每次新建，不跨请求复用

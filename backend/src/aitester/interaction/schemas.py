@@ -299,6 +299,8 @@ class ChatMessageInfo(BaseModel):
     ts: int
     steps: list[StepInfo] | None = None
     stopped: bool = False      # 读侧字段只增不删：GET /{sid}/messages 向后兼容
+    # 本回合的上下文读数快照（老行/老口径为 None）：同「只增不删」口径
+    context: dict | None = None
 
 
 class SessionMessagesResponse(BaseModel):

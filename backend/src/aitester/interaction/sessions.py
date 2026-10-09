@@ -60,6 +60,7 @@ def _to_message(m: ChatMessage) -> ChatMessageInfo:
     return ChatMessageInfo(
         role=m.role, content=m.content, ts=m.ts, steps=steps or None,
         stopped=m.stopped,
+        context=m.context,
     )
 
 

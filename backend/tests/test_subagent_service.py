@@ -177,7 +177,8 @@ def test_assembly_level_structure_locks(tmp_path: Path) -> None:
                                                    "web_search"}   # kb 未注入：面收缩为四件
     blind = tools["task"].build_child("case_review_blind")
     assert {t.tool_id() for t in blind.tools} == {"read"}
-    assert child.provider is mock                       # provider_override 继承（R13 测试缝）
+    assert child.provider._inner is mock                   # provider_override 继承（R13 测试缝）：包的就是那一个
+    assert child.provider.usage is parent.usage            # 子共用父账本（CM-6）：一回合只有一本
     assert child.system_prompt.startswith("你是「通用子智能体」")
     kb_inst = runtime.build("kb_assistant", "kb-console", provider_override=mock)
     assert "task" not in {t.tool_id() for t in kb_inst.tools}

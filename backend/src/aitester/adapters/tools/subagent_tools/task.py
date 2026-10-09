@@ -101,7 +101,13 @@ class TaskTool(AiTooler):
 
 def build_task_tool(roster: dict[str, dict[str, Any]], build_child: Callable[[str], Any],
                     drive: Callable[..., str],
-                    parallel: dict[str, bool] | None = None) -> TaskTool:
-    """按在册清单产出一把 task 工具（description 里带清单一节；parallel 缺省全按串行）。"""
+                    parallel: dict[str, bool] | None = None,
+                    usage: Any = None) -> TaskTool:
+    """按在册清单产出一把 task 工具（description 里带清单一节；parallel 缺省全按串行）。
+
+    `usage` 是本回合的上下文累加件，只能在构造时注入：构造后再赋值等于给「注入」
+    发明第二条路径，装配根与工具持有的那本账随时可能分家。
+    """
     return TaskTool(roster=dict(roster), build_child=build_child, drive=drive,
-                    parallel=dict(parallel or {}), description=render_description(roster))
+                    parallel=dict(parallel or {}), description=render_description(roster),
+                    usage=usage)

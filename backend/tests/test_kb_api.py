@@ -98,7 +98,7 @@ def test_chat_send_returns_drafts(tmp_path):
         stream_turn=lambda prepared, control=None, run_id="": iter([
             {"type": "draft", "draft": draft},
             {"type": "done", "reply": "r", "steps": [], "session_id": "s9",
-             "title": "", "stopped": False},
+             "title": "", "stopped": False, "context": None},
         ]),
     )
     with TestClient(app) as c:
@@ -120,7 +120,7 @@ def test_chat_send_drafts_defaults_empty(tmp_path):
         prepare=lambda sid, msg, aid, project_id="", perm_mode="free": SimpleNamespace(session_id="s9"),
         stream_turn=lambda prepared, control=None, run_id="": iter([
             {"type": "done", "reply": "r", "steps": [], "session_id": "s9",
-             "title": "", "stopped": False},
+             "title": "", "stopped": False, "context": None},
         ]),
     )
     with TestClient(app) as c:
@@ -143,7 +143,7 @@ def test_chat_send_skips_malformed_drafts(tmp_path):
         [{"type": "draft", "draft": m} for m in malformed] +
         [{"type": "draft", "draft": valid},
          {"type": "done", "reply": "回复还在", "steps": [], "session_id": "s9",
-          "title": "", "stopped": False}])
+          "title": "", "stopped": False, "context": None}])
     app.state.chat_service = SimpleNamespace(
         prepare=lambda sid, msg, aid, project_id="", perm_mode="free": SimpleNamespace(session_id="s9"),
         stream_turn=lambda prepared, control=None, run_id="": events_iter,

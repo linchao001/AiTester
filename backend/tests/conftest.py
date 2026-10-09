@@ -14,3 +14,8 @@ _SETTINGS_ENV_VARS = ("HOST", "PORT", "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "
 def _clean_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in _SETTINGS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    # 启动期词表预热线程（main.lifespan）在测试进程里也会被拉起：warm() 拿到缓存词表只要
+    # 0.22 秒，却会把 meter 的全局 _enc 翻成词表分支——test_context_meter 里那条「退字符
+    # 兜底」的断言就在套件中途变红。置 0 让 warm() 只记因、不触网也不碰 _enc；
+    # meter 自己的挂具（_isolated_meter）逐条删这个变量，C1 的用例口径不受影响。
+    monkeypatch.setenv("AITESTER_TOKEN_WARM", "0")

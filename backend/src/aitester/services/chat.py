@@ -10,6 +10,7 @@ from aitester.adapters.tools.base import AiTooler
 from aitester.agents import is_platform_agent
 from aitester.case_design.env import CaseDesignEnv
 from aitester.context import ContextBuilder, PassthroughContextBuilder
+from aitester.context.usage import ContextUsage
 from aitester.memory import InMemoryMemoryStore, MemoryStore
 from aitester.orchestration import drop_thread, new_thread_id, run_echo, stream_graph
 from aitester.orchestration.auth_rules import DEFAULT_PERM_MODE, validate_perm_mode
@@ -74,6 +75,9 @@ class PreparedRun:
     project_dir: str = ""         # expanduser 再 resolve：判定与续跑守卫都认它
     gate: GateContext | None = None
     case_env: CaseDesignEnv | None = None   # 专属 loop 的注入通道（None=直通）
+    # 本回合的上下文累加件（装配根造好、provider/工具共用同一本）：手工装配的挂具实例
+    # 没有它 ⇒ None ⇒ 落盘与终帧的 context 键都是 null，界面显「—」
+    usage: ContextUsage | None = None
 
 
 class ChatService:
@@ -226,16 +230,27 @@ class ChatService:
             project_dir=project_dir,
             gate=build_gate_context(mode, project_dir, key, self.pending.remembered_for(key)),
             case_env=instance.case_env,
+            usage=instance.usage,
         )
 
     def _persist(
         self, prepared: PreparedRun, reply: str, steps: list[dict[str, Any]], stopped: bool
-    ) -> None:
-        """终态落盘：用户句 + assistant 句（带 steps/stopped）+ 仓储快照，顺序与迁移前一致。"""
+    ) -> dict[str, Any] | None:
+        """终态落盘：用户句 + assistant 句（带 steps/stopped/context）+ 仓储快照，
+        顺序与迁移前一致。
+
+        返回本回合的上下文快照：done 帧与磁盘那一行必须是**同一份**快照（在 `_persist`
+        里算一次、把它交出去），两处各取一次就是「门上的话会说谎」同族。没有账的挂具
+        实例（手工装配的 AgentInstance）回 None。
+        """
+        usage = prepared.usage
+        snapshot = usage.snapshot() if usage is not None else None
         prepared.memory.save(prepared.key, "user", prepared.message)
-        prepared.memory.save(prepared.key, "assistant", reply, steps=steps, stopped=stopped)
+        prepared.memory.save(prepared.key, "assistant", reply,
+                             steps=steps, stopped=stopped, context=snapshot)
         self.repo.put(f"session:{prepared.key}",
                       {"session_id": prepared.key, "last_reply": reply})
+        return snapshot
 
     def stream_turn(
         self, prepared: PreparedRun, control: RunControl | None = None, run_id: str = ""
@@ -305,7 +320,7 @@ class ChatService:
             reply = (base_prefix + (visible[max(visible)] if visible else "")
                      if hung else str(outcome["reply"]))
             stopped = True if hung else bool(outcome["stopped"])
-            self._persist(prepared, reply, steps, stopped)
+            snapshot = self._persist(prepared, reply, steps, stopped)
             outcome = None               # 已落盘：done 帧后再被 close() 不得二次落盘
             self._release(thread_id, entry)
             stored = (
@@ -319,6 +334,7 @@ class ChatService:
                 "session_id": prepared.session_id,
                 "title": stored.title if stored is not None else "",
                 "stopped": stopped,
+                "context": snapshot,          # 与磁盘那一行同一份快照，只算这一次
             }
         except GeneratorExit:
             control.cancel()
@@ -331,6 +347,8 @@ class ChatService:
             except Exception:             # 收尾路径的失败绝不能盖掉原始断开
                 logger.warning("断开收尾时图未跑完，本次不落截断盘", exc_info=True)
             if outcome is not None:
+                # 断开这一路没有 done 帧可带：快照落进磁盘那一行就到此为止（返回值弃掉
+                # 是有意的，不是漏接——用户不在，读数只能等他重开会话时从磁盘读）
                 self._persist(prepared, base_prefix + (visible[max(visible)] if visible else ""),
                               steps, stopped=True)
             # 断开 == 停止（第 4 片同语义）：留下的条目一律作废，线程也不再等批准
@@ -408,6 +426,7 @@ class ChatService:
         entry = self.pending.take(run_id)
         if entry is None:
             return False
+        # 同断开分支：这条路径没有 done 帧，快照只进磁盘那一行（返回值弃掉是有意的）
         self._persist(entry.prepared, entry.prefix_text, entry.steps, True)
         drop_thread(entry.thread_id)
         return True
