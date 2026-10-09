@@ -63,11 +63,56 @@ def test_append_bumps_count_updates_and_appends_jsonl(tmp_path) -> None:
     assert [m.role for m in msgs] == ["user", "assistant"]
     assert msgs[1].steps == [{"tool": "read", "ok": True, "round": 1, "detail": "{}"}]
     assert msgs[0].steps is None
+    assert msgs[0].agent_id == "case_design" and msgs[0].session_id == sid
+    assert msgs[1].agent_id == "case_design" and msgs[1].session_id == sid
     got = store.get(sid)
     assert got.message_count == 2 and got.updated_at >= msgs[-1].ts
     lines = (tmp_path / "sessions" / f"{sid}.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
     assert json.loads(lines[1])["content"] == "答"
+    assert json.loads(lines[0])["agent_id"] == "case_design"
+    assert json.loads(lines[0])["session_id"] == sid
+
+
+def test_open_session_store_puts_files_under_agent_subdir(tmp_path) -> None:
+    from aitester.services.session_store import open_session_store
+
+    proj = tmp_path / "myproj"
+    proj.mkdir()
+    store = open_session_store(proj, "case_design")
+    sid = store.new_id()
+    store.create(sid, "case_design", PROJECT, "hi")
+    store.append(sid, "user", "hi")
+    store.append(
+        sid, "assistant", "ok",
+        steps=[{"tool": "read", "ok": True, "round": 1, "detail": "{}", "result": "FILE_BODY"}],
+    )
+    root = proj / "session_history" / "case_design"
+    assert (root / "index.json").is_file()
+    line = json.loads((root / f"{sid}.jsonl").read_text(encoding="utf-8").splitlines()[1])
+    assert line["agent_id"] == "case_design"
+    assert line["session_id"] == sid
+    assert line["steps"][0]["result"] == "FILE_BODY"
+
+
+def test_messages_skips_rows_missing_agent_or_session_id(tmp_path) -> None:
+    store = _store(tmp_path)
+    sid = store.new_id()
+    store.create(sid, "case_design", PROJECT, "x")
+    path = tmp_path / "sessions" / f"{sid}.jsonl"
+    path.write_text(
+        json.dumps({"role": "user", "content": "old", "ts": 1, "steps": None, "stopped": False, "context": None})
+        + "\n"
+        + json.dumps({
+            "agent_id": "case_design", "session_id": sid,
+            "role": "user", "content": "new", "ts": 2,
+            "steps": None, "stopped": False, "context": None,
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    msgs = store.messages(sid)
+    assert [m.content for m in msgs] == ["new"]
 
 
 def test_append_unknown_session_raises_actionable(tmp_path) -> None:
@@ -314,10 +359,15 @@ def test_stopped_roundtrip_and_old_row_default_false(tmp_path) -> None:
     assert rows[-1].to_dict()["stopped"] is True
 
     path = tmp_path / "sessions" / f"{sid}.jsonl"
-    legacy = {"role": "assistant", "content": "第 4 片前的行", "ts": 1}
+    # 有 agent/session 盖章、无 stopped：零迁移默认 False（缺盖章的行会被 messages 跳过）
+    legacy = {
+        "agent_id": "case_design", "session_id": sid,
+        "role": "assistant", "content": "第 4 片前的行", "ts": 1,
+    }
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(legacy, ensure_ascii=False) + "\n")
     assert store.messages(sid)[-1].stopped is False
+    assert store.messages(sid)[-1].content == "第 4 片前的行"
 
 
 def test_append_defaults_to_not_stopped(tmp_path) -> None:

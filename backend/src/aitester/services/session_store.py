@@ -68,6 +68,8 @@ class ChatMessage:
     role: str
     content: str
     ts: int
+    agent_id: str = ""
+    session_id: str = ""
     steps: list[dict[str, Any]] | None = None
     # 第 4 片：被停止的回答。老 jsonl 行没这个键 → from_dict 读缺省 False，零迁移
     stopped: bool = False
@@ -86,10 +88,18 @@ class ChatMessage:
             role=str(raw.get("role") or ""),
             content=str(raw.get("content") or ""),
             ts=int(raw.get("ts") or 0),
+            agent_id=str(raw.get("agent_id") or ""),
+            session_id=str(raw.get("session_id") or ""),
             steps=steps if isinstance(steps, list) else None,
             stopped=raw.get("stopped") is True,   # 只认真 True，脏数据不伪装成被停止
             context=raw_context if isinstance(raw_context, dict) else None,
         )
+
+
+def open_session_store(project_dir: str | Path, agent_id: str) -> SessionStore:
+    """项目空间唯一真相：{dir}/session_history/<agent_id>/。"""
+    root = Path(project_dir).expanduser().resolve() / "session_history" / agent_id
+    return SessionStore(root, agent_id=agent_id)
 
 
 @dataclass
@@ -101,8 +111,9 @@ class _Index:
 class SessionStore:
     """本类只在单进程内加锁串行读写会话目录；跨进程共用同一目录不受支持（见 README 单进程约束）。"""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, agent_id: str = "") -> None:
         self._root = Path(root)
+        self._agent_id = (agent_id or "").strip()
         self._repo = FileJsonConfigRepository(self._root / "index.json")
         self._lock = threading.Lock()
         with self._lock:
@@ -133,6 +144,12 @@ class SessionStore:
                 continue
             agent_id = str(item.get("agent_id") or "")
             if not agent_id:
+                continue
+            if self._agent_id and agent_id != self._agent_id:
+                logger.warning(
+                    "会话索引中 %s 行 agent_id=%s 与目录归属 %s 不符，已丢弃该行",
+                    sid, agent_id, self._agent_id,
+                )
                 continue
             project_id = str(item.get("project_id") or "")
             if not project_id:
@@ -261,8 +278,12 @@ class SessionStore:
                 raw = json.loads(line)
             except json.JSONDecodeError:
                 continue  # 半行（进程被杀）跳过，坏一行不该让整段历史读不出
-            if isinstance(raw, dict):
-                out.append(ChatMessage.from_dict(raw))
+            if not isinstance(raw, dict):
+                continue
+            if not str(raw.get("agent_id") or "") or not str(raw.get("session_id") or ""):
+                logger.warning("会话 %s 消息行缺少 agent_id/session_id，已跳过", session_id)
+                continue
+            out.append(ChatMessage.from_dict(raw))
         return out
 
     def append(
@@ -276,15 +297,17 @@ class SessionStore:
     ) -> None:
         path = self._path(session_id)
         ts = _now_ms()
-        line = ChatMessage(
-            role=role, content=content, ts=ts, steps=steps or None, stopped=stopped,
-            context=context,
-        ).to_dict()
         # jsonl 先写、index 后记：中途崩溃只丢一次计数更新，消息本身不丢
         with self._lock:
             record = self._index_by_id().get(session_id)
             if record is None:
                 raise SessionStoreError(MISSING_SESSION_DETAIL)
+            agent_id = self._agent_id or str(record.get("agent_id") or "")
+            line = ChatMessage(
+                role=role, content=content, ts=ts,
+                agent_id=agent_id, session_id=session_id,
+                steps=steps or None, stopped=stopped, context=context,
+            ).to_dict()
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(line, ensure_ascii=False) + "\n")
