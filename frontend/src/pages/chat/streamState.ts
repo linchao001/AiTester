@@ -1,4 +1,4 @@
-import type { ChatStep, KbDraft, StreamEvent } from "../../api/client";
+import type { ChatStep, ContextSnapshot, KbDraft, StreamEvent } from "../../api/client";
 
 /** done 事件的类型别名：finalize 只吃终态，签名写死比 Extract 更好读。 */
 export type DoneEvent = Extract<StreamEvent, { type: "done" }>;
@@ -138,6 +138,8 @@ export interface FinalizedTurn {
   sessionId: string;
   title: string;
   stopped: boolean;
+  /** 本回合的上下文读数，随终态一并交给页面（尺只有一把，界面无需再估）。 */
+  context: ContextSnapshot | null;
 }
 
 /** 终态折叠：正文只认服务端 done.reply（与落盘逐字相同），live 文本一律不作为 content。 */
@@ -161,6 +163,7 @@ export function finalize(state: StreamingState, done: DoneEvent): FinalizedTurn 
     sessionId: done.session_id || state.sessionId,
     title: done.title || state.title,
     stopped: done.stopped,
+    context: done.context ?? null,
   };
 }
 

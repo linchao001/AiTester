@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import {
   ApiError, chatApprove, chatResumeStream, chatSendStream, chatStop, deleteChatSession,
   getCapabilities, getModels, getPending, getProjects, getSessionMessages, getSessions,
-  type AgentInfo, type AuthDecision, type ChatMessage, type ChatSession, type HealthResponse,
+  type AgentInfo, type AuthDecision, type ChatMessage, type ChatSession, type ContextSnapshot, type HealthResponse,
   type PermMode, type PendingRunInfo, type Project, type StreamEvent,
 } from "../api/client";
 import { applyEvent, finalize, held, newStreamState, type StreamingState } from "./chat/streamState";
@@ -59,8 +59,8 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
   const wsDirtyRef = useRef(false);                        // 工作区脏文档：切项目前问一句
   const [query, setQuery] = useState("");
   const [modelLabel, setModelLabel] = useState("未配置模型");
-  const [cap, setCap] = useState(0);
-  const [systemPrompt, setSystemPrompt] = useState("");
+  // 上下文读数只认后端快照：null 代表「这一回合没有读数」，界面显示「—」而不是 0%（CM-3）
+  const [ctxSnap, setCtxSnap] = useState<ContextSnapshot | null>(null);
   const [error, setError] = useState("");
   const [permMode, setPermMode] = useState<PermMode>(loadPermMode);
   const [pendingRuns, setPendingRuns] = useState<PendingRunInfo[]>([]);
@@ -85,14 +85,12 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       setAgents(caps.agents);
       setAgentsLoaded(true);      // 清单落地才允许对用户断言「该项目没有可用智能体」
       const agent = caps.agents.find((a) => a.id === agentId) || caps.agents[0];
-      setSystemPrompt(agent?.prompt || "");
       const uid = agent?.effective_uid || models.default_uid;
       // uid 形态是 "provider/model"（模型专项既有约定），所以要跨 provider 找
       const hit = models.providers
-        .flatMap((pv) => pv.models.map((m) => ({ label: m.name || m.id, ctx: m.context, key: `${pv.id}/${m.id}` })))
+        .flatMap((pv) => pv.models.map((m) => ({ label: m.name || m.id, key: `${pv.id}/${m.id}` })))
         .find((x) => x.key === uid);
       setModelLabel(hit ? hit.label : "未配置模型");
-      setCap(hit ? hit.ctx : 0);
       setError("");
     } catch (err) {
       // 迟到的旧失败不该把已经可用的页面整页打回错误页：只有还没成功拉到过能力清单
@@ -203,17 +201,21 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
     const seq = ++openSeq.current;                    // 只认最新一次点击，慢响应不得覆盖后点的会话
     loadingRef.current = !!id;                        // 新点击直接接管在途标记：null 代表「没有正文要拉」，否则上一条 stale 请求的 finally 不认它，标记永真
     setActiveId(id);
-    if (!id) { setMessages([]); return; }
+    if (!id) { setMessages([]); setCtxSnap(null); return; }
     try {
       const j = await getSessionMessages(id);
       if (seq !== openSeq.current) return;
       setMessages(j.messages);
+      // meter 跟的是「这条会话最后一次的读数」：倒找第一条 assistant 行，老 jsonl 行没有该节 ⇒ 「—」
+      const last = [...j.messages].reverse().find((m) => m.role === "assistant");
+      setCtxSnap(last?.context ?? null);
     } catch (err) {
       if (seq !== openSeq.current) return;
       // 加载失败就退回「新会话」：留着 activeId 会让页头挂着那条会话的标题、正文却是欢迎态，
       // 此时发送等于悄悄续写那条没加载出来的会话
       setActiveId(null);
       setMessages([]);
+      setCtxSnap(null);
       toast(err instanceof ApiError ? err.message : String(err));
     } finally {
       if (seq === openSeq.current) loadingRef.current = false;
@@ -263,8 +265,10 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
       const f = finalize(st, done);
       liveRef.current = null;
       setLive(null);
+      setCtxSnap(f.context ?? null);
       setMessages((prev) => [...prev, {
         role: "assistant", content: f.content, ts: Date.now(), steps: f.steps, stopped: f.stopped,
+        context: f.context ?? null,
       }]);
       if (f.sessionId !== activeId) setActiveId(f.sessionId);
       setWsSeq((n) => n + 1);            // 模型可能刚写了产出物：工作区树静默重拉（被停止也照拉）
@@ -611,10 +615,7 @@ export default function ChatPage({ health, healthError, onOpenSettings, onRetryH
         <Composer
           input={input}
           busy={busy}
-          modelLabel={modelLabel}
-          cap={cap}
-          systemPrompt={systemPrompt}
-          messages={messages}
+          usage={ctxSnap}
           projectName={currentProject?.name ?? ""}
           permMode={permMode}
           permLocked={pendingRuns.length > 0}

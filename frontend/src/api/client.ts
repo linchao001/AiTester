@@ -295,6 +295,18 @@ export interface ChatStep {
   detail: string;
 }
 
+/** 后端每回合的上下文读数快照。`occupancy_source` 只有两种值，估算不许伪装成真值（R-C1）。 */
+export interface ContextSnapshot {
+  window: number;
+  rounds: number;
+  peak_occupancy: number;
+  occupancy_source: "actual" | "estimated";
+  spent_input: number;
+  spent_output: number;
+  truncated: { tool: string; original: number; kept: number; dropped: number }[];
+  error: string | null;
+}
+
 /** 三档权限（第 5 片）：id 与后端 auth_rules 的三个常量逐字同值，前端不做第二套命名。 */
 export type PermMode = "free" | "boundary" | "strict";
 export type AuthDecision = "approve" | "reject";
@@ -318,7 +330,7 @@ export type StreamEvent =
                     command: string; cwd: string; run_id: string; subagent: SubagentRef | null }>
   | Frame<"sub", { phase: "start" | "done" | "fail"; call_id: string; name: string; title: string;
                    ok?: boolean; elapsed_ms?: number; tools?: number }>
-  | Frame<"done", { reply: string; steps: ChatStep[]; session_id: string; title: string; stopped: boolean }>
+  | Frame<"done", { reply: string; steps: ChatStep[]; session_id: string; title: string; stopped: boolean; context: ContextSnapshot | null }>
   | Frame<"error", { detail: string }>;
 
 export interface StreamBody {
@@ -469,6 +481,8 @@ export interface ChatMessage {
   steps: ChatStep[] | null;
   /** 被停止的 assistant 行：只进 UI 挂「（已停止）」，不进 content。 */
   stopped?: boolean;
+  /** 这一回合的上下文读数：后端落盘的可选节，老会话行没有 ⇒ null，界面显示「—」。 */
+  context?: ContextSnapshot | null;
 }
 
 const sessionsApi = (sub = "") => `/api/chat/sessions${sub}`;

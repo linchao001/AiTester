@@ -1,15 +1,12 @@
 import { useEffect, useState } from "react";
 import { fmtK } from "../../utils";
-import type { PermMode } from "../../api/client";
-import { contextUsage, PERM_MODES, permMeta } from "./utils";
+import type { ContextSnapshot, PermMode } from "../../api/client";
+import { PERM_MODES, permMeta } from "./utils";
 
 interface Props {
   input: string;
   busy: boolean;
-  modelLabel: string;      // 只用于上下文 tooltip（原型 :1418）；无可用模型传「未配置模型」（原型 :1332）
-  cap: number;             // 上下文上限（ModelInfo.context），0 表示不可估算
-  systemPrompt: string;
-  messages: { content: string }[];
+  usage: ContextSnapshot | null;  // 后端每回合的读数快照：界面只呈现，不折算 token（CM-5）
   projectName: string;     // 只读橙 chip 的文案源（项目维度，第 2 片接入）；空串代表项目还没落地，chip 不渲染
   permMode: PermMode;      // 当前档位：chip 的图标、文案与选中态唯一来源
   permLocked: boolean;     // 有待批就置灰（走查 15）：档位与挂起中那轮的判定必须一致
@@ -34,12 +31,22 @@ export default function Composer(p: Props) {
     return () => document.removeEventListener("click", close);
   }, [permOpen]);
 
-  const usage = contextUsage({ systemPrompt: p.systemPrompt, history: p.messages, input: p.input, cap: p.cap });
-  const cls = `ctx-meter${usage.pct >= 90 ? " hot" : usage.pct >= 70 ? " warn" : ""}`;
-  const tip = usage.cap
-    ? `上下文占用约 ${fmtK(usage.used)} / ${fmtK(usage.cap)} tokens（按「${p.modelLabel}」的最大上下文估算，含系统提示词 + 历史消息 + 当前输入）`
-      + (usage.pct >= 90 ? "：已接近上限，建议新建会话" : "")
-    : "未配置可用模型，无法估算上下文占用";
+  const u = p.usage;
+  const pct = u && u.window > 0 ? Math.min(100, Math.round((u.peak_occupancy / u.window) * 100)) : 0;
+  // 估算读数除了 tooltip 里的「估算」二字，界面上也必须看得出来（R-C1：不许伪装成真值）
+  const cls = `ctx-meter${pct >= 90 ? " hot" : pct >= 70 ? " warn" : ""}${u && u.occupancy_source === "estimated" ? " est" : ""}`;
+  const trunc = u && u.truncated.length
+    ? ` · 本回合截断 ${u.truncated.length} 处（`
+      + u.truncated.map((t) => `${t.tool} 原 ${fmtK(t.original)}→留 ${fmtK(t.kept)}（省 ${fmtK(t.dropped)}）`).join("；")
+      + "）"
+    : "";
+  const tip = !u || u.window <= 0
+    ? "暂无上下文读数（还没跑过一轮，或模型未配置最大上下文）"
+    : `上下文占用 ${fmtK(u.peak_occupancy)} / ${fmtK(u.window)} tokens`
+      + `（${u.occupancy_source === "actual" ? "真值" : "估算"}·本回合 ${u.rounds} 次调用`
+      + `·累计输入 ${fmtK(u.spent_input)}、输出 ${fmtK(u.spent_output)}）${trunc}`
+      + (u.error ? `·读数缺口：${u.error}` : "")
+      + (pct >= 90 ? "：已接近上限，建议新建会话" : "");
   // 阻塞原因非空就不给发：ChatPage.send 在这种状态下是静默 return 的，按钮若还亮着就是死按钮
   const canSend = p.input.trim().length > 0 && !p.busy && !p.sendBlock;
   // 自增高只在这里做：打字、chip 填值、失败回填都只改 input，清空时同样要显回落，
@@ -66,8 +73,8 @@ export default function Composer(p: Props) {
         />
         <div className="bar">
           <span className={cls} title={tip}>
-            <i className="cm-bar"><b style={{ width: `${usage.pct}%` }} /></i>
-            <span className="cm-pct">{usage.cap ? `${usage.pct}%` : "—"}</span>
+            <i className="cm-bar"><b style={{ width: `${pct}%` }} /></i>
+            <span className="cm-pct">{u && u.window > 0 ? `${u.occupancy_source === "actual" ? "" : "≈"}${pct}%` : "—"}</span>
           </span>
           {/* 只读展示：路径不进 UI（第 2 片偏离 5）。必须压掉 .c-chip 的 cursor:pointer，
               否则纯装饰 span 会伪装成可点控件——第 1 片「0 个死按钮」的同一条判据。

@@ -226,6 +226,7 @@
   .ctx-meter .cm-pct{min-width:32px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
   .ctx-meter.warn{color:#a97c14} .ctx-meter.warn .cm-bar b{background:#e2a30d}
   .ctx-meter.hot{color:var(--fail)} .ctx-meter.hot .cm-bar b{background:var(--fail)}
+  .ctx-meter.est .cm-bar b{opacity:.55}
   .c-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:4px 10px;font-size:12px;color:#5c554b;background:#fff;cursor:pointer}
   .c-chip.orange{border-color:#f3d9b8;background:var(--primary-soft);color:var(--primary-deep)}
   .c-chip.blue{border-color:#cdddfb;color:#4f7cff}
