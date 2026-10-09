@@ -18,13 +18,15 @@ class OpenAICompatProvider:
         base_url: str,
         model: str,
         timeout: int = 60,
+        stream_usage: bool = False,
         _client: ChatOpenAI | None = None,
     ) -> None:
         self.name = name
         self.model_ref = f"{name}/{model}"
         self._api_key = api_key
         self._client = _client or ChatOpenAI(
-            model=model, api_key=api_key, base_url=base_url, timeout=timeout
+            model=model, api_key=api_key, base_url=base_url, timeout=timeout,
+            stream_usage=stream_usage,
         )
 
     def complete(self, messages: list[dict[str, str]]) -> str:

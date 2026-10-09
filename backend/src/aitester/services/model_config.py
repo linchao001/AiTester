@@ -290,7 +290,21 @@ class ModelConfigService:
             api_key=provider["api_key"],
             base_url=provider["base_url"],
             model=mid,
+            stream_usage=True,
         )
+
+    def window_for(self, uid: str) -> int:
+        """该模型的最大上下文（0=未知）。不抛：读数是尽力而为，配置坏了自己会显形。"""
+        pid, sep, mid = (uid or "").partition("/")
+        if not sep or not mid:
+            return 0
+        try:
+            provider = self._provider(pid)
+            model = self._model(provider, mid)
+        except Exception:
+            return 0
+        value = model.get("context")
+        return int(value) if isinstance(value, int) and value > 0 else 0
 
     def build_default_provider(self) -> LlmProvider:
         return self.build_provider(self._config["default_uid"])

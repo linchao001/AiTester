@@ -190,6 +190,7 @@ def test_build_default_provider_passes_expected_args(
         "api_key": "sk-x123456789",
         "base_url": "https://api.deepseek.com",
         "timeout": 60,
+        "stream_usage": True,
     }
 
 
