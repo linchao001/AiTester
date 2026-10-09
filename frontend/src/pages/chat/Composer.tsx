@@ -33,17 +33,19 @@ export default function Composer(p: Props) {
 
   const u = p.usage;
   const pct = u && u.window > 0 ? Math.min(100, Math.round((u.peak_occupancy / u.window) * 100)) : 0;
-  // 估算读数除了 tooltip 里的「估算」二字，界面上也必须看得出来（R-C1：不许伪装成真值）
-  const cls = `ctx-meter${pct >= 90 ? " hot" : pct >= 70 ? " warn" : ""}${u && u.occupancy_source === "estimated" ? " est" : ""}`;
-  const trunc = u && u.truncated.length
+  // 估算读数除了 tooltip 里的「估算」二字，界面上也必须看得出来（R-C1：不许伪装成真值）。
+  // 前缀、类名、tooltip 三处共用这一个判据：写两遍比较式就会分叉成「有 ≈ 却没有半透明条」。
+  const est = !!u && u.occupancy_source !== "actual";
+  const cls = `ctx-meter${pct >= 90 ? " hot" : pct >= 70 ? " warn" : ""}${est ? " est" : ""}`;
+  const trunc = u && u.truncated?.length
     ? ` · 本回合截断 ${u.truncated.length} 处（`
       + u.truncated.map((t) => `${t.tool} 原 ${fmtK(t.original)}→留 ${fmtK(t.kept)}（省 ${fmtK(t.dropped)}）`).join("；")
       + "）"
     : "";
   const tip = !u || u.window <= 0
-    ? "暂无上下文读数（还没跑过一轮，或模型未配置最大上下文）"
+    ? "没有后端上下文读数：可能是这条会话的行早于读数落盘、模型未配置最大上下文，或这一回合没产生调用"
     : `上下文占用 ${fmtK(u.peak_occupancy)} / ${fmtK(u.window)} tokens`
-      + `（${u.occupancy_source === "actual" ? "真值" : "估算"}·本回合 ${u.rounds} 次调用`
+      + `（${est ? "估算" : "真值"}·本回合 ${u.rounds} 次调用`
       + `·累计输入 ${fmtK(u.spent_input)}、输出 ${fmtK(u.spent_output)}）${trunc}`
       + (u.error ? `·读数缺口：${u.error}` : "")
       + (pct >= 90 ? "：已接近上限，建议新建会话" : "");
@@ -74,7 +76,7 @@ export default function Composer(p: Props) {
         <div className="bar">
           <span className={cls} title={tip}>
             <i className="cm-bar"><b style={{ width: `${pct}%` }} /></i>
-            <span className="cm-pct">{u && u.window > 0 ? `${u.occupancy_source === "actual" ? "" : "≈"}${pct}%` : "—"}</span>
+            <span className="cm-pct">{u && u.window > 0 ? `${est ? "≈" : ""}${pct}%` : "—"}</span>
           </span>
           {/* 只读展示：路径不进 UI（第 2 片偏离 5）。必须压掉 .c-chip 的 cursor:pointer，
               否则纯装饰 span 会伪装成可点控件——第 1 片「0 个死按钮」的同一条判据。
