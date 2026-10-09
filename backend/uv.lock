@@ -231,6 +231,7 @@ dependencies = [
     { name = "langgraph" },
     { name = "openai" },
     { name = "pydantic-settings" },
+    { name = "pyyaml" },
     { name = "reme-ai" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -250,6 +251,7 @@ requires-dist = [
     { name = "langgraph", specifier = ">=0.2" },
     { name = "openai", specifier = ">=2" },
     { name = "pydantic-settings", specifier = ">=2.3" },
+    { name = "pyyaml", specifier = ">=6" },
     { name = "reme-ai", path = "../lib/reme_ai-0.4.1.8-py3-none-any.whl" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]

@@ -1,6 +1,7 @@
 # 依赖与虚拟环境
 .venv/
 node_modules/
+.idea/
 
 # 构建产物
 dist/
