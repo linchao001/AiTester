@@ -77,7 +77,7 @@
   - `estimate_text(text: str) -> int`、`estimate_messages(messages: list[Any]) -> int`
   - `input_tokens_of(response: Any) -> int | None`、`output_tokens_of(response: Any) -> int | None`
 
-- [ ] **Step 1: 写失败测试（兜底路径 + 单调性 + 真值取数）**
+- [x] **Step 1: 写失败测试（兜底路径 + 单调性 + 真值取数）**
 
 ```python
 # backend/tests/test_context_meter.py
@@ -176,12 +176,12 @@ def test_truth_readers_prefer_usage_metadata_then_response_metadata():
     assert meter.output_tokens_of(None) is None
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_context_meter.py -q`
 Expected: FAIL（`ModuleNotFoundError: aitester.context.meter` 或 `AttributeError: module 'aitester.context' has no attribute 'meter'`）
 
-- [ ] **Step 3: 写实现**
+- [x] **Step 3: 写实现**
 
 ```python
 """上下文计量：全仓唯一的一把尺。
@@ -326,12 +326,12 @@ def output_tokens_of(response: Any) -> int | None:
     return _tokens_of(response, _OUT_KEYS)
 ```
 
-- [ ] **Step 4: 跑测试确认全绿**
+- [x] **Step 4: 跑测试确认全绿**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_context_meter.py -q`
 Expected: `7 passed`
 
-- [ ] **Step 5: 全量门禁 + 提交**
+- [x] **Step 5: 全量门禁 + 提交**
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest -q        # 期望 888 + 7 = 895 passed
@@ -354,7 +354,7 @@ git commit -m "feat(context): 唯一的 token 尺——词表预热单飞、未�
   - `class ContextUsage`（**普通类，不是 dataclass**——它要作为 pydantic 工具字段传递并保身份）：`__init__(self, window: int)`、属性 `window/rounds/truncations/error`、`note_request(est_input: int)`、`note_response(real_input: int | None, real_output: int | None)`、`note_truncation(*, tool: str, original: int, kept: int, dropped: int)`、property `peak_occupancy/occupancy_source/spent_input/spent_output`、`snapshot() -> dict[str, Any]`
   - 快照键（**逐字，done 帧/落盘/前端三方共用**）：`window`、`rounds`、`peak_occupancy`、`occupancy_source`、`spent_input`、`spent_output`、`truncated`、`error`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 # backend/tests/test_context_usage.py
@@ -410,12 +410,12 @@ def test_error_is_recorded_verbatim_and_keeps_other_readings():
     assert u.snapshot()["peak_occupancy"] == 42      # 一处坏不抹掉其余读数
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_context_usage.py -q`
 Expected: FAIL（`ModuleNotFoundError`）
 
-- [ ] **Step 3: 写实现**
+- [x] **Step 3: 写实现**
 
 ```python
 """一回合一个的上下文累加件。
@@ -506,12 +506,12 @@ class ContextUsage:
 
 > 上面 `occupancy_source` 只有一条规则：**peak 对应的样本里有真值就是 `actual`，否则 `estimated`**；`_input` 为空时也返 `estimated`（前端据此显示「—」而不是 0%）。不许在这里加第二种口径。
 
-- [ ] **Step 4: 跑测试确认全绿**
+- [x] **Step 4: 跑测试确认全绿**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_context_usage.py -q`
 Expected: `5 passed`
 
-- [ ] **Step 5: 全量门禁 + 提交**
+- [x] **Step 5: 全量门禁 + 提交**
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest -q        # 895 + 5 = 900
@@ -537,7 +537,7 @@ git commit -m "feat(context): 每回合累加件——读数从样本派生、�
   - `cap_result(result: Any, *, tool: str, usage: ContextUsage | None) -> Any`（处理 `str` 与 `(str, artifact)` 两种形状）
   - `AiTooler.usage: ContextUsage | None = None`（装配层注入位）
 
-- [ ] **Step 1: 写失败测试（纯函数侧）**
+- [x] **Step 1: 写失败测试（纯函数侧）**
 
 ```python
 # backend/tests/test_context_budget.py
@@ -664,12 +664,12 @@ def test_cap_result_only_touches_content_never_the_artifact(monkeypatch):
     assert cap_result(12345, tool="kb", usage=u) == 12345        # 非字符串原样通过
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_context_budget.py -q`
 Expected: FAIL（`ModuleNotFoundError: aitester.context.budget`）
 
-- [ ] **Step 3: 写 `context/budget.py`**
+- [x] **Step 3: 写 `context/budget.py`**
 
 ```python
 """单条工具产物的 token 闸——本片唯一会改变「送给模型的内容」的动作（裁定 CM-2）。
@@ -777,7 +777,7 @@ def cap_result(result: Any, *, tool: str, usage: ContextUsage | None) -> Any:
 
 > **两处不许走样**：① `TRUNCATION_MARK` 的措辞与 `"[工具输出已截断：原约 "` 前缀是断言对象（R-C3）——若实现者改了措辞，`test_over_cap_marks_with_three_numbers_and_keeps_head_and_tail` 与 `test_tiny_cap_below_the_mark_itself_lets_the_mark_win` **必须红**，然后按 spec §3.6 原文改回来，不许反过来改测试。② 记账恒等式 `kept + dropped == original` 由 `cap_content` 单点保证，三条截断测试各自钉一次（不同 cap 区间），这是「留痕必含三个数」的可复现版本。
 
-- [ ] **Step 4: 写 `AiTooler` 的两个调用点**
+- [x] **Step 4: 写 `AiTooler` 的两个调用点**
 
 ```python
 """工具基础抽象——基于 LangChain BaseTool，所有内置工具继承此类。"""
@@ -819,7 +819,7 @@ class AiTooler(BaseTool):
 
 > `usage` 用普通类型标注是安全的：`BaseTool.model_config` 实测含 `arbitrary_types_allowed=True`（本仓 langchain_core 1.6.6），pydantic 对普通类做 isinstance 校验而**不重构对象**，所以 `tool.usage is injected` 成立——Step 5 第一条测试就是钉这个身份。**不许**把 `ContextUsage` 改成 dataclass 或 pydantic 模型：那会让 pydantic 在构造工具时复制一份新账，父面与子面就此分账（CM-6 破防）。
 
-- [ ] **Step 5: 写基类侧的差分测试（证明闸不在任何图里）**
+- [x] **Step 5: 写基类侧的差分测试（证明闸不在任何图里）**
 
 追加到 `backend/tests/test_context_budget.py`：
 
@@ -883,7 +883,7 @@ def test_double_entry_does_not_double_book(monkeypatch):
 
 > 后两条测试依赖 `est("w"*400)=ceil(400×1.15)=460`、cap=200 ⇒ `out` 的整段估算 ≤ 200，再进一次 `cap_content` 必然走 `original <= cap` 短路。若实现把短路写成了「先截再比」，这条就是红证。
 
-- [ ] **Step 6: 跑本片测试 + 全量门禁**
+- [x] **Step 6: 跑本片测试 + 全量门禁**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_context_budget.py tests/test_adapters.py tests/test_file_tools.py tests/test_command_tools.py tests/test_file_search_tools.py -q`
 Expected: 全绿（本片 `test_context_budget.py` 12 条）。**若既有工具测试因截断标记而红**（有测试断言工具返回逐字文案），**优先判定为既有断言遇上新闸**：既有输出都在 12000 token 以内，正常不该红；真红了就是本任务实现走样（比如 `cap_for()` 被读成 0），**不许改既有断言迁就实现**。
@@ -892,7 +892,7 @@ Expected: 全绿（本片 `test_context_budget.py` 12 条）。**若既有工具
 cd backend && .venv/Scripts/python -m pytest -q      # 900 + 12 = 912
 ```
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add backend/src/aitester/context/budget.py backend/src/aitester/adapters/tools/base.py backend/tests/test_context_budget.py
@@ -918,7 +918,7 @@ git commit -m "feat(context): 单条工具产物装上 token 闸——只截 con
 
 > **窗口只有一个来源（控制方裁定，走查后回填 spec「实施澄清」）**：spec §3.4 原写 `MeteredProvider(inner, window, usage)`。落地**去掉 `window` 形参**——`usage.window` 就是本回合的窗口，装饰器再带一份就是同一件事的两个副本（R-C2 禁止），而子智能体共用父累加件时两份必然打架（子的模型可能不同）。`window_for(uid)` 因此**每回合只被调用一次**（C5 的 `_metered_pair`）。子模型窗口与父不同这件事如实登记为 P-7，不在第一片建模。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 # backend/tests/test_metered_provider.py
@@ -1027,12 +1027,12 @@ def test_openai_compat_passes_stream_usage(monkeypatch):
     assert seen["stream_usage"] is True
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_metered_provider.py -q`
 Expected: FAIL（`ModuleNotFoundError: aitester.adapters.llm.metered`）
 
-- [ ] **Step 3: 写 `adapters/llm/metered.py`**
+- [x] **Step 3: 写 `adapters/llm/metered.py`**
 
 ```python
 """provider 装饰器：把计量缝装在所有调用流唯一共用的那一层。
@@ -1099,7 +1099,7 @@ class MeteredProvider:
         self.usage.note_response(real_in, real_out)
 ```
 
-- [ ] **Step 4: 改 `openai_compat.py` 与 `model_config.py`**
+- [x] **Step 4: 改 `openai_compat.py` 与 `model_config.py`**
 
 > **本片对 spec §3.5 的一处实现偏离（控制方裁定，走查后回填 spec「实施澄清」）**：spec 原文写「`build_provider` 构造时带 `stream_usage=True`，**返回 `MeteredProvider(...)`**」。落地把包装点从 `build_provider` 挪到**装配根**（C5 的 `_metered_pair`）——理由是累加件的**身份**：一回合一个 `ContextUsage`，而 `build_provider` 是「按 uid 造一个 provider」的纯工厂，被 `probe_provider`、平台智能体、子智能体等多处复用，在它里面包装造不出「这一回合的账」，只会多出一个无处安放的累加件。`stream_usage=True` 与窗口读取仍按 spec 留在 `model_config.py`（窗口是模型元数据，账是回合状态——各归其位）。**尺的单一实现处没有变**：`MeteredProvider` 仍是唯一的计量缝。
 
@@ -1150,7 +1150,7 @@ class MeteredProvider:
         return int(value) if isinstance(value, int) and value > 0 else 0
 ```
 
-- [ ] **Step 5: 跑测试 + 全量门禁**
+- [x] **Step 5: 跑测试 + 全量门禁**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_metered_provider.py -q`
 Expected: `7 passed`
@@ -1162,7 +1162,7 @@ Expected: 全绿（`stream_usage=True` 会让 `test_model_config.py`/`test_adapt
 cd backend && .venv/Scripts/python -m pytest -q      # 912 + 7 = 919
 ```
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add backend/src/aitester/adapters/llm/metered.py backend/src/aitester/adapters/llm/openai_compat.py backend/src/aitester/services/model_config.py backend/tests/test_metered_provider.py
@@ -1195,7 +1195,7 @@ git commit -m "feat(context): provider 装饰器接回真值——三入口共�
   - `MemoryStore.save(..., context: dict | None = None)`
   - done 帧新增键 `context`（快照 dict 或 None）；`ChatMessageInfo.context: dict | None = None`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 # backend/tests/test_context_wiring.py
@@ -1245,12 +1245,12 @@ def test_file_memory_roundtrip_keeps_context(tmp_path):
     assert rows[0].context is None                    # 老口径调用（不传）照常落盘
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_context_wiring.py -q`
 Expected: FAIL（`TypeError: build_default_registry() got an unexpected keyword argument 'usage'`）
 
-- [ ] **Step 3: 注册表与落盘链**
+- [x] **Step 3: 注册表与落盘链**
 
 `adapters/tools/__init__.py`：`build_default_registry` 形参表加 `usage=None`，**每一处构造都带上它**（漏一处就是「同一规则第二处实现」的变体）：
 
@@ -1282,7 +1282,7 @@ Expected: FAIL（`TypeError: build_default_registry() got an unexpected keyword 
 
 `memory/base.py:9-10` 与 `memory/in_memory.py:5-8` 的 `save` 形参表加 `context: dict | None = None`（`InMemoryMemoryStore` 按既有口径忽略它，并把「骨架实现不建模过程块与停止标注」那句注释补成「……、上下文读数」）；`memory/file_memory.py:34-36` 透传：`self._store.append(sid, role, content, steps, stopped, context)`。
 
-- [ ] **Step 4: 装配根造累加件（含平台智能体与子智能体）**
+- [x] **Step 4: 装配根造累加件（含平台智能体与子智能体）**
 
 `services/agent_runtime.py`：`AgentInstance` 末位加 `usage: ContextUsage | None = None`（frozen dataclass，带缺省 ⇒ 既有手工构造 `AgentInstance(...)` 的挂具零改动，见 `test_chat_stream.py:226`）。窗口**只在一处算**，两个方法各司其职：
 
@@ -1340,7 +1340,7 @@ Expected: FAIL（`TypeError: build_default_registry() got an unexpected keyword 
 
 > **本子要改的文件比表里多一处**：`adapters/tools/subagent_tools/task.py`（`build_task_tool` 加 `usage` 形参并透传）。Step 8 的 `git add` 已含它。
 
-- [ ] **Step 5: 回合侧——落盘 + done 帧白名单**
+- [x] **Step 5: 回合侧——落盘 + done 帧白名单**
 
 `services/chat.py`：
 - `PreparedRun` 加 `usage: ContextUsage | None = None`；`prepare()` 里 `usage=instance.usage`。
@@ -1357,7 +1357,7 @@ Expected: FAIL（`TypeError: build_default_registry() got an unexpected keyword 
 - `interaction/router.py:158-165` 白名单加 `"context": event["context"]`（**严格取键**，与同处其余字段同口径——缺键即 KeyError，正是我们要的防假绿）。
 - `interaction/schemas.py` `ChatMessageInfo` 加 `context: dict | None = None`；`interaction/sessions.py:60-63` 的 `ChatMessageInfo(...)` 加 `context=m.context`。
 
-- [ ] **Step 6: 词表预热线程（启动期、best-effort）**
+- [x] **Step 6: 词表预热线程（启动期、best-effort）**
 
 `main.py` 的 `lifespan` 内（`kb.start()` 之后、`yield` 之前）：
 
@@ -1375,7 +1375,7 @@ Expected: FAIL（`TypeError: build_default_registry() got an unexpected keyword 
 
 （`main.py` 顶部加 `import threading` 与 `from aitester.context import meter`。）
 
-- [ ] **Step 7: 接线测试补齐（回合级 + 跨 wait/resume 连续）**
+- [x] **Step 7: 接线测试补齐（回合级 + 跨 wait/resume 连续）**
 
 追加到 `backend/tests/test_context_wiring.py`。**挂具全部复用既有的**：`_runtime` 与 `project` 从 `test_chat_stream` 直接 import（先例：`test_chat_pending.py:12` 同一行注释写着「本片不重写一遍装配」），`_Scripted` 同样来自 `test_chat_stream:49`：
 
@@ -1443,7 +1443,7 @@ def test_resume_continues_the_same_ledger(tmp_path, project):
 
 > 三条都是**服务层/装配层真链路**：`_runtime` 造的是真 `AgentRuntime` + 真注册表 + 真图，替身只有 provider。**不许**为了省事另造 `create_app`/`TestClient` 的起流方式（`test_chat_stream.py` 已给出更短的 `svc.stream_turn` 直调形态），也不许在测试里手工 `ContextUsage(...)` 塞进实例——那正是本任务要证的「装配根自己造账」。
 
-- [ ] **Step 8: 全量门禁 + 提交**
+- [x] **Step 8: 全量门禁 + 提交**
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest -q        # 919 + 7 = 926（以实跑为准，只增不减）
@@ -1471,7 +1471,7 @@ git commit -m "feat(context): 累加件进装配与落盘——一本账贯穿 p
 - Consumes: C5 的快照键（`window/rounds/peak_occupancy/occupancy_source/spent_input/spent_output/truncated/error`）
 - Produces: `Composer` 的新 prop `usage: ContextSnapshot | null`；`client.ts` 导出 `ContextSnapshot`
 
-- [ ] **Step 1: 先写反向钉测试（红）**
+- [x] **Step 1: 先写反向钉测试（红）**
 
 ```python
 # backend/tests/test_frontend_context_display.py
@@ -1515,12 +1515,12 @@ def test_done_frame_and_message_row_carry_context():
     assert "context?: ContextSnapshot | null;" in src                       # 会话行可选节
 ```
 
-- [ ] **Step 2: 跑测试确认红**
+- [x] **Step 2: 跑测试确认红**
 
 Run: `cd backend && .venv/Scripts/python -m pytest tests/test_frontend_context_display.py -q`
 Expected: 三条全 FAIL（旧代码里 `estTokens` 等还在）
 
-- [ ] **Step 3: `api/client.ts` 加类型**
+- [x] **Step 3: `api/client.ts` 加类型**
 
 ```ts
 /** 后端每回合的上下文读数快照。`occupancy_source` 只有两种值，估算不许伪装成真值（R-C1）。 */
@@ -1544,12 +1544,12 @@ done 帧（`:321`）：`| Frame<"done", { reply: string; steps: ChatStep[]; sess
   context?: ContextSnapshot | null;
 ```
 
-- [ ] **Step 4: `utils.ts` 删三把假尺，`streamState.ts` 带上快照**
+- [x] **Step 4: `utils.ts` 删三把假尺，`streamState.ts` 带上快照**
 
 `utils.ts`：**整段删除** `estTokens`、`HISTORY_MAX`、`contextUsage` 及其注释（含「原型 :1393-1398」那两行），不留兼容别名、不留 `@deprecated`。
 `streamState.ts`：`FinalizedTurn` 加 `context: ContextSnapshot | null;`；`finalize` 的返回体加 `context: done.context ?? null,`（`case "done"` 分支已把 `ev` 存进 `state.done`，无需另存）。
 
-- [ ] **Step 5: `Composer.tsx` 改吃快照**
+- [x] **Step 5: `Composer.tsx` 改吃快照**
 
 Props 里删 `cap: number`、`systemPrompt: string`、`messages: { content: string }[]`、`modelLabel: string`（`modelLabel` 只被旧 tooltip 用；header 那处 `ChatPage.tsx:584` 不受影响），加 `usage: ContextSnapshot | null;`。计算段整体替换：
 
@@ -1578,7 +1578,7 @@ JSX（`:67-71`）只改数值来源与「—」条件，类名一律不动（`Ap
 
 > 「`u && u.window > 0` 才画百分比」是 CM-3 的正身：**没有窗口就是「—」，不是 0%、也不是 100%**。`Math.round(` 只允许出现在这一行的 pct 折算里——Step 1 的钉桩按「界面层不许再算 token」（`estTokens` / `contextUsage` 两个符号）写，而不是按「不许出现 Math.round」写；后者会误伤合法的百分比折算，早先草稿里那条已在 Step 1 注释掉并说明理由。
 
-- [ ] **Step 6: `ChatPage.tsx` 接上快照、删掉 write-only 状态**
+- [x] **Step 6: `ChatPage.tsx` 接上快照、删掉 write-only 状态**
 
 - 删 `cap` 状态（`:62`）与 `:91-95` 里 `ctx: m.context` 那一条映射及 `setCap(...)`；`hit` 若只剩 `label` 用途就一并收窄（`modelLabel` 保留，header `:584` 在用）。
 - 删 `systemPrompt` 状态（`:63`）与其 setter 调用点（`grep -n setSystemPrompt ChatPage.tsx` 定位）。
@@ -1588,7 +1588,7 @@ JSX（`:67-71`）只改数值来源与「—」条件，类名一律不动（`Ap
 
 `tsconfig` 是 `strict + noUnusedLocals`：**tsc 报出的每一个「declared but never read」都要删净，不许留 write-only 状态，也不许用 `_` 前缀或 `@ts-ignore` 绕开。**
 
-- [ ] **Step 7: 构建 + 反向钉转绿**
+- [x] **Step 7: 构建 + 反向钉转绿**
 
 ```bash
 cd frontend && npm run build                                  # 期望 0 error
@@ -1596,7 +1596,7 @@ cd backend && .venv/Scripts/python -m pytest tests/test_frontend_context_display
 cd backend && .venv/Scripts/python -m pytest -q               # 926 + 3 = 929，只增不减
 ```
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
 ```bash
 git add frontend/src/pages/chat/utils.ts frontend/src/pages/chat/Composer.tsx frontend/src/pages/ChatPage.tsx \
@@ -1840,3 +1840,9 @@ git push origin master:main
   - **spec 回填**：新增文末「## 实施澄清（第一片，C7 登记）」一节，登记 P-1（账本 `ledger.json` 不另抄每回合读数摘要，收窄 §5 第 6 条后半句，代价与第二片归属照实）；§3.8 那条 C6 澄清**未重抄、未改写**，新节用一行指向它。
   - **Step 4（提交与推送）**：测试与两份文档回填 = `8e5f7a1`（3 files，+169/-2，`backend/tests/test_context_e2e.py` 新建），`git push origin master:main` ⇒ `ea091a9..8e5f7a1  main` 成功；本行与本节由收口的第二笔文档提交落地（提交号只能事后登记，不留自指的假哈希）。
   - **照实登记的三处欠账（C7 未越权处理）**：① C1–C6 的 step 框**仍是全未勾**——那是各任务自己的回填债，C7 不替别人作保，勾了就是二手见证；② Step 3 那句「Expected 888 → 本片累计 +43（C7 +2）」是计划期估值，实际每段读数只在控制方 ledger（`.superpowers/sdd/2026-10-09-context-metering-gate/progress.md`）与本节里生效，C7 因追加 A/B 是 +4 不是 +2；③ 本文与 spec 的 `file:line` 坐标写到 `9010294`/C5 时代码位，本片未逐条复核，行号会漂，以符号名为准。
+
+- **控制方补记（C7 评审后，2026-10-09）**：
+  - **C7 评审**：区间 `ea091a9..75ea585`（2 commits，只含一个新测试文件 + 两份文档，**零生产码改动**）。Verdict **Approved**，**0 Critical / 0 Important / 3 Minor**，故**不开修复轮**。控制方另在干净树上独立复跑门禁 ⇒ **949 passed in 79.03s**（与评审代理的 949 一致；实施者登记的那次 75.73s 是脏树期读数，条数相同）。
+  - **三条 Minor 的裁定（全部登记不修，归第二片）**：**M-1** SSE 那条未钉读数**值**（「八字段齐全、帧行等值、账却全零」的理论残余面；评审自己按追加 A 的口径验过两侧向变异都红，故不升 Important）⇒ 与「SSE 帧带 `truncated` 三数」同批做。**M-2** CM-5 的证书只覆盖 provider 半边，`local_tools(root)` 不带 `usage`（**简报代码逐字如此**，属计划口径遗留、非实施者偏差）⇒ 第二片给 e2e② 加一条带 usage 的工具面变体，一举钉「缝 + 账」两半。**M-3** 跨文件 import 私有挂具 `_app/_pid/_Scripted` ⇒ 本仓既有先例两条（`test_chat_pending.py:10`、`test_context_wiring.py:13`），且 C6 评审 M-5 已定「改名即红是买协议不漂的钱」同一口径，维持现状。
+  - **补勾 C1–C6 的 step 框 39 处**（上一条登记的欠账①，此处清偿）：依据是各任务报告里的逐步红证——C2「Step 2 RED 与 brief 预期 `ModuleNotFoundError` 一致」、C3「RED（brief Step 2）」、C4「Step 2 — 红证（真实输出）」、C5「Step 1 的 4 条先跑成红…3 failed / 1 passed」、C6「Step 2 红证…三条全红」，外加 C1–C6 全部有已过评审并推送的提交。**C8 的 7 个框照旧不勾**（未开工），也不替走查读数预先作保。
+  - **每任务门禁实跑梯子（以 ledger 为准，覆盖计划期「+43 左右」的估值）**：C1 **896**（评审修复轮 +1）⇒ C2 **905** ⇒ C3 **924**（修复轮 +1）⇒ C4 **935** ⇒ C5 **942**（+7）⇒ C6 **945**（+3，修复轮不加函数、仍 945）⇒ C7 **949**（+4）。基线 888，累计 **+61**，全程只增不减。
