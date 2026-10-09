@@ -294,7 +294,11 @@ class ModelConfigService:
         )
 
     def window_for(self, uid: str) -> int:
-        """该模型的最大上下文（0=未知）。不抛：读数是尽力而为，配置坏了自己会显形。"""
+        """该模型的最大上下文（0=未知）。不抛：读数是尽力而为，配置坏了自己会显形。
+
+        只认真整数：`bool` 是 `int` 的子类，`context: true` 会被 `isinstance(v, int)` 收
+        成窗口 1；浮点/字符串一律按「元数据脏 ⇒ 未知」处理，不猜测也不截断。
+        """
         pid, sep, mid = (uid or "").partition("/")
         if not sep or not mid:
             return 0
@@ -304,7 +308,7 @@ class ModelConfigService:
         except Exception:
             return 0
         value = model.get("context")
-        return int(value) if isinstance(value, int) and value > 0 else 0
+        return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
     def build_default_provider(self) -> LlmProvider:
         return self.build_provider(self._config["default_uid"])

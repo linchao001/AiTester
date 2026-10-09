@@ -18,6 +18,7 @@ def setup_function(_):
 
 def test_stream_counts_a_round_even_without_truth():
     u = ContextUsage(window=1000)
+    assert (u.rounds, u.peak_occupancy) == (0, 0)   # 空累加件就是 0/estimated，不许有底噪
     p = MeteredProvider(MockProvider(), u)
     out = "".join(str(c.content) for c in p.stream_messages(MSG))
     assert out.startswith("[mock]")
@@ -72,8 +73,28 @@ def test_bind_tools_shares_one_ledger_and_proxies_identity():
     assert bound.name == p.name and bound.model_ref == p.model_ref
     it = bound.stream_messages(MSG)
     assert u.rounds == 0                            # 没人开始迭代就没发起请求：轮次不许冒领
-    assert list(it)
+    chunks = list(it)
     assert u.rounds == 1                            # 绑定后的调用也记进父回合
+    assert u.peak_occupancy == meter.estimate_messages(MSG)   # 记进去的是估算，不是空白
+
+
+def test_partial_truth_then_abandon_still_declares_no_truth():
+    """带 usage 的块已经见过再断开，也不许冒领：只有跑完整条流才有资格谈真值（R-C1）。
+    把真值声明挪进循环里的实现会被这条打回（`spent_output` 当场多出一笔）。"""
+    class _T:
+        def stream_messages(self, messages):
+            yield AIMessageChunk(content="a", usage_metadata={
+                "input_tokens": 500, "output_tokens": 5, "total_tokens": 505})
+            yield AIMessageChunk(content="b")
+
+    u = ContextUsage(window=1000)
+    p = MeteredProvider(_T(), u)
+    gen = p.stream_messages(MSG)
+    assert next(gen).content == "a"
+    gen.close()
+    assert (u.rounds, u.occupancy_source) == (1, "estimated")
+    assert u.peak_occupancy == meter.estimate_messages(MSG)   # 那一轮留的还是估算
+    assert u.spent_output == 0                                # 半个字的真值都不许进账
 
 
 def test_window_for_is_side_effect_free_and_zero_when_unknown():
@@ -84,15 +105,22 @@ def test_window_for_is_side_effect_free_and_zero_when_unknown():
         "enabled": True, "models": [
             {"id": "deepseek-chat", "enabled": True, "context": 131072},
             {"id": "weird", "enabled": True, "context": "131072"},   # 字符串不是数
+            {"id": "boolish", "enabled": True, "context": True},     # bool 是 int 的子类
+            {"id": "half", "enabled": True, "context": 0.5},         # 浮点不猜不截断
+            {"id": "zero", "enabled": True, "context": 0},
         ]}]}
     assert ModelConfigService.window_for(svc, "deepseek/deepseek-chat") == 131072
     assert ModelConfigService.window_for(svc, "deepseek/weird") == 0   # 脏元数据 ⇒ 未知，不抛
+    assert ModelConfigService.window_for(svc, "deepseek/boolish") == 0  # 不许读成窗口 1
+    assert ModelConfigService.window_for(svc, "deepseek/half") == 0
+    assert ModelConfigService.window_for(svc, "deepseek/zero") == 0
     assert ModelConfigService.window_for(svc, "") == 0
     assert ModelConfigService.window_for(svc, "deepseek/nope") == 0
     assert ModelConfigService.window_for(svc, "nope/x") == 0
 
 
 def test_openai_compat_passes_stream_usage(monkeypatch):
+    from aitester.adapters.llm.openai_compat import OpenAICompatProvider
     from aitester.adapters.llm import openai_compat
 
     seen: dict[str, object] = {}
@@ -102,6 +130,9 @@ def test_openai_compat_passes_stream_usage(monkeypatch):
             seen.update(kwargs)
 
     monkeypatch.setattr(openai_compat, "ChatOpenAI", _FakeChatOpenAI)
-    openai_compat.OpenAICompatProvider(name="p", api_key="k", base_url="u",
-                                      model="m", stream_usage=True)
+    OpenAICompatProvider(name="p", api_key="k", base_url="u", model="m")
+    assert seen["stream_usage"] is False          # 默认关：开关只归 build_provider 那一头
+    seen.clear()
+    OpenAICompatProvider(name="p", api_key="k", base_url="u",
+                         model="m", stream_usage=True)
     assert seen["stream_usage"] is True

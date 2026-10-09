@@ -1,9 +1,11 @@
 """provider 装饰器：把计量缝装在所有调用流唯一共用的那一层。
 
-主会话与 case_design 专属图都走 `stream_messages`（`agent_graph.py:98`），子智能体与
-评审子走同一个 bound provider，`echo` 走 `complete`——三条出口 + `bind_tools` 都在这里
-过一遍账，所以尺只有一把（CM-5）。真值不回写估算样本之外的地方：`note_response(None, …)`
-就是一次「这轮没有真值」的声明（R-C1）。
+生产链路实际经过这里的只有两条出口：主会话与 case_design 专属图的 `stream_messages`
+（`agent_graph.py:98`，子智能体与评审子走同一个 bound provider）和 `echo` 的 `complete`
+（`graph.py:18`）；`invoke_messages` 与 `bind_tools` 也一并包上，是因为它们是 provider
+协议的其余成员——`MockProvider.stream_messages` 自调的是自己那一份，不经过这层。
+三条出口 + `bind_tools` 都在这里过一遍账，所以尺只有一把（CM-5）。真值不回写估算样本
+之外的地方：`note_response(None, …)` 就是一次「这轮没有真值」的声明（R-C1）。
 """
 
 from __future__ import annotations
@@ -50,13 +52,21 @@ class MeteredProvider:
         self._before(messages)
         real_in: int | None = None
         real_out: int | None = None
-        for chunk in self._inner.stream_messages(messages):
-            got_in = meter.input_tokens_of(chunk)
-            got_out = meter.output_tokens_of(chunk)
-            if got_in is not None:
-                real_in = got_in
-            if got_out is not None:
-                real_out = got_out
-            yield chunk
-        # 只有整条流跑到尽头才谈真值：中途被取消就没有「这一轮的用量」可言
-        self.usage.note_response(real_in, real_out)
+        finished = False
+        try:
+            for chunk in self._inner.stream_messages(messages):
+                got_in = meter.input_tokens_of(chunk)
+                got_out = meter.output_tokens_of(chunk)
+                if got_in is not None:
+                    real_in = got_in
+                if got_out is not None:
+                    real_out = got_out
+                yield chunk
+            finished = True
+        finally:
+            # 「跑完整条流」是拿真值的唯一资格：断开/取消/上游抛错时，哪怕前面已经见过
+            # 带 usage 的块，也一律声明「这轮没有真值」——那一轮的用量压根还没发生完。
+            if finished:
+                self.usage.note_response(real_in, real_out)
+            else:
+                self.usage.note_response(None, None)
