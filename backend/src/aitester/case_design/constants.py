@@ -60,8 +60,10 @@ LEDGER_NAME = "ledger.json"
 PLAN_NAME = "plan.json"
 OUTLINE_NAME = "outline.md"
 
-# 首触意向门（修 2）：新回合先判 task/chat 再开账；文件在 design/ 下，与账本同层。
+# 首触意向门（修 2 / 修 3）：新回合先判 task/chat 再开账；文件在 design/ 下，与账本同层。
+# face：chat＝无工具闲聊；write_only＝模糊句只许写 intent.json；空＝全工具面（已开账后）。
 INTENT_NAME = "intent.json"
 INTENTS: tuple[str, ...] = ("task", "chat")
+INTENT_FACES: tuple[str, ...] = ("", "chat", "write_only")
 
 CASE_DESIGN_KEY = "case_design_env"   # case_env 注入通道（与 GATE_KEY 同款；T9 图装配读写此键）

@@ -13,6 +13,7 @@ import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from logging import getLogger
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,36 @@ def is_session_id(value: str) -> bool:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _now_iso() -> str:
+    """本地时区 ISO-8601（含偏移），对齐 Reme / AgentScope Msg.created_at。"""
+    return datetime.now().astimezone().isoformat()
+
+
+def _iso_from_ms(ms: int) -> str:
+    if ms <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(ms / 1000).astimezone().isoformat()
+    except (OSError, OverflowError, ValueError):
+        # Windows 对接近 epoch 的极小毫秒会 OSError；老测试夹具里的 ts=1/2 走这条
+        return ""
+
+
+def _ms_from_iso(value: str) -> int:
+    text = (value or "").strip()
+    if not text:
+        return 0
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return int(dt.timestamp() * 1000)
+    except (ValueError, OSError, OverflowError):
+        return 0
+
+
+def _new_message_id() -> str:
+    return f"msg_{uuid.uuid4().hex}"
 
 
 def _title_from(first_message: str) -> str:
@@ -65,9 +96,18 @@ class Session:
 
 @dataclass
 class ChatMessage:
+    """消息行：磁盘写 Reme 最低可用字段 + AiTester 扩展；内存保留 ts 供 API。
+
+    Reme 最低可用：name / role / content / created_at / id。
+    磁盘不再写 ts（1A）；读侧由 created_at 反算，老行只有 ts 时再合成 created_at。
+    """
+
     role: str
     content: str
-    ts: int
+    ts: int  # 仅内存/API；to_dict 不落盘
+    name: str = ""
+    id: str = ""
+    created_at: str = ""
     agent_id: str = ""
     session_id: str = ""
     steps: list[dict[str, Any]] | None = None
@@ -78,16 +118,44 @@ class ChatMessage:
     context: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        # 顺序对齐 Reme 样例，其后是 AiTester 扩展；刻意不含 ts
+        return {
+            "name": self.name or self.role,
+            "role": self.role,
+            "content": self.content,
+            "created_at": self.created_at,
+            "id": self.id,
+            "agent_id": self.agent_id,
+            "session_id": self.session_id,
+            "steps": self.steps,
+            "stopped": self.stopped,
+            "context": self.context,
+        }
 
     @staticmethod
     def from_dict(raw: dict[str, Any]) -> ChatMessage:
+        role = str(raw.get("role") or "")
+        name = str(raw.get("name") or "") or role
+        msg_id = str(raw.get("id") or "")
+        created_at = str(raw.get("created_at") or "")
+        ts = _ms_from_iso(created_at) if created_at else 0
+        if ts <= 0:
+            # 老行：只有 epoch ms 的 ts → 反算 ISO，供内存形态对齐 Reme
+            try:
+                ts = int(raw.get("ts") or 0)
+            except (TypeError, ValueError):
+                ts = 0
+            if ts > 0 and not created_at:
+                created_at = _iso_from_ms(ts)
         steps = raw.get("steps")
         raw_context = raw.get("context")
         return ChatMessage(
-            role=str(raw.get("role") or ""),
+            role=role,
             content=str(raw.get("content") or ""),
-            ts=int(raw.get("ts") or 0),
+            ts=ts,
+            name=name,
+            id=msg_id,
+            created_at=created_at,
             agent_id=str(raw.get("agent_id") or ""),
             session_id=str(raw.get("session_id") or ""),
             steps=steps if isinstance(steps, list) else None,
@@ -296,7 +364,8 @@ class SessionStore:
         context: dict[str, Any] | None = None,
     ) -> None:
         path = self._path(session_id)
-        ts = _now_ms()
+        created_at = _now_iso()
+        ts = _ms_from_iso(created_at) or _now_ms()
         # jsonl 先写、index 后记：中途崩溃只丢一次计数更新，消息本身不丢
         with self._lock:
             record = self._index_by_id().get(session_id)
@@ -305,6 +374,7 @@ class SessionStore:
             agent_id = self._agent_id or str(record.get("agent_id") or "")
             line = ChatMessage(
                 role=role, content=content, ts=ts,
+                name=role, id=_new_message_id(), created_at=created_at,
                 agent_id=agent_id, session_id=session_id,
                 steps=steps or None, stopped=stopped, context=context,
             ).to_dict()

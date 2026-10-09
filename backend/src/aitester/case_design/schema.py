@@ -39,6 +39,42 @@ def validate_intent(raw: Any) -> tuple[str, list[str]]:
     return (intent if not errors else ""), errors
 
 
+# 确定性首触分流（修 3）：明确闲聊 / 明确任务先判死，模糊句才交给模型写 intent.json。
+# 口径偏保守——宁可 unsure 也不把闲聊开成账、也不把真任务挡成闲聊。
+_CHAT_RE = re.compile(
+    r"^(?:"
+    r"你好|您好|嗨|哈喽|hello|hi|hey|"
+    r"在吗|在不在|"
+    r"谢谢|感谢|多谢|"
+    r"再见|拜拜|bye|"
+    r"早[安上]|晚安|午安|"
+    r"你是谁|你能做什么|能做什么|介绍一下你自己|你有什么功能|你是干什么的"
+    r")[\s!！。.?？~～…]*$",
+    re.IGNORECASE,
+)
+_TASK_MARKS: tuple[str, ...] = (
+    "用例设计", "测试设计", "设计用例", "编写用例", "写用例", "生成用例",
+    "用例编写", "生成大纲", "增量大纲", "测试大纲",
+    "生成测试点", "拆分链路", "拆用户故事", "拆测试点",
+    "更新测试设计", "设计测试", "写测试用例", "编写测试用例",
+    "生成测试设计", "做测试设计", "开始测试设计", "开始设计用例",
+    "按业务信息", "写用户故事", "生成用户故事", "梳理业务链路",
+    "写测试点", "生成链路",
+)
+
+
+def classify_user_intent(text: str) -> str:
+    """用户原话 → task | chat | unsure（零模型、零 IO）。"""
+    t = (text or "").strip()
+    if not t:
+        return "chat"
+    if _CHAT_RE.fullmatch(t):
+        return "chat"
+    if any(m in t for m in _TASK_MARKS):
+        return "task"
+    return "unsure"
+
+
 def is_draft_row(row: dict) -> bool:
     """这一行是不是**草稿**（写库侧唯一会写的来源）：生产侧 `_outline_nodes` 给 KB 存量行标
     `state=存量`、给草稿标 新增／更新／删除；测试夹具与本仓快照另用 `op`（存量 noop／草稿

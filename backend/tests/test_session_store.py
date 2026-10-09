@@ -1,8 +1,10 @@
 import json
+from datetime import datetime
 
 import pytest
 
 from aitester.services.session_store import (
+    ChatMessage,
     SessionStore,
     SessionStoreError,
     is_session_id,
@@ -65,13 +67,25 @@ def test_append_bumps_count_updates_and_appends_jsonl(tmp_path) -> None:
     assert msgs[0].steps is None
     assert msgs[0].agent_id == "case_design" and msgs[0].session_id == sid
     assert msgs[1].agent_id == "case_design" and msgs[1].session_id == sid
+    assert msgs[0].name == "user" and msgs[1].name == "assistant"
+    assert msgs[0].id.startswith("msg_") and msgs[1].id.startswith("msg_")
+    assert msgs[0].created_at and msgs[0].ts > 0
     got = store.get(sid)
     assert got.message_count == 2 and got.updated_at >= msgs[-1].ts
     lines = (tmp_path / "sessions" / f"{sid}.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
-    assert json.loads(lines[1])["content"] == "答"
-    assert json.loads(lines[0])["agent_id"] == "case_design"
-    assert json.loads(lines[0])["session_id"] == sid
+    row0 = json.loads(lines[0])
+    row1 = json.loads(lines[1])
+    assert row1["content"] == "答"
+    assert row0["agent_id"] == "case_design"
+    assert row0["session_id"] == sid
+    # Reme 最低可用：磁盘有 name/id/created_at，不再写 ts
+    for row in (row0, row1):
+        assert "ts" not in row
+        assert {"name", "role", "content", "created_at", "id"} <= set(row)
+        assert row["name"] == row["role"]
+        assert row["id"].startswith("msg_")
+        assert "+" in row["created_at"] or row["created_at"].endswith("Z")
 
 
 def test_open_session_store_puts_files_under_agent_subdir(tmp_path) -> None:
@@ -93,6 +107,8 @@ def test_open_session_store_puts_files_under_agent_subdir(tmp_path) -> None:
     assert line["agent_id"] == "case_design"
     assert line["session_id"] == sid
     assert line["steps"][0]["result"] == "FILE_BODY"
+    assert "ts" not in line
+    assert line["name"] == "assistant" and line["id"].startswith("msg_")
 
 
 def test_messages_skips_rows_missing_agent_or_session_id(tmp_path) -> None:
@@ -100,12 +116,13 @@ def test_messages_skips_rows_missing_agent_or_session_id(tmp_path) -> None:
     sid = store.new_id()
     store.create(sid, "case_design", PROJECT, "x")
     path = tmp_path / "sessions" / f"{sid}.jsonl"
+    legacy_ts = 1_700_000_000_000
     path.write_text(
         json.dumps({"role": "user", "content": "old", "ts": 1, "steps": None, "stopped": False, "context": None})
         + "\n"
         + json.dumps({
             "agent_id": "case_design", "session_id": sid,
-            "role": "user", "content": "new", "ts": 2,
+            "role": "user", "content": "new", "ts": legacy_ts,
             "steps": None, "stopped": False, "context": None,
         })
         + "\n",
@@ -113,6 +130,26 @@ def test_messages_skips_rows_missing_agent_or_session_id(tmp_path) -> None:
     )
     msgs = store.messages(sid)
     assert [m.content for m in msgs] == ["new"]
+    # 老行只有 ts：读侧合成 created_at / name，供 API ts 与 Reme 形态对齐（不回写磁盘）
+    assert msgs[0].ts == legacy_ts
+    assert msgs[0].created_at
+    assert msgs[0].name == "user"
+
+
+def test_from_dict_reme_minimum_and_legacy_ts() -> None:
+    reme = ChatMessage.from_dict({
+        "name": "user", "role": "user", "content": "你好",
+        "created_at": "2026-03-10T10:00:00+08:00", "id": "msg-001",
+    })
+    assert reme.name == "user" and reme.id == "msg-001"
+    assert reme.ts == int(datetime.fromisoformat("2026-03-10T10:00:00+08:00").timestamp() * 1000)
+    assert "ts" not in reme.to_dict()
+
+    legacy = ChatMessage.from_dict({"role": "assistant", "content": "旧", "ts": 1_700_000_000_000})
+    assert legacy.name == "assistant"
+    assert legacy.created_at
+    assert legacy.ts == 1_700_000_000_000
+    assert legacy.to_dict()["created_at"] == legacy.created_at
 
 
 def test_append_unknown_session_raises_actionable(tmp_path) -> None:

@@ -53,10 +53,15 @@ def build_case_design_graph(provider: LlmProvider, tools: list[AiTooler]) -> Com
 
     tool_node = ToolNode(tools, handle_tool_errors=_tool_error_message)
     bound = provider.bind_tools(tools) if tools else provider
+    write_only = [t for t in tools if getattr(t, "name", None) == "write"]
+    write_bound = provider.bind_tools(write_only) if write_only else provider
 
     def agent_node(state: CaseDesignState, config: RunnableConfig) -> dict:
+        # 修 3：首触 face 收窄——闲聊零工具、模糊意向只许 write，开账后才全工具面。
+        face = str((state.get("case") or {}).get("face") or "")
+        llm = provider if face == "chat" else (write_bound if face == "write_only" else bound)
         return {"messages": [_stream_round(
-            bound, state["messages"], _round_no(state), _run_control(config)
+            llm, state["messages"], _round_no(state), _run_control(config)
         )]}
 
     def should_continue(state: CaseDesignState) -> str:

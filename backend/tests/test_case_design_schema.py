@@ -9,9 +9,20 @@ from aitester.case_design.constants import (
 from aitester.case_design.env import CaseDesignEnv
 from aitester.case_design.ledger import Ledger
 from aitester.case_design.schema import (
-    DraftNode, MatrixOut, Opinion, ReviewOut, parse_case_file, parse_json_fence,
-    validate_cases, validate_drafts,
+    DraftNode, MatrixOut, Opinion, ReviewOut, classify_user_intent, parse_case_file,
+    parse_json_fence, validate_cases, validate_drafts,
 )
+
+
+def test_classify_user_intent_chat_task_unsure():
+    assert classify_user_intent("你好") == "chat"
+    assert classify_user_intent("Hello!") == "chat"
+    assert classify_user_intent("你是谁") == "chat"
+    assert classify_user_intent("生成测试设计") == "task"
+    assert classify_user_intent("给下单链路写用例") == "task"
+    assert classify_user_intent("按业务信息生成测试设计") == "task"
+    assert classify_user_intent("帮我看看这份需求怎么处理") == "unsure"
+    assert classify_user_intent("测试点是什么意思") == "unsure"   # 裸词不算任务
 
 
 def test_constants_are_single_source():

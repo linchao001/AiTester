@@ -49,15 +49,17 @@
 **index 行**（不变字段集）：`id, agent_id, project_id, title, created_at, updated_at, message_count`  
 （`agent_id` 须与所在目录名一致；不一致行加载时丢弃并打 warning，与缺 `project_id` 同口径。）
 
-**jsonl 行**：
+**jsonl 行**（Reme 最低可用 + AiTester 扩展；磁盘不写 `ts`）：
 
 ```json
 {
-  "agent_id": "case_design",
-  "session_id": "sess_a207bc14",
+  "name": "user|assistant",
   "role": "user|assistant",
   "content": "...",
-  "ts": 0,
+  "created_at": "2026-03-10T10:00:00+08:00",
+  "id": "msg_<hex>",
+  "agent_id": "case_design",
+  "session_id": "sess_a207bc14",
   "steps": [
     {"tool": "read", "ok": true, "round": 1, "detail": "{...}", "result": "...全量..."}
   ],
@@ -66,6 +68,8 @@
 }
 ```
 
+- Reme 最低可用：`name`（默认等于 `role`）、`role`、`content`、`created_at`（本地时区 ISO-8601）、`id`（`msg_` + hex）。
+- 内存/API 仍有 `ts`（epoch ms）：由 `created_at` 反算；老行只有 `ts` 时读侧合成 `created_at`，不回写磁盘。
 - user 行：`steps` 为 `null`，`stopped` 为 `false`，`context` 为 `null`；仍写 `agent_id`/`session_id`。
 - 缺 `agent_id` 或 `session_id` 的行（含手塞旧形态）：**跳过该行并 warning**，不整段 500；不补默认空串冒充合法行。
 - `StepInfo`（API schema）：**不**增加 `result`；`model_validate` 遇多余字段默认忽略（Pydantic），磁盘多 `result` 不影响读历史。
