@@ -186,3 +186,70 @@ def test_double_entry_does_not_double_book(monkeypatch):
     twice = cap_content(once, tool="echo_gate_probe", usage=u)
     assert twice == once
     assert len(u.truncations) == 1
+
+
+# 生产形状（ToolNode→invoke/ainvoke 得到 ToolMessage）的补测——闸必须认得消息形态。
+# 命名 _ToolCallProbe 而非 _EchoTool：文件上方已有 _EchoTool（name=echo_gate_probe），
+# 复用同名会遮蔽它、打断既有测试；此处工具名仍逐字为 "echo_tool"，断言字面量不变。
+class _ToolCallProbe(AiTooler):
+    name: str = "echo_tool"
+    description: str = "echo"
+
+    def _run(self, text: str) -> str:
+        return text
+
+
+def test_invoke_with_tool_call_id_caps_the_tool_message_content(tmp_path, monkeypatch):
+    """生产形状（ToolNode→invoke(tool_call)）也必须被截——主路径漏管就是闸没闸。"""
+    from langchain_core.messages import ToolMessage
+    monkeypatch.setenv(CAP_ENV, "20")
+    u = _usage()
+    msg = _ToolCallProbe(usage=u).invoke(
+        {"name": "echo_tool", "args": {"text": "z" * 200}, "id": "c1", "type": "tool_call"})
+    assert isinstance(msg, ToolMessage)
+    assert len(msg.content) < 200
+    assert "原约" in msg.content and "省略中段" in msg.content      # R-C3 标记进了模型看得见的那条
+    assert msg.tool_call_id == "c1" and msg.name == "echo_tool"
+    t = u.truncations[0]
+    assert t.tool == "echo_tool" and t.kept + t.dropped == t.original
+
+
+def test_ainvoke_with_tool_call_id_caps_once_and_does_not_double_book(tmp_path, monkeypatch):
+    """异步主路径同样管；arun→run 不许把一条产物记成两次截断。"""
+    monkeypatch.setenv(CAP_ENV, "20")
+    u = _usage()
+    msg = asyncio.run(_ToolCallProbe(usage=u).ainvoke(
+        {"name": "echo_tool", "args": {"text": "z" * 200}, "id": "c2", "type": "tool_call"}))
+    assert "原约" in msg.content and len(msg.content) < 200
+    assert len(u.truncations) == 1                    # 一次调用 = 一条留痕
+
+
+def test_content_and_artifact_message_keeps_artifact_identity_when_capped(tmp_path, monkeypatch):
+    """文件工具走消息形态时，artifact 仍是同一个对象——一个字节都不动的规则不打折。"""
+    from aitester.adapters.tools.file_tools import ReadTool
+    monkeypatch.setenv(CAP_ENV, "20")
+    (tmp_path / "big.txt").write_text("行\n" * 400, encoding="utf-8")
+    u = _usage()
+    tool = ReadTool(cwd=str(tmp_path), session_id="s", observed=None)
+    msg = tool.invoke({"name": "read", "args": {"file_path": "big.txt"},
+                       "id": "c3", "type": "tool_call"})
+    assert "原约" in msg.content
+    assert msg.artifact is not None                    # artifact 仍在，且是被原样带过去的引用
+
+
+def test_under_cap_message_is_returned_by_identity_and_leaves_no_trace(monkeypatch):
+    monkeypatch.setenv(CAP_ENV, "1000")
+    u = _usage()
+    msg = _ToolCallProbe(usage=u).invoke(
+        {"name": "echo_tool", "args": {"text": "短"}, "id": "c4", "type": "tool_call"})
+    assert msg.content == "短" and u.truncations == []   # 没砍就不许新建对象、不许留痕
+
+
+def test_tiny_cap_still_keeps_the_three_number_identity(monkeypatch):
+    """极端 cap 下留痕也不许自相矛盾：省略中段不许是负数、三个数恒等。"""
+    monkeypatch.setenv(CAP_ENV, "1")
+    u = _usage()
+    out = cap_content("z" * 40, tool="shell", usage=u)
+    t = u.truncations[0]
+    assert t.kept + t.dropped == t.original and t.kept <= t.original
+    assert "省略中段 0" not in out or t.dropped == 0

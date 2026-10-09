@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from langchain_core.messages import BaseMessage
+
 from aitester.context import meter
 from aitester.context.usage import ContextUsage
 
@@ -63,13 +65,13 @@ def _truncate(text: str, cap: int, original: int) -> tuple[str, int]:
     out = _render_mark(original, kept, max(0, original - kept)) + "\n" + body
     for _ in range(_SHRINK_ROUNDS):
         if meter.estimate_text(out) <= cap or (head_n <= 1 and tail_n <= 1):
-            return out, kept
+            return out, min(kept, original)
         head_n = max(1, int(head_n * _SHRINK))
         tail_n = max(1, int(tail_n * _SHRINK))
         body = _assemble(text, head_n, tail_n)
         kept = meter.estimate_text(body)
         out = _render_mark(original, kept, max(0, original - kept)) + "\n" + body
-    return out, kept
+    return out, min(kept, original)
 
 
 def cap_content(text: str, *, tool: str, usage: ContextUsage | None) -> str:
@@ -93,9 +95,15 @@ def cap_content(text: str, *, tool: str, usage: ContextUsage | None) -> str:
 
 
 def cap_result(result: Any, *, tool: str, usage: ContextUsage | None) -> Any:
-    """只截 content。文件工具是 content_and_artifact，artifact 一个字节都不动。"""
+    """只截 content。文件工具是 content_and_artifact，artifact 一个字节都不动；
+    生产路径（ToolNode→invoke）拿到的是 ToolMessage，同样只换 content、其余原样。"""
     if isinstance(result, str):
         return cap_content(result, tool=tool, usage=usage)
     if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], str):
         return (cap_content(result[0], tool=tool, usage=usage), result[1])
+    if isinstance(result, BaseMessage) and isinstance(result.content, str):
+        capped = cap_content(result.content, tool=tool, usage=usage)
+        if capped is result.content:
+            return result                    # 没砍就不新建对象：身份也是读数的一部分
+        return result.model_copy(update={"content": capped})
     return result
