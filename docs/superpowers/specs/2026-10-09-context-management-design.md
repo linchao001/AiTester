@@ -88,7 +88,7 @@ class ContextUsage:
     error: str | None = None         # 计量自身失败时说实话，不静默
 ```
 
-同一回合跨 wait/resume 必须连续：`resume_stream` 复用 `entry.prepared`（`services/chat.py:379`），prepared 携带同一 provider 实例，故累加件天然连续——**实现必须保住这条链路，并有测试钉住**（续跑后 `rounds` 递增而非归零）。
+同一回合跨 wait/resume 必须连续：`resume_stream` 复用 `entry.prepared`（`services/chat.py:382`），prepared 携带同一 provider 实例，故累加件天然连续——**实现必须保住这条链路，并有测试钉住**（续跑后 `rounds` 递增而非归零）。
 
 ### 3.4 `adapters/llm/metered.py` —— 计量缝
 
@@ -279,3 +279,13 @@ def cap_content(text: str, *, tool: str, usage: ContextUsage | None) -> str:
 1. **被中止/中断的那一轮恒报估算，且它必经是峰值** ⇒ 单调增长的长会话（恰是最需要读数的场景）在「用户按过停止」的回合里整回合只有 `estimated`。机制 = R-C1 的「跑完才有资格写真值」+ 消息只增不减。修法方向（第二片）：给被中止轮一个显式标注（如 `aborted_rounds: n`），或让快照区分「峰值来源轮是否中止」。
 2. **并发子智能体共用一本账时样本错位**（`note_response` 只换 `[-1]`）⇒ 读数归属错。修法方向：按 `call_id`/线程配对样本，或给 `ContextUsage` 加锁 + 独立槽位。
 3. **KB 文件计数 1802 vs 计划所记 1803**（详见「清场与基线」）。
+
+## 终评（第一片，2026-10-09）
+
+整枝评审区间 `fefe91f..e302a74`（C1–C8 共 20 个提交、39 个改动文件），评审在提交态上只读进行，工作树零改动。
+
+- **Verdict：0 Critical / 0 Important / 2 Minor，Ready to merge = Yes**（0I 故不开修复轮）。
+- **六条不变量逐条经最终代码 + 全局 grep 独立核验**：R-C1 真值资格是代码规则（`note_response` 唯一 ACTUAL 写入口、peak 那格样本自身须带 ACTUAL，estimated 漂不成 actual）；R-C2 全仓只有一把尺（`tiktoken/encode(` 只在 `context/meter.py`、`ContextUsage(` 生产实例化只在 `agent_runtime.py`、前端假尺残迹为零）；R-C3 三数同源且前端逐条呈递；R-C4 到线只呈递（`pct` 与发送可用性无关）；R-C5 全链异常收敛、唯一登记例外 M-5′ 经调用点核实不可达；R-C6 走查判据已回填本文件「## 走查一」。
+- **门禁复跑（评审实跑）**：后端 `949 passed in 80.07s`（基线 888，+61）、前端 build 0 error（尺寸与计划「执行状态」逐字一致）；三条变异红证（C5 `inner` 口 / C4 `_before` 守护 / C7 落盘 `context`）逐字复现台账数字。
+- **两条 Minor 的裁定**：**M-1** spec §3.7 对 `entry.prepared` 的行号 `:379` 与 §5 的 `:382` 内部不一致 ⇒ **当场修**（本文件已改 `:382`，基准版口径）。**M-2** `usage.error` 单槽、尺失效与闸失效同回合时后写覆盖先写 ⇒ **登记不修**（两者都是罕见异常路径的说明性信息，丢失一半无正确性影响；随第二片「读数缺口界面细化」一并处理）。
+- **停车项确认**：P-1..P-7、C4/C5/C6/C7 各评审的登记不修项与走查三条呈报项，评审确认停车裁定合理——全是呈递口径/后续片范围，不构成任何不变量的反例。
