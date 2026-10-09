@@ -35,7 +35,13 @@ class MeteredProvider:
         return MeteredProvider(self._inner.bind_tools(tools), self.usage)
 
     def _before(self, messages: list[Any]) -> None:
-        self.usage.note_request(meter.estimate_messages(messages))
+        try:
+            self.usage.note_request(meter.estimate_messages(messages))
+        except Exception as exc:
+            # R-C5：尺自己坏了也只许「这一轮没读数」，不许把回合打死。轮次照记——
+            # 请求随后仍会发起；样本给 0 并把缺口写进 usage.error，界面看得见。
+            self.usage.note_request(0)
+            self.usage.error = f"计量失败：{type(exc).__name__}"
 
     def complete(self, messages: list[Any]) -> str:
         self._before(messages)

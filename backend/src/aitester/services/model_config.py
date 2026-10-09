@@ -294,7 +294,7 @@ class ModelConfigService:
         )
 
     def window_for(self, uid: str) -> int:
-        """该模型的最大上下文（0=未知）。不抛：读数是尽力而为，配置坏了自己会显形。
+        """该模型的最大上下文（0=未知）。配置坏不抛：读数是尽力而为，坏元数据自己显形。
 
         只认真整数：`bool` 是 `int` 的子类，`context: true` 会被 `isinstance(v, int)` 收
         成窗口 1；浮点/字符串一律按「元数据脏 ⇒ 未知」处理，不猜测也不截断。

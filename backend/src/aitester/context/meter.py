@@ -131,6 +131,8 @@ def _pick(source: Any, keys: tuple[str, ...]) -> int | None:
         value = source.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
+        if isinstance(value, float) and not math.isfinite(value):
+            continue          # inf/nan 不是数：当成「没有真值」，别把 int() 的异常扔给回合
         return int(value)
     return None
 

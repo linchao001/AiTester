@@ -126,3 +126,13 @@ def test_truth_readers_prefer_usage_metadata_then_response_metadata():
         response_metadata={"token_usage": {"prompt_tokens": 9, "completion_tokens": 3}})) == 3
     assert meter.input_tokens_of(AIMessage(content="no usage")) is None     # 关键：缺真值返 None
     assert meter.output_tokens_of(None) is None
+
+
+def test_non_finite_truth_is_no_truth_not_an_exception():
+    """外部给得出 inf/nan（是数，但不是量）：判型链收在尺里，
+    否则 int(inf) 的 OverflowError 会从取真值那一层抛到回合上（R-C5）。"""
+    for bad in (float("inf"), float("nan"), -math.inf):
+        assert meter.input_tokens_of(SimpleNamespace(
+            usage_metadata={"input_tokens": bad, "output_tokens": 1})) is None
+        assert meter.output_tokens_of(SimpleNamespace(
+            usage_metadata={"input_tokens": 1, "output_tokens": bad})) is None

@@ -64,6 +64,27 @@ def test_invoke_and_complete_both_count():
     assert u.rounds == 2
 
 
+def test_broken_ruler_loses_the_reading_not_the_turn():
+    """R-C5：尺自己坏了（畸形 tool_calls 让估算抛）不许升级成回合失败——
+    轮次照记（请求随后仍会发起），样本给 0，缺口写进 error 让界面看得见。"""
+    bad = [{"role": "user", "content": "hi", "tool_calls": 5}]   # 尺里 list(5) 抛 TypeError
+    u = ContextUsage(window=1000)
+    p = MeteredProvider(MockProvider(), u)
+    assert p.complete(bad) == "[mock] hi"
+    assert (u.rounds, u.peak_occupancy, u.occupancy_source) == (1, 0, "estimated")
+    assert "TypeError" in (u.error or "")
+
+
+def test_broken_ruler_still_streams_every_chunk():
+    """流式出口同一条规矩：缺数只缺数，块一个都不许少。"""
+    bad = [{"role": "user", "content": "hi", "tool_calls": 5}]
+    u = ContextUsage(window=1000)
+    p = MeteredProvider(MockProvider(), u)
+    assert "".join(str(c.content) for c in p.stream_messages(bad)) == "[mock]"
+    assert (u.rounds, u.peak_occupancy, u.occupancy_source) == (1, 0, "estimated")
+    assert "TypeError" in (u.error or "")
+
+
 def test_bind_tools_shares_one_ledger_and_proxies_identity():
     u = ContextUsage(window=1234)
     p = MeteredProvider(MockProvider(), u)
