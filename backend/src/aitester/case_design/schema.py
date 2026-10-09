@@ -13,7 +13,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from aitester.case_design.constants import CASE_ID_RE, DIRECTIONS, ID_RE, LAYERS, PRIORITY_RANK, TYPE_PREFIX
+from aitester.case_design.constants import (
+    CASE_ID_RE, DIRECTIONS, ID_RE, INTENTS, LAYERS, PRIORITY_RANK, TYPE_PREFIX,
+)
 
 _FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
 
@@ -24,6 +26,17 @@ def parse_json_fence(text: str) -> Any:
     if len(blocks) != 1:
         raise ValueError(f"要求恰好一个 ```json 代码块，实得 {len(blocks)} 个")
     return json.loads(blocks[0])
+
+
+def validate_intent(raw: Any) -> tuple[str, list[str]]:
+    """校验 design/intent.json（首触意向门）：只认 task/chat 两个字面量，错误表非空即重问。"""
+    if not isinstance(raw, dict):
+        return "", ["intent.json 根必须是对象 {intent: ...}"]
+    intent = str(raw.get("intent") or "")
+    errors: list[str] = []
+    if intent not in INTENTS:
+        errors.append(f"intent「{intent}」非法（task/chat）")
+    return (intent if not errors else ""), errors
 
 
 def is_draft_row(row: dict) -> bool:

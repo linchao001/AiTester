@@ -133,10 +133,16 @@ def test_passthrough_frames_match_react(tmp_path: Path) -> None:
 
 
 def test_case_env_injection_runs_loop_and_halts(tmp_path: Path) -> None:
-    """注入 case_env 后走真拓扑：计划阶段五连激活 → 重试超限 halted ＋ 终帧基句逐字、尾巴说实话。"""
+    """注入 case_env 后走真拓扑：意向门 → 计划阶段五连激活 → 重试超限 halted ＋ 终帧基句逐字、尾巴说实话。"""
     env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)
-    provider = ScriptedProvider([AIMessage(content=f"第 {i} 稿") for i in range(1, 5)])
-    graph = build_case_design_graph(provider, [])
+    provider = ScriptedProvider([
+        AIMessage(content="", tool_calls=[
+            {"id": "g1", "name": "write",
+             "args": {"file_path": "design/intent.json", "content": '{"intent": "task"}'},
+             "type": "tool_call"}]),
+        AIMessage(content="判定为任务"),
+    ] + [AIMessage(content=f"第 {i} 稿") for i in range(1, 5)])
+    graph = build_case_design_graph(provider, local_tools(tmp_path))
     frames = list(graph.stream(
         {"messages": [HumanMessage(content="按业务信息生成测试设计")], "case": {}},
         config={"configurable": {CASE_DESIGN_KEY: env, "thread_id": new_thread_id()}},
@@ -146,14 +152,37 @@ def test_case_env_injection_runs_loop_and_halts(tmp_path: Path) -> None:
     assert turns[-1]["text"].startswith("测试设计任务中止：plan/-/- 重试超限")
     assert "现场已保留" in turns[-1]["text"]
     assert turns[-1]["stopped"] is False and turns[-1]["tool_calls"] == []
-    assert len(provider.calls) == 4                          # 首问 + 3 次重问
-    for k, call in enumerate(provider.calls, start=1):
+    assert len(provider.calls) == 6                          # 意向一回合 + 首问 + 3 次重问
+    gate = provider.calls[0][-1]
+    assert isinstance(gate, HumanMessage) and str(gate.id) == "cdgate-1"
+    assert gate.content.startswith("【编排·意向】")
+    for k, call in enumerate(provider.calls[2:], start=2):   # calls[1] 是工具结果回话轮，最后一条不是指令
         instr = call[-1]
         assert isinstance(instr, HumanMessage) and str(instr.id) == f"cdinstr-{k}"
         assert instr.content.startswith("【编排·计划】")
     led = Ledger.load(env.design)
     assert (led is not None and led.status == "halted" and led.cursor["nudge"] == 3
             and led.data["halt"]["kind"] == "artifact_retry" and led.data["halt"]["stage"] == "plan")
+
+
+def test_chat_first_touch_ends_with_model_words_and_zero_trace(tmp_path: Path) -> None:
+    """真拓扑里的「你好」：意向门 → chat → 静默结束——reply 就是模型那句话，项目零残留。"""
+    env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)
+    provider = ScriptedProvider([
+        AIMessage(content="", tool_calls=[
+            {"id": "g1", "name": "write",
+             "args": {"file_path": "design/intent.json", "content": '{"intent": "chat"}'},
+             "type": "tool_call"}]),
+        AIMessage(content="你好！我是测试设计助手。"),
+    ])
+    frames = list(stream_graph(build_case_design_graph, provider, local_tools(tmp_path),
+                               [HumanMessage(content="你好")], case_env=env))
+    finish = frames[-1]
+    assert finish["type"] == "finish"
+    assert finish["reply"] == "你好！我是测试设计助手。"     # 静默结束：reply 折叠吃模型原话
+    assert len(provider.calls) == 2                          # 意向一回合 + 判定后的话
+    assert not (tmp_path / "design").exists()                # 判定文件已清、空骨架已收：零残留
+    assert Ledger.load(env.design) is None
 
 
 def test_service_stream_carries_case_env_to_graph(tmp_path: Path) -> None:
@@ -166,7 +195,13 @@ def test_service_stream_carries_case_env_to_graph(tmp_path: Path) -> None:
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
         kb_manager=_KbOn(tmp_path / "kb-root"),
     )
-    provider = ScriptedProvider([AIMessage(content=f"第 {i} 稿") for i in range(1, 5)])
+    provider = ScriptedProvider([
+        AIMessage(content="", tool_calls=[
+            {"id": "g1", "name": "write",
+             "args": {"file_path": "design/intent.json", "content": '{"intent": "task"}'},
+             "type": "tool_call"}]),
+        AIMessage(content="判定为任务"),
+    ] + [AIMessage(content=f"第 {i} 稿") for i in range(1, 5)])
     application.state.chat_service = ChatService(
         provider=provider,
         agent_runtime=application.state.agent_runtime,
@@ -183,4 +218,4 @@ def test_service_stream_carries_case_env_to_graph(tmp_path: Path) -> None:
     done = frames[-1][1]
     assert done["reply"].startswith("测试设计任务中止：plan/-/- 重试超限")
     assert "现场已保留" in done["reply"]
-    assert len(provider.calls) == 4
+    assert len(provider.calls) == 6

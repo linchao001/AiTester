@@ -79,6 +79,8 @@ def _first_build_script() -> list[AIMessage]:
          "scenario": "退款金额超过订单金额时提交", "entities": ["退款"],
          "directions": ["负向"], "priority": "P0"}]}
     return [
+        _ai(_tc("w0", "write", "design/intent.json", {"intent": "task"})),     # 0 意向判定
+        _ai("判定为测试设计任务。"),                                             # 0
         _ai(_tc("w1", "write", "design/plan.json", plan)),                    # 1
         _ai("计划已写好。"),                                                   # 2
         _ai(_tc("w2", "write", "design/drafts/chain/ALL.json", chain_v1)),    # 3
@@ -119,6 +121,8 @@ def _update_script() -> list[AIMessage]:
          "scenario": "退款金额超过订单金额时提交", "entities": ["退款"],
          "directions": ["负向"], "priority": "P0"}]}
     return [
+        _ai(_tc("w0", "write", "design/intent.json", {"intent": "task"})),         # 0 意向判定
+        _ai("判定为测试设计任务。"),                                                  # 0
         _ai(_tc("w1", "write", "design/plan.json", plan)),                        # 1
         _ai("计划已写好。"),                                                       # 2
         _ai(_tc("w2", "write", "design/drafts/chain/ALL.json", chain)),           # 3
@@ -172,11 +176,11 @@ def test_first_build_end_to_end(tmp_path: Path) -> None:
     finish = frames[-1]
     assert finish["type"] == "finish"
     assert finish["reply"] == "大纲已生成（design/outline.md），等待人工评审。"
-    assert len(provider.calls) == 15                        # 剧本一条不剩、一条不欠
+    assert len(provider.calls) == 17                        # 剧本一条不剩、一条不欠
 
-    # 主智能体这一轮真的只动了这九次工具（8 写 + 1 重读）
+    # 主智能体这一轮真的只动了这十次工具（9 写 + 1 重读；含开局的意向判定一写）
     calls = [e["tool"] for e in frames if e["type"] == "call"]
-    assert calls == ["write", "write", "read", "write", "write",
+    assert calls == ["write", "write", "write", "read", "write", "write",
                      "write", "write", "write", "write"]
 
     # 评审判决：块环走满两轮（意见 → 复审回执）；①②③ 各判过；无人审前零 KB 写
@@ -249,7 +253,7 @@ def test_update_branch_end_to_end(tmp_path: Path) -> None:
     frames = list(stream_graph(build_case_design_graph, provider, tools,
                                [HumanMessage(content="按业务信息生成测试设计")], case_env=env))
     assert frames[-1]["reply"] == "大纲已生成（design/outline.md），等待人工评审。"
-    assert len(provider.calls) == 12
+    assert len(provider.calls) == 14
 
     led = Ledger.load(env.design)
     assert led.status == "awaiting_review"
@@ -328,6 +332,8 @@ def _case_only_script() -> list[AIMessage]:
          "expected": ["订单状态为已创建", "库存数量比提交前减少 1"],
          "priority": "P0", "note": ""}]}
     return [
+        _ai(_tc("w0", "write", "design/intent.json", {"intent": "task"})),        # 0 意向判定
+        _ai("判定为测试设计任务。"),                                                # 0
         _ai(_tc("w1", "write", "design/plan.json", plan)),                    # 1
         _ai("计划已写好，本次是纯用例任务。"),                                  # 2
         _ai(_tc("w2", "write", "design/cases/ch-0001-b1.json", cases)),        # 3
@@ -357,8 +363,8 @@ def test_case_only_end_to_end_delivery_and_approval(tmp_path: Path) -> None:
     frames = list(stream_graph(build_case_design_graph, provider, tools,
                                [HumanMessage(content="给下单链路写用例")], case_env=env))
     assert frames[-1]["reply"] == "用例交付物已生成（design/case-delivery.md），等待人工评审。"
-    assert len(provider.calls) == 4                 # 两次工具回合 + 两句人话，不多不少
-    assert [e["tool"] for e in frames if e["type"] == "call"] == ["write", "write"]
+    assert len(provider.calls) == 6                 # 三次工具回合 + 三句人话，不多不少
+    assert [e["tool"] for e in frames if e["type"] == "call"] == ["write", "write", "write"]
     # 呈递轮只派过一次批评审：末门解读（case-gate-int-r1）等人话那一轮才发（同
     # test_case_only_ring_reaches_delivery_gate 的 drain 级事实）。
     assert task.call_ids() == ["case-ch-0001-b1-r0"]

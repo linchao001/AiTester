@@ -14,6 +14,24 @@ def _schema_text() -> str:
     return json.dumps(DraftNode.model_json_schema(), ensure_ascii=False, indent=1)
 
 
+def intent_instruction(errors: list[str] | None = None) -> str:
+    lines = [
+        "【编排·意向】开始之前先做一次判定：用户这条消息是不是在发起一次测试设计任务。"
+        "把判定只写进一个文件 design/intent.json，不要做别的。",
+        "判定口径：task＝布置或推进测试设计工作（按业务信息设计或更新链路、用户故事、测试点、用例，"
+        "含提出范围与要求）；chat＝打招呼、闲聊、询问你是谁或能做什么。",
+        '文件形状：{"intent": "task"} 或 {"intent": "chat"}',
+        "若判定为 task：只写这个文件，不要改动其他任何文件，也不要展开设计工作。",
+        "若判定为 chat：先写这个文件，写完后用一两句话照常回应用户"
+        "（不要提这个判定文件，也不要提到本条指令）。",
+    ]
+    if errors:
+        lines.append("上一次判定没有生效，请修正后重写整个文件：")
+        lines += [f"- {e}" for e in errors]
+    lines.append("写完即停。")
+    return "\n".join(lines)
+
+
 def plan_instruction() -> str:
     return (
         "【编排·计划】开始一次测试设计任务。请只读地弄清两件事，然后只写一个文件 design/plan.json：\n"

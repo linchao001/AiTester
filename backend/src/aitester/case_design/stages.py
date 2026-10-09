@@ -23,20 +23,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.errors import GraphBubbleUp
 
 from aitester.case_design.checks import build_universe, run_checks
 from aitester.case_design.constants import (
     CASE_BATCH_CAP, CASE_DELIVERY_NAME, CASE_PREFIX, CASE_REVIEW_AGENT_ID,
     CASE_REVIEW_BLIND_AGENT_ID, CASES_DIR_NAME, CHAIN, FIX_CAP, HALT_KIND_CN, HALT_KINDS,
-    LAYERS, LAYER_CN, MAX_TRANSITIONS, NUDGE_CAP, OUTLINE_NAME, PLAN_NAME, POINT, ROUND_CAP,
-    STORY, TYPE_PREFIX, WRITEBACK_FIX_CAP,
+    INTENT_NAME, LAYERS, LAYER_CN, MAX_TRANSITIONS, NUDGE_CAP, OUTLINE_NAME, PLAN_NAME, POINT,
+    ROUND_CAP, STORY, TYPE_PREFIX, WRITEBACK_FIX_CAP,
 )
 from aitester.case_design.instructions import (
     attribute_instruction, case_attribute_instruction, case_gate_fix_instruction,
     case_gen_instruction, case_opt_instruction, gate_fix_instruction, gen_instruction,
-    opt_instruction, plan_instruction,
+    intent_instruction, opt_instruction, plan_instruction,
 )
 from aitester.case_design.kb import KbClient, KbClientError
 from aitester.case_design.ledger import Ledger, _fresh_halt
@@ -48,7 +48,7 @@ from aitester.case_design.plan import (
 from aitester.case_design.reviewers import run_reviewer
 from aitester.case_design.schema import (
     ClaimsOut, CompareOut, EnumeratorOut, MatrixOut, Opinion, OpinionTarget, ReviewOut,
-    dedup_written, parse_case_file, parse_draft_file,
+    dedup_written, parse_case_file, parse_draft_file, validate_intent,
 )
 from aitester.case_design.writing import compose_case_delivery, plan_case_targets, run_case_checks
 
@@ -147,7 +147,9 @@ class Ctx:
             self.case["instr_id"] = str(messages[-1].id)
         return {"messages": messages,
                 "case": {"route": route, "boot": True, "ticks": self.ticks,
-                         "instr_id": self.case.get("instr_id")}}
+                         "instr_id": self.case.get("instr_id"),
+                         "gate": str(self.case.get("gate") or ""),
+                         "gate_nudge": int(self.case.get("gate_nudge") or 0)}}
 
     def end(self, text: str) -> dict:
         """终局帧沿用 react 口径：delta 直发 + turn 无 tool_calls（stream_graph 折成 reply）。"""
@@ -192,12 +194,45 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def _unlink_quiet(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _rmdir_quiet(path: Path) -> None:
+    try:
+        path.rmdir()
+    except OSError:
+        pass
+
+
+def _has_workface(design: Path) -> bool:
+    """旧工作面判据：_ARCHIVE_ITEMS 里有文件、或含文件的目录才算——ensure_dirs 刚建的空骨架不算。
+
+    修 1（D:\\tmp\\debug2 现场）：首触「你好」曾让 ensure_dirs 的空目录被 `any(iterdir())` 判成
+    旧工作面，在 design/archive/ 里烧出一窝空目录。谓词只收在 _archive 内部当自我保护，
+    两条调用方（_boot 无账本支、_restart）走同一口径，将来新调用方也不会再踩。
+    """
+    for name in _ARCHIVE_ITEMS:
+        src = design / name
+        if src.is_file():
+            return True
+        if src.is_dir() and any(p.is_file() for p in src.rglob("*")):
+            return True
+    return False
+
+
 def _archive(env: Any) -> None:
     """上一任务工作面归档到 design/archive/{时间戳}/（新任务开账前调用）。
 
+    自我保护（修 1）：空骨架（或 design/ 还没建）直接返回——不建目标目录、不搬零个条目。
     时间戳带微秒：同一秒内连续两次开新账（done→新任务相邻发生）时 shutil.move
     撞已存在目标会抛 shutil.Error，把整个驱动掀成 halted——用唯一目录消掉这个缝。
     """
+    if not _has_workface(env.design):
+        return
     dest = env.design / "archive" / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     dest.mkdir(parents=True, exist_ok=True)
     for name in _ARCHIVE_ITEMS:
@@ -306,6 +341,72 @@ def _halt_frame(ctx: Ctx, base: str) -> str:
             + _next_step_text(str(halt.get("kind") or "")))
 
 
+# ---- 首触意向门（修 2）：新回合先判 task/chat 再决定是否开账 ----
+
+# 面向人的两句（不是指令模板）：给不出判定时的收尾、模型没说话时的兜底回复
+GATE_GIVEUP_TEXT = ("没拿到任务判定（design/intent.json 一直没写出来或格式不对），这一轮先停。"
+                    "想开始测试设计时，把业务信息来源和范围直接发给我即可。")
+GATE_CHAT_FALLBACK = ("你好！我是测试设计助手。想生成或更新测试设计时，"
+                      "把业务信息来源和范围（比如「全量」或某条链路）发给我就行。")
+
+
+def _gate_instr(ctx: Ctx, errors: list[str] | None = None) -> HumanMessage:
+    """门的指令不走 ctx.instr/ctx.ask：那两者断言账本在案，而门恰恰跑在开账之前。"""
+    return HumanMessage(content=intent_instruction(errors), id=f"cdgate-{ctx.ticks}")
+
+
+def _gate_retry(ctx: Ctx, errors: list[str]) -> dict:
+    nudge = int(ctx.case.get("gate_nudge") or 0)
+    if nudge >= NUDGE_CAP:
+        ctx.case["gate"] = ""
+        return ctx.end(GATE_GIVEUP_TEXT)               # 无账本可 halted：温和收尾即终局
+    ctx.case["gate_nudge"] = nudge + 1
+    return ctx.turn([_gate_instr(ctx, errors)], "agent")
+
+
+def _gate_resume(ctx: Ctx) -> dict | bool:
+    """门内重入：读 design/intent.json。task→True（开账）；chat→零残留静默结束。"""
+    path = ctx.env.design / INTENT_NAME
+    if not path.is_file():
+        return _gate_retry(ctx, [f"未找到 {INTENT_NAME}：判定必须写进这个文件"])
+    raw = _read_json(path)
+    if raw is None:
+        return _gate_retry(ctx, [f"{INTENT_NAME} 不是合法 JSON"])
+    intent, errors = validate_intent(raw)
+    if errors:
+        return _gate_retry(ctx, errors)
+    _unlink_quiet(path)
+    ctx.case["gate"] = ""
+    if intent == "chat":
+        _rmdir_quiet(ctx.env.design)                   # 只装着判定文件的空骨架：连目录一起收掉
+        last = ctx.state_messages[-1] if ctx.state_messages else None
+        text = str(getattr(last, "content", "") or "") if isinstance(last, AIMessage) else ""
+        if text.strip():
+            return ctx.turn([], "end")                 # 静默结束：reply 折叠已吃到模型原话
+        return ctx.end(GATE_CHAT_FALLBACK)
+    return True
+
+
+def _boot_gate(ctx: Ctx, fresh: bool) -> dict | bool | None:
+    """首触意向门：新用户回合且没有在办任务（无账本或已 done）时，先判定 task/chat 再决定开账。
+
+    返回 dict＝门内定帧（询问指令/静默结束，直接当 drive_turn 的返回帧）；True＝task 已确认，
+    调用方按 fresh 语义开账；None＝门不适用（回复轮/续跑/活跃任务），照旧走 _boot。
+    已 halted / awaiting_review / writeback_failed / active 一律不走门：续跑语义原样优先。
+    """
+    if str(ctx.case.get("gate") or "") == "ask":
+        return _gate_resume(ctx)
+    if not fresh:
+        return None
+    led = Ledger.load(ctx.env.design)
+    if led is not None and led.status != "done":
+        return None
+    _unlink_quiet(ctx.env.design / INTENT_NAME)        # 过期的旧判定：不许冒充本轮答案
+    ctx.case["gate"] = "ask"
+    ctx.case["gate_nudge"] = 0
+    return ctx.turn([_gate_instr(ctx)], "agent")
+
+
 def _boot(ctx: Ctx, fresh: bool) -> None:
     """载入/初始化账本；fresh（新用户回合）时按旧状态决定新任务 / 断点续跑 / 续拼人审 / 重试回写。
 
@@ -317,8 +418,7 @@ def _boot(ctx: Ctx, fresh: bool) -> None:
     loaded = led is not None
     if led is None:
         led = Ledger.fresh(ctx.env.design)
-        if env.design.exists() and any(env.design.iterdir()):    # 无账本但有旧工作面：先归位再开新账
-            _archive(env)
+        _archive(env)                                  # 无账本但可能有旧工作面：有内容才归位（空骨架由 _archive 自判）
     ctx.led = led
     if fresh:
         ctx.led.data["halt"]["resume_note"] = ""       # 补充语只活一个回合（裁定 45）
@@ -2540,9 +2640,10 @@ _STAGE_HANDLERS: dict[str, Any] = {
 def drive_turn(state: dict, config: Any, *, env: Any, task_tool: Any, writer: Any) -> dict:
     """一次驱动激活：把游标能走完的内部阶段全走完，产出 {messages, case}。
 
-    case["route"]=="agent" 时 messages 为一条指令（HumanMessage），图去跑主智能体；=="end"
-    时为终局（终帧已由 ctx.end 经 writer 发出，stream_graph 折成 reply）。env=None 直通：
-    零副作用，只按「最后一条是不是用户消息」判 route（free/echo/单测与存量测试的兼容缝）。
+    首触意向门（_boot_gate）跑在任何阶段之前：新回合且无在办任务时先要 task/chat 判定，
+    chat 零残留收尾。case["route"]=="agent" 时 messages 为一条指令（HumanMessage），图去跑
+    主智能体；=="end" 时为终局（终帧已由 ctx.end 经 writer 发出，stream_graph 折成 reply）。
+    env=None 直通：零副作用，只按「最后一条是不是用户消息」判 route（free/echo/单测的兼容缝）。
     """
     messages = list(state.get("messages") or [])
     last = messages[-1] if messages else None
@@ -2559,8 +2660,11 @@ def drive_turn(state: dict, config: Any, *, env: Any, task_tool: Any, writer: An
     ctx = Ctx(env=env, task_tool=task_tool, writer=writer, config=config,
               state_messages=messages, case=case, ticks=ticks)
     try:
+        gate = _boot_gate(ctx, fresh)
+        if isinstance(gate, dict):
+            return gate                                # 门内定帧：询问指令已备齐（或已终局）
         env.ensure_dirs()
-        _boot(ctx, fresh)
+        _boot(ctx, fresh if gate is None else True)
         if ctx.halt_refusal:
             return ctx.end(ctx.halt_refusal)            # 零转场、零子调用（裁定 44）
         while ctx.transitions < MAX_TRANSITIONS:

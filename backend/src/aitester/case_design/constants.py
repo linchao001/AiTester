@@ -20,7 +20,7 @@ LAYER_OF_BUCKET: dict[str, str] = {v: k for k, v in LAYER_BUCKET.items()}
 
 # 预算（A4/A5；改这些数字必须同步改 spec 验收节）
 ROUND_CAP = 5          # 每块评审-优化环 / 每层全局审环的硬上限
-NUDGE_CAP = 3          # plan/gen 制品校验失败的重试上限（超限 halted）
+NUDGE_CAP = 3          # plan/gen 制品校验失败的重试上限（超限 halted）；首触意向门同额（超限温柔收尾）
 FIX_CAP = 2            # opt/attribute 处置表校验失败的重试上限
 WRITEBACK_FIX_CAP = 2  # 回写失败自动重试上限（超限 writeback_failed）
 MAX_TRANSITIONS = 80   # 单次运行驱动激活上限（防转场死循环）
@@ -59,5 +59,9 @@ CASE_REVIEW_BLIND_AGENT_ID = "case_review_blind"
 LEDGER_NAME = "ledger.json"
 PLAN_NAME = "plan.json"
 OUTLINE_NAME = "outline.md"
+
+# 首触意向门（修 2）：新回合先判 task/chat 再开账；文件在 design/ 下，与账本同层。
+INTENT_NAME = "intent.json"
+INTENTS: tuple[str, ...] = ("task", "chat")
 
 CASE_DESIGN_KEY = "case_design_env"   # case_env 注入通道（与 GATE_KEY 同款；T9 图装配读写此键）
