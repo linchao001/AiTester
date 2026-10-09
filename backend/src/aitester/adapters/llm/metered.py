@@ -24,6 +24,11 @@ class MeteredProvider:
         self.usage = usage                      # 窗口读 usage.window：不留第二个副本（R-C2）
 
     @property
+    def inner(self) -> Any:
+        """被包的原始 provider。身份留痕只从这里取，且只从未 bound 的那一个取。"""
+        return self._inner
+
+    @property
     def name(self) -> str:
         return str(getattr(self._inner, "name", ""))
 

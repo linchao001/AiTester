@@ -105,7 +105,7 @@ def test_provider_override_skips_model_resolution(tmp_path: Path) -> None:
     # C5：注入的替身也被计量缝包上（否则离线端到端永远量不到），但包的就是那一个替身——
     # 短路语义没变：仍然不解析模型，窗口因此是「未知」的 0
     assert isinstance(instance.provider, MeteredProvider)
-    assert instance.provider._inner is mock
+    assert instance.provider.inner is mock
     assert instance.provider.usage is instance.usage
     assert instance.usage.window == 0
     assert _FakeChat.last == {}
@@ -227,7 +227,7 @@ def test_instances_are_independent_objects(tmp_path: Path) -> None:
     assert a is not b
     # C5 之后一回合一个计量缝：共用同一个包装对象就是共用同一本账，两回合的读数必须互不串味
     assert a.provider is not b.provider
-    assert a.provider._inner is b.provider._inner is mock   # 注入的仍是同一个 mock
+    assert a.provider.inner is b.provider.inner is mock   # 注入的仍是同一个 mock
     assert a.usage is not b.usage and a.provider.usage is a.usage
     assert a.tools and len(a.tools) == len(b.tools)
     assert [t.tool_id() for t in a.tools] == [t.tool_id() for t in b.tools]
