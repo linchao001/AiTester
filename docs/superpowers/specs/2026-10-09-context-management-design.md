@@ -136,6 +136,8 @@ def cap_content(text: str, *, tool: str, usage: ContextUsage | None) -> str:
 - `Composer.tsx` 的百分比条改吃 done 帧 / 会话行的 `context`：`occupancy / window`，`occupancy_source == "estimated"` 时换一种样式并写「估算」；缺 `context` 节时显示「—」，**不显示 0%**。
 - 截断在步序行可见（原长/保留/省略三个数）。
 
+> **实施澄清（第一片 C6，2026-10-09）**：「三个数可见」本片交付在 **composer 的上下文 tooltip** 里，逐条列到工具名（`工具名 原 X→留 Y（省 Z）`）；**不在步序行**。机制归因：步序行的 `detail` 是**参数摘要**（`orchestration/subagent.py:36` `detail_of`），且 step 帧按契约**不外泄工具正文**（`orchestration/agent_graph.py:281`——`result` 只进 `tool_traces` 落盘、不进 UI 事件）。要在步序行内联展示三数，得给 step 帧新增契约字段并动 `_STEP_KEYS`，超出本片「一把尺 + 一道闸」的范围 ⇒ 与 §7 的「工具结果落盘 + 文件指针回喂」同批留第二片。§6 判据② 的「可见」据此读作：**界面上（tooltip）看得见三数 + 落盘 `context.truncated` 逐条留痕**，反向钉在 `test_frontend_context_display.py`。
+
 ---
 
 ## 4. 硬规则
@@ -174,7 +176,7 @@ def cap_content(text: str, *, tool: str, usage: ContextUsage | None) -> str:
 **付费走查（隔离实例，新端口 8014；8000/5173 与 `scripts/dev.ps1` 绝不动）**四条判据：
 
 1. **真值到位**：一回合后会话 `context.peak_occupancy` 的来源是 `actual`，且与 done 帧读数一致。
-2. **闸门真管**：让模型跑一条**故意**把 stdout 打爆的命令（业务话术，判据不入提示），实测 `truncations` 留痕、步序行可见、且模型不假称拿到了全文。
+2. **闸门真管**：让模型跑一条**故意**把 stdout 打爆的命令（业务话术，判据不入提示），实测 `truncations` 留痕、**原长/保留/省略三个数在界面可见**（本片在上下文 tooltip，口径见 §3.8 实施澄清）、且模型不假称拿到了全文。
 3. **呈递诚实**：历史累积时读数上升但**不被拦**（这正是 CM-2 的语义边界）；同一条会话在改造前后读数明显不同（假估算 vs 真值）。
 4. **零假绿**：走一遍不返 usage 的档位（MockProvider 或关掉 `stream_usage`），照实标「估算」。
 
