@@ -61,17 +61,19 @@ def _truncate(text: str, cap: int, original: int) -> tuple[str, int]:
     head_n = max(1, int(keep_chars * HEAD_RATIO))
     tail_n = max(1, keep_chars - head_n)
     body = _assemble(text, head_n, tail_n)
-    kept = meter.estimate_text(body)
+    # 夹在渲染之前：正文极短（≤ 省略号自己）时 body 反而比原文长，
+    # 不夹就会给模型看「保留 > 原约」这种自相矛盾的三个数。
+    kept = min(meter.estimate_text(body), original)
     out = _render_mark(original, kept, max(0, original - kept)) + "\n" + body
     for _ in range(_SHRINK_ROUNDS):
         if meter.estimate_text(out) <= cap or (head_n <= 1 and tail_n <= 1):
-            return out, min(kept, original)
+            return out, kept
         head_n = max(1, int(head_n * _SHRINK))
         tail_n = max(1, int(tail_n * _SHRINK))
         body = _assemble(text, head_n, tail_n)
-        kept = meter.estimate_text(body)
+        kept = min(meter.estimate_text(body), original)
         out = _render_mark(original, kept, max(0, original - kept)) + "\n" + body
-    return out, min(kept, original)
+    return out, kept
 
 
 def cap_content(text: str, *, tool: str, usage: ContextUsage | None) -> str:

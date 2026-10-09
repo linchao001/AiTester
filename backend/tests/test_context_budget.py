@@ -245,11 +245,20 @@ def test_under_cap_message_is_returned_by_identity_and_leaves_no_trace(monkeypat
     assert msg.content == "短" and u.truncations == []   # 没砍就不许新建对象、不许留痕
 
 
-def test_tiny_cap_still_keeps_the_three_number_identity(monkeypatch):
-    """极端 cap 下留痕也不许自相矛盾：省略中段不许是负数、三个数恒等。"""
-    monkeypatch.setenv(CAP_ENV, "1")
+def test_tiny_body_clamps_kept_so_the_three_numbers_cannot_lie(monkeypatch):
+    """正文短于省略号自己时 body 反而比原文长，夹子必须咬合：模型不许看见「保留 > 原约」。
+    1 token = 1 字符再乘 1.15：4 字符原文 est 5，收窄后 body（"a\\n…\\nd"）est 6。"""
+    monkeypatch.setenv(CAP_ENV, "2")
     u = _usage()
-    out = cap_content("z" * 40, tool="shell", usage=u)
+    out = cap_content("abcd", tool="shell", usage=u)
     t = u.truncations[0]
-    assert t.kept + t.dropped == t.original and t.kept <= t.original
-    assert "省略中段 0" not in out or t.dropped == 0
+    assert (t.original, t.kept, t.dropped) == (5, 5, 0)
+    assert "原约 5 tokens" in out and "保留 5" in out and "省略中段 0" in out
+
+
+def test_cap_result_returns_the_very_same_message_object_when_under_cap(monkeypatch):
+    """白盒直断「没砍就不新建对象」：经 invoke 拿到的消息每次都是新的，外部断不出身份。"""
+    from langchain_core.messages import ToolMessage
+    monkeypatch.setenv(CAP_ENV, "1000")
+    msg = ToolMessage(content="短", tool_call_id="c9", name="echo_tool")
+    assert cap_result(msg, tool="echo_tool", usage=None) is msg
