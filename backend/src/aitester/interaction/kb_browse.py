@@ -1,9 +1,9 @@
-"""知识库文件浏览接口：逐条移植 prototype/serve.js:93-198 的六 handler 语义。
+"""知识库文件浏览接口：按项目挂载点读写，不再直打全局实体根。
 
-错误体统一 FastAPI 的 detail 键（serve.js 用 error，这是唯一键名偏差）；
-状态码、文案、限额与 serve.js 一致。安全：路径锁死 KB 实体根内、隐藏目录/点文件
-不可见、仅白名单文本类型、2MB 上限——路径锁/白名单/列目录函数体已抽到 browse_common
-（项目工作区共用，KB 侧行为一位不变）。
+根 = ``{project.dir}/.AiTester/knowledge``（Reme junction）。必须带 ``project_id``；
+未挂载或项目目录不可用时返回面向用户的友好 detail。安全：路径锁死挂载点内、
+隐藏目录/点文件不可见、仅白名单文本类型、2MB 上限——路径锁/白名单/列目录函数体
+已抽到 browse_common（项目工作区共用）。
 """
 
 from __future__ import annotations
@@ -24,11 +24,19 @@ from aitester.interaction.browse_common import (
     resolve_within,
     stat_item,
 )
-from aitester.memory.reme.paths import is_hidden, mtime_ms, resolve_kb_root
+from aitester.memory.reme.paths import is_hidden, mtime_ms
+from aitester.project_runtime import knowledge_mount
+from aitester.services.model_config import ConfigNotFoundError
+from aitester.services.project_config import ProjectService
 
 router = APIRouter(prefix="/api/kb/browse")
 
 OUTSIDE = "路径超出知识库范围"
+DIR_GONE = "项目目录不存在或已被移动，请到项目页确认路径"
+KB_NOT_MOUNTED = (
+    "该项目尚未挂载知识库。请先在对话页打开该项目并发送一条消息，以完成知识库挂载。"
+)
+NEED_PROJECT = "请先选择项目"
 SCAN_MD_MAX = 512 * 1024
 WALK_DEPTH = 12
 
@@ -36,14 +44,33 @@ _FM_RE = re.compile(r"^---\r?\n([\s\S]*?)\r?\n---")
 _KV_RE = re.compile(r"^([A-Za-z0-9_\-.]+):\s*(.*)$")
 
 
-def _root(request: Request) -> Path:
+def _projects(request: Request) -> ProjectService:
+    return request.app.state.project_config  # type: ignore[return-value]
+
+
+def _root(request: Request, project_id: str) -> Path:
     settings = request.app.state.settings
     if not settings.kb_enabled:
         raise HTTPException(status_code=503, detail="知识库未启用或未启动")
-    root = resolve_kb_root(settings)
+    pid = (project_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail=NEED_PROJECT)
+    try:
+        project = _projects(request).get(pid)
+    except ConfigNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.detail) from exc
+    try:
+        proj_dir = Path(project["dir"]).expanduser().resolve()
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail=DIR_GONE) from None
+    if not proj_dir.is_dir():
+        raise HTTPException(status_code=404, detail=DIR_GONE)
+    # 挂载点多为指向全局实体的 junction：先确认项目侧已挂载，再 resolve 跟到实体，
+    # 否则 resolve_within 返回实体路径、listing/rel_of 仍拿挂载点，relative_to 会炸。
+    root = knowledge_mount(proj_dir)
     if not root.is_dir():
-        raise HTTPException(status_code=404, detail="知识库实体目录不存在")
-    return root
+        raise HTTPException(status_code=404, detail=KB_NOT_MOUNTED)
+    return root.resolve()
 
 
 def _parse_fm(text: str) -> dict[str, str] | None:
@@ -83,8 +110,12 @@ def _walk_abs(root: Path, depth: int = 0) -> list[Path]:
 
 
 @router.get("/tree")
-def browse_tree(request: Request, path: str = "") -> dict[str, Any]:
-    root = _root(request)
+def browse_tree(
+    request: Request,
+    project_id: str = Query(""),
+    path: str = "",
+) -> dict[str, Any]:
+    root = _root(request, project_id)
     target = resolve_within(root, path, outside_detail=OUTSIDE)
     if not target.exists():
         raise HTTPException(status_code=404, detail="目录不存在")
@@ -94,8 +125,12 @@ def browse_tree(request: Request, path: str = "") -> dict[str, Any]:
 
 
 @router.get("/file")
-def browse_file(request: Request, path: str = "") -> Any:
-    root = _root(request)
+def browse_file(
+    request: Request,
+    project_id: str = Query(""),
+    path: str = "",
+) -> Any:
+    root = _root(request, project_id)
     target = resolve_within(root, path, outside_detail=OUTSIDE)
     if not target.exists():
         raise HTTPException(status_code=404, detail="文件不存在")
@@ -115,8 +150,13 @@ def browse_file(request: Request, path: str = "") -> Any:
 
 
 @router.get("/search")
-def browse_search(request: Request, q: str = "", limit: int = 120) -> dict[str, Any]:
-    root = _root(request)
+def browse_search(
+    request: Request,
+    project_id: str = Query(""),
+    q: str = "",
+    limit: int = 120,
+) -> dict[str, Any]:
+    root = _root(request, project_id)
     kw = q.strip().lower()
     if not kw:
         return {"root": str(root), "total": 0, "truncated": False, "hits": []}
@@ -138,8 +178,14 @@ def browse_search(request: Request, q: str = "", limit: int = 120) -> dict[str, 
 
 
 @router.get("/scan")
-def browse_scan(request: Request, path: str = "", limit: int = 800, md: str = "1") -> dict[str, Any]:
-    root = _root(request)
+def browse_scan(
+    request: Request,
+    project_id: str = Query(""),
+    path: str = "",
+    limit: int = 800,
+    md: str = "1",
+) -> dict[str, Any]:
+    root = _root(request, project_id)
     target = resolve_within(root, path, outside_detail=OUTSIDE)
     if not target.exists():
         raise HTTPException(status_code=404, detail="目录不存在")
@@ -166,10 +212,15 @@ def browse_scan(request: Request, path: str = "", limit: int = 800, md: str = "1
 
 
 @router.put("/file")
-def browse_put(request: Request, body: BrowseWriteBody,
-               path: str = Query(""), mtime: int = Query(0)) -> Any:
+def browse_put(
+    request: Request,
+    body: BrowseWriteBody,
+    project_id: str = Query(""),
+    path: str = Query(""),
+    mtime: int = Query(0),
+) -> Any:
     # body 必传（终审项 7）：无请求体由 FastAPI 直接 422，而非 None 解引用 500
-    root = _root(request)
+    root = _root(request, project_id)
     target = resolve_within(root, path, outside_detail=OUTSIDE)
     if not is_text_file(target):
         # spec §A 错误表：415/413 附 editable:false（与 409 同款 JSONResponse 形态）
@@ -192,10 +243,14 @@ def browse_put(request: Request, body: BrowseWriteBody,
 
 
 @router.post("/file")
-def browse_post(request: Request, body: BrowseWriteBody,
-                path: str = Query("")) -> Any:
+def browse_post(
+    request: Request,
+    body: BrowseWriteBody,
+    project_id: str = Query(""),
+    path: str = Query(""),
+) -> Any:
     # body 必传（终审项 7）：无请求体由 FastAPI 直接 422，而非 None 解引用 500
-    root = _root(request)
+    root = _root(request, project_id)
     target = resolve_within(root, path, outside_detail=OUTSIDE)
     if not is_text_file(target):
         return JSONResponse(status_code=415, content={"detail": "只允许写入文本文件", "editable": False})

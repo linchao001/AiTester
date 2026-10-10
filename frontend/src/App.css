@@ -283,7 +283,9 @@
   .ws-body.tree-hidden .ws-resizer{display:none}
   .ws-resizer{width:5px;flex:none;cursor:col-resize;background:transparent}
   .ws-resizer:hover{background:var(--primary)}
-  .resizer{width:5px;flex:none;cursor:col-resize;background:transparent;transition:background .15s}
+  .resizer{width:5px;flex:none;cursor:col-resize;background:transparent;transition:background .15s;position:relative;z-index:6}
+  /* 加宽命中区：可见仍是 5px，左右各扩 4px，避免文件打开后难抓到缝 */
+  .resizer::before{content:"";position:absolute;top:0;bottom:0;left:-4px;right:-4px}
   .resizer:hover,.resizer.dragging{background:var(--primary)}
   .ws-node{
     display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:7px;
@@ -509,6 +511,10 @@
   .kb-side-head{flex:none;display:flex;align-items:center;gap:7px;padding:10px 10px 9px 12px;font-size:12.5px;font-weight:700;color:#5c554b;border-bottom:1px solid var(--line);white-space:nowrap}
   .kb-side-head .spacer{flex:1}
   .kb-side-head .num{font-size:11px;color:var(--text-2);background:#fff;border:1px solid var(--line);border-radius:999px;padding:0 7px;font-weight:600}
+  .kb-project{flex:none;display:flex;flex-direction:column;gap:4px;margin:9px 10px 0;padding:8px 10px;background:#fff;border:1px solid var(--line);border-radius:8px}
+  .kb-project-label{font-size:11px;font-weight:700;color:var(--text-2)}
+  .kb-project-select{width:100%;border:none;outline:none;background:transparent;font:inherit;font-weight:700;color:#4a443b;cursor:pointer}
+  .kb-project-select:disabled{opacity:.55;cursor:not-allowed}
   .kb-search{flex:none;display:flex;align-items:center;gap:6px;margin:9px 10px 4px;padding:6px 9px;background:#fff;border:1px solid var(--line);border-radius:8px}
   .kb-search:focus-within{border-color:var(--primary)}
   .kb-search input{flex:1;min-width:0;border:none;outline:none;background:transparent;font-size:12.5px}
@@ -540,6 +546,9 @@
   .kb-foot .stat{font-size:11px;color:var(--text-2)}
   .kb-foot .unsaved{font-size:11px;font-weight:700;color:var(--fail)}
   .kb-chat{width:var(--kbc);flex:none;display:flex;flex-direction:column;min-height:0;border-left:1px solid var(--line);background:#fbf8f2;overflow:hidden;transition:width .18s ease}
+  /* 拖拽改宽时关掉 transition，否则跟手迟滞，看起来像「打不开/拖不动」 */
+  .kb-layout:has(.resizer.dragging) .kb-chat,
+  .kb-layout:has(.resizer.dragging) .kb-side{transition:none}
   .kb-layout.chat-hidden .kb-chat{width:0;border-left:none}
   .kb-layout.chat-hidden #kbChatResizer{display:none}
   .kb-chat-head{flex:none;display:flex;align-items:center;gap:8px;padding:10px 12px;font-size:12.5px;font-weight:700;color:#5c554b;border-bottom:1px solid var(--line);white-space:nowrap}

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import {
-  ApiError, chatSendStream, chatStop,
+  ApiError, chatSendStream, chatStop, getProjects,
   kbPostFile, kbPutFile, kbReadFile, kbSearchFiles, kbTree,
-  type KbBrowseItem, type KbDraft, type KbSearchHit, type KbWriteResponse,
+  type KbBrowseItem, type KbDraft, type KbSearchHit, type KbWriteResponse, type Project,
 } from "../api/client";
 import { applyEvent, finalize, liveText, newStreamState } from "./chat/streamState";
 import { bindDragBar } from "../components/dragBar";
+import PageState from "../components/PageState";
 import KbTreePane from "./kb/KbTreePane";
 import KbEditorPane from "./kb/KbEditorPane";
 import KbAssistantPane, { type KbChatMsg } from "./kb/KbAssistantPane";
@@ -23,20 +25,83 @@ export interface KbDocState {
   mode: "view" | "edit";
 }
 
-/** 收起按钮恢复文案与 resizer 夹持范围（用户裁定：180–560 / 260–640，宽于原型 520/620 上限）。 */
-const KBW_MIN = 180, KBW_MAX = 560, KBC_MIN = 260, KBC_MAX = 640;
+/** 与聊天页共用：当前项目是视图上下文，刷新保留、换浏览器不带走。 */
+const PROJECT_STORAGE_KEY = "aitester.chat.projectId";
+/** 助手消息按项目落盘；宽度偏好全局一份。 */
+const msgsStorageKey = (pid: string) => `aitester.kb.msgs.${pid}`;
+const WIDTH_STORAGE_KEY = "aitester.kb.widths";
+
+/** 左栏夹持仍保留；助手栏只保留下限，上限随布局动态算（可盖住中栏阅读区）。 */
+const KBW_MIN = 180, KBW_MAX = 560, KBC_MIN = 260;
+
+function loadKbMsgs(pid: string): KbChatMsg[] {
+  try {
+    const raw = window.localStorage.getItem(msgsStorageKey(pid));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((m): m is KbChatMsg => !!m && (m.who === "me" || m.who === "ai") && typeof m.text === "string")
+      .filter((m) => !m.pending) // 刷新时丢掉「思考中…」半截气泡
+      .map((m) => ({
+        ...m,
+        drafts: m.drafts?.map((d) => ({
+          ...d,
+          // 写盘中断在半途：回落为可再确认，避免卡在 writing
+          state: d.state === "writing" ? "pending" as const : d.state,
+        })),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function saveKbMsgs(pid: string, msgs: KbChatMsg[]) {
+  try {
+    const slim = msgs.filter((m) => !m.pending);
+    window.localStorage.setItem(msgsStorageKey(pid), JSON.stringify(slim));
+  } catch { /* quota / 隐私模式：忽略 */ }
+}
+
+function loadKbWidths(): { kbw?: string; kbc?: string } {
+  try {
+    const raw = window.localStorage.getItem(WIDTH_STORAGE_KEY);
+    if (!raw) return {};
+    const j = JSON.parse(raw) as { kbw?: string; kbc?: string };
+    return j && typeof j === "object" ? j : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveKbWidths(kbw: string, kbc: string) {
+  try {
+    window.localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify({ kbw, kbc }));
+  } catch { /* ignore */ }
+}
 
 /** 原型对 #kbTree 直接换 innerHTML（搜索中…/错误行），React 等价：占位盒与 KbTreePane 同构（树盒+脚注）。 */
-function TreeBoxPlaceholder({ msg, root }: { msg: string; root: string }): ReactNode {
+function TreeBoxPlaceholder({
+  msg, root, onRetry,
+}: { msg: string; root: string; onRetry?: () => void }): ReactNode {
   return (
     <>
-      <div className="kb-tree"><div className="hd">{msg}</div></div>
+      <div className="kb-tree">
+        <div className="hd" style={{ whiteSpace: "pre-wrap" }}>{msg}</div>
+        {onRetry && (
+          <div style={{ padding: "8px 10px" }}>
+            <button type="button" className="mini-btn" onClick={onRetry}>↻ 重新加载</button>
+          </div>
+        )}
+      </div>
       <div className="kb-root">{root ? `KB · ${root}` : ""}</div>
     </>
   );
 }
 
 export default function KbPage() {
+  const navigate = useNavigate();
+
   // —— 三栏布局状态（原型 viewKb classList + --kbw/--kbc）——
   const layoutRef = useRef<HTMLDivElement>(null);
   const [sideHidden, setSideHidden] = useState(false);
@@ -51,6 +116,40 @@ export default function KbPage() {
     toastTimer.current = window.setTimeout(() => setToastMsg(""), 2200);
   }, []);
 
+  // —— 项目：知识库浏览根随项目走，必须先选项目 ——
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectId, setProjectId] = useState("");
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const [projectsError, setProjectsError] = useState("");
+  const projSeq = useRef(0);
+  const projectIdRef = useRef(projectId);
+  projectIdRef.current = projectId;
+
+  const reloadProjects = useCallback(async () => {
+    const seq = ++projSeq.current;
+    try {
+      const j = await getProjects();
+      if (seq !== projSeq.current) return;
+      setProjects(j.projects);
+      setProjectsError("");
+      setProjectsLoaded(true);
+      setProjectId((cur) => {
+        if (cur && j.projects.some((p) => p.id === cur)) return cur;
+        const saved = window.localStorage.getItem(PROJECT_STORAGE_KEY) || "";
+        const hit = j.projects.find((p) => p.id === saved) || j.projects[0];
+        if (!hit) window.localStorage.removeItem(PROJECT_STORAGE_KEY);
+        else if (hit.id !== saved) window.localStorage.setItem(PROJECT_STORAGE_KEY, hit.id);
+        return hit ? hit.id : "";
+      });
+    } catch (err) {
+      if (seq !== projSeq.current) return;
+      setProjectsError(err instanceof Error ? err.message : String(err));
+      setProjectsLoaded(false);
+    }
+  }, []);
+
+  useEffect(() => { void reloadProjects(); }, [reloadProjects]);
+
   // —— 树数据加载（原型 KB.kids/expanded/root + kbLoadDir :2378-2385，缓存留在本页）——
   // 展示根名恒为别名：后端 browse 响应里的实体根路径只用于服务端定位，不进 UI（脱敏裁定）
   const root = KB_ALIAS;
@@ -64,25 +163,86 @@ export default function KbPage() {
   kidsRef.current = kids;
   expandedRef.current = expanded;
 
+  // —— 中栏文档状态（Task 9；原型 KB.path/content/disk/mtime/mode 的 React 化）——
+  const [doc, setDoc] = useState<KbDocState | null>(null);
+  const docRef = useRef(doc);
+  docRef.current = doc;
+
+  // —— 搜索 / 助手（切项目时一并清零，故声明提前）——
+  const [query, setQuery] = useState("");
+  const [searchHits, setSearchHits] = useState<KbSearchHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [searchErr, setSearchErr] = useState<string | null>(null);
+  const searchSeq = useRef(0);
+  const searchTimer = useRef<number>();
+  const [msgs, setMsgs] = useState<KbChatMsg[]>([]);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const runIdRef = useRef("");
+  const stopRequestedRef = useRef(false);
+  const [stopRequested, setStopRequested] = useState(false);
+  const kbAbortRef = useRef<AbortController | null>(null);
+
+  const resetBrowse = useCallback(() => {
+    kidsRef.current = {};
+    expandedRef.current = { "": true };
+    setKids({});
+    setExpanded({ "": true });
+    setTotal(null);
+    setTreeErr(null);
+    setActiveRel("");
+    docRef.current = null;
+    setDoc(null);
+    setQuery("");
+    setSearchHits(null);
+    setSearching(false);
+    setSearchErr(null);
+    searchSeq.current++;
+    // 助手消息不在此清空：随 projectId 从 localStorage 换载，避免切项目时误抹旧项目缓存
+  }, []);
+
+  // 助手会话：按项目读写 localStorage，刷新不丢；切项目换一份
+  const msgsPidRef = useRef("");
+  useEffect(() => {
+    if (!projectId) {
+      msgsPidRef.current = "";
+      setMsgs([]);
+      return;
+    }
+    if (msgsPidRef.current !== projectId) {
+      msgsPidRef.current = projectId;
+      setMsgs(loadKbMsgs(projectId));
+      return;
+    }
+    saveKbMsgs(projectId, msgs);
+  }, [projectId, msgs]);
+
   /** 原型 kbLoadDir：kids 缺失才拉（懒加载=首次展开触发）。 */
   const loadKids = useCallback(async (rel: string): Promise<KbBrowseItem[]> => {
+    const pid = projectIdRef.current;
+    if (!pid) throw new Error("请先选择项目");
     if (kidsRef.current[rel]) return kidsRef.current[rel];
-    const j = await kbTree(rel);
+    const j = await kbTree(pid, rel);
     kidsRef.current = { ...kidsRef.current, [rel]: j.items };
     setKids(kidsRef.current);
     if (rel === "") setTotal(j.items.length); // 计数 num：根条目数
     return j.items;
   }, []);
 
-  // 根目录 mount 时加载一次（原型 kbEnter 的懒进入，React 侧在挂载时执行）
-  const didInit = useRef(false);
-  useEffect(() => {
-    if (didInit.current) return;
-    didInit.current = true;
-    loadKids("").catch((e: Error) =>
-      // 原型 :2733 提示语中的 serve.js 启动方式不适用本项目（正式后端为 FastAPI），只保留错误信息
-      setTreeErr(`知识库接口不可用：${e.message}`));
+  const reloadTree = useCallback(() => {
+    if (!projectIdRef.current) return;
+    kidsRef.current = {};
+    setKids({});
+    setTotal(null);
+    setTreeErr(null);
+    loadKids("").catch((e: Error) => setTreeErr(e.message));
   }, [loadKids]);
+
+  // 选中项目后拉根目录；切项目由 resetBrowse + 本 effect 重进
+  useEffect(() => {
+    if (!projectId) return;
+    reloadTree();
+  }, [projectId, reloadTree]);
 
   /** 原型 :2414-2421 —— 目录点击：折叠 or 展开+首次拉取；失败走 toast。 */
   const onToggleDir = useCallback((rel: string) => {
@@ -94,20 +254,17 @@ export default function KbPage() {
     loadKids(rel).catch((e: Error) => toast(e.message));
   }, [loadKids, toast]);
 
-  // —— 中栏文档状态（Task 9；原型 KB.path/content/disk/mtime/mode 的 React 化）——
-  const [doc, setDoc] = useState<KbDocState | null>(null);
-  const docRef = useRef(doc);
-  docRef.current = doc;
-
   /** 原型 kbOpen :2427-2447 —— 读盘载入；非 force 且有未保存修改先确认放弃。
       docRef 同步写（同 kidsRef 模式）：紧随其后的 kbWrite/进编辑态不依赖重渲染时序。 */
   const kbOpen = useCallback(async (rel: string, force: boolean): Promise<boolean> => {
+    const pid = projectIdRef.current;
+    if (!pid) { toast("请先选择项目"); return false; }
     const cur = docRef.current;
     if (!force && cur && cur.content !== cur.disk) {
       if (!window.confirm("当前文件有未保存的修改，放弃并切换？")) return false;
     }
     let j;
-    try { j = await kbReadFile(rel); }
+    try { j = await kbReadFile(pid, rel); }
     catch (err) { toast(err instanceof Error ? err.message : String(err)); return false; }
     const next: KbDocState = {
       rel: j.rel, name: j.name, ext: j.ext,
@@ -130,10 +287,12 @@ export default function KbPage() {
   const kbWrite = useCallback(async (
     rel: string, content: string, mode: "PUT" | "POST", mtime?: number,
   ): Promise<KbWriteResponse | null> => {
+    const pid = projectIdRef.current;
+    if (!pid) { toast("请先选择项目"); return null; }
     try {
       const j = mode === "PUT"
-        ? await kbPutFile(rel, content, mtime !== undefined ? mtime : docRef.current?.mtime ?? 0)
-        : await kbPostFile(rel, content);
+        ? await kbPutFile(pid, rel, content, mtime !== undefined ? mtime : docRef.current?.mtime ?? 0)
+        : await kbPostFile(pid, rel, content);
       if (rel === docRef.current?.rel) {
         const next = { ...(docRef.current as KbDocState), content: j ? content : docRef.current!.content, disk: content, mtime: j.mtime };
         docRef.current = next; setDoc(next);
@@ -171,6 +330,19 @@ export default function KbPage() {
   const onOpenFile = useCallback((rel: string) => { void kbOpen(rel, false); }, [kbOpen]);
 
   const dirty = doc !== null && doc.content !== doc.disk;
+
+  const onProjectChange = useCallback((id: string) => {
+    if (id === projectIdRef.current) return;
+    if (busyRef.current) { toast("助手正在回答，请稍后再切换项目"); return; }
+    const cur = docRef.current;
+    if (cur && cur.content !== cur.disk
+      && !window.confirm("当前文件有未保存的修改，切换项目将丢弃它们。继续？")) {
+      return;
+    }
+    window.localStorage.setItem(PROJECT_STORAGE_KEY, id);
+    resetBrowse();
+    setProjectId(id);
+  }, [resetBrowse, toast]);
 
   // —— 中栏回调：确认弹窗文案逐字照原型 :2501-2516（window.confirm，plan-mandated）——
   const onMode = useCallback((m: "view" | "edit") => {
@@ -216,12 +388,14 @@ export default function KbPage() {
   const [nfDesc, setNfDesc] = useState("");
   const [nfTip, setNfTip] = useState("");
   const openNewNote = useCallback(() => {
+    if (!projectIdRef.current) { toast("请先选择项目"); return; }
+    if (treeErr) { toast(treeErr); return; }
     // 原型 :2521-2522 —— 目录默认当前打开文件的父目录或 _inbox
     const cur = docRef.current;
     setNfDir(cur ? (kbDirOf(cur.rel) || "_inbox") : "_inbox");
     setNfTitle(""); setNfName(""); setNfDesc(""); setNfTip("");
     setNewNoteOpen(true);
-  }, []);
+  }, [toast, treeErr]);
   const onNfTitleChange = useCallback((v: string) => {
     // 原型 :2534 —— 标题 → kbSlug 自动文件名（补 .md）；改动即清 tip
     const n = kbSlug(v);
@@ -247,21 +421,17 @@ export default function KbPage() {
   }, [kbOpen, kbWrite, nfDesc, nfDir, nfName, nfTitle, onMode]);
 
   // —— 搜索：300ms 防抖 + 序号防竞态（原型 :2716-2727 kbSearchSeq；间隔 260→300ms 按 brief）——
-  const [query, setQuery] = useState("");
-  const [searchHits, setSearchHits] = useState<KbSearchHit[] | null>(null);
-  const [searching, setSearching] = useState(false);
-  const [searchErr, setSearchErr] = useState<string | null>(null);
-  const searchSeq = useRef(0);
-  const searchTimer = useRef<number>();
   const onQueryChange = useCallback((v: string) => {
     setQuery(v);
     window.clearTimeout(searchTimer.current);
     const q = v.trim();
     const seq = ++searchSeq.current;
     if (!q) { searchSeq.current++; setSearchHits(null); setSearching(false); setSearchErr(null); return; }
+    const pid = projectIdRef.current;
+    if (!pid) { setSearchErr("请先选择项目"); setSearching(false); return; }
     setSearching(true);
     searchTimer.current = window.setTimeout(() => {
-      kbSearchFiles(q, 200).then((j) => {
+      kbSearchFiles(pid, q, 200).then((j) => {
         if (seq !== searchSeq.current) return;
         setSearchErr(null); setSearchHits(j.hits); setSearching(false);
       }).catch((e: Error) => {
@@ -277,13 +447,6 @@ export default function KbPage() {
 
   // —— 助手栏（Task 10：原型 kbAsk/kbSay/kbDraftCard :2556-2596/:2675-2689 的接线迁进流式通道，
   //     与聊天页同一条 /api/chat/send/stream；kb-console 是临时键 use_file=False，会话行不落 jsonl）——
-  const [msgs, setMsgs] = useState<KbChatMsg[]>([]);
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(false); // 原型 KB.busy 的同步重入锁（不依赖重渲染时序）
-  const runIdRef = useRef("");
-  const stopRequestedRef = useRef(false);
-  const [stopRequested, setStopRequested] = useState(false);
-  const kbAbortRef = useRef<AbortController | null>(null);
 
   /** 原型 :2682-2685 —— 用最新回复（+逐条草案卡 / 错误行）更新「思考中…」占位气泡。
       keepPending=true 时气泡仍是 pending 态（流式中的 live 更新），false 即终态替换。
@@ -321,11 +484,12 @@ export default function KbPage() {
     setLastAi(text, drafts, false, error, stopped);
   }, [setLastAi]);
 
-  /** brief Step 3 ask 原样转写：session_id/agent_id 固定值不可改（后端记忆键 kb_assistant:kb-console）。
-   *  project_id 传空串——平台助手不属于项目，后端对该字段短路忽略。kb-console 是临时键：
-   *  流式照旧，但会话行不写 jsonl，停止后不留痕（spec 真机行为定义）。 */
+  /** brief Step 3 ask：session_id/agent_id 固定；页面已强制选项目，但 kb_assistant 仍是平台智能体，
+   *  后端忽略 project_id（共享实体经 junction 内容一致）。kb-console 临时键不落 jsonl。 */
   const ask = useCallback(async (text: string) => {
     if (busyRef.current) return;
+    if (!projectIdRef.current) { toast("请先选择项目"); return; }
+    if (treeErr) { toast(treeErr); return; }
     busyRef.current = true;
     setBusy(true);
     runIdRef.current = "";
@@ -364,7 +528,7 @@ export default function KbPage() {
     }
     // 失败进气泡（红色），不抢 toast；草案卡保留（draft 必在 prepare_kb_write 成功后才发，确认走独立 REST）
     replaceLastAi(errMsg || st.fail || "连接中断，助手未完成", st.drafts, true);
-  }, [replaceLastAi, setLastAi]);
+  }, [replaceLastAi, setLastAi, toast, treeErr]);
 
   const stopAsk = useCallback(() => {
     if (stopRequestedRef.current) return;
@@ -401,18 +565,40 @@ export default function KbPage() {
     setDraftState(mi, di, "canceled");
   }, [setDraftState]);
 
-  // —— 双 resizer：拖拽写 --kbw/--kbc（原型 :2708-2715，夹持范围按裁定放宽）——
+  // —— 双 resizer：必须在主布局真正挂载后再绑（首帧是项目加载空态，layoutRef 为空；
+  //    旧 deps=[] 会永久漏绑，表现为「怎么都拖不动」）。——
   useEffect(() => {
+    if (!projectId || !projectsLoaded || !!projectsError || !projects.length) return;
     const layout = layoutRef.current;
     if (!layout) return;
+
+    const saved = loadKbWidths();
+    if (saved.kbw) layout.style.setProperty("--kbw", saved.kbw);
+    if (saved.kbc) layout.style.setProperty("--kbc", saved.kbc);
+
+    const persist = () => {
+      const kbw = layout.style.getPropertyValue("--kbw") || getComputedStyle(layout).getPropertyValue("--kbw");
+      const kbc = layout.style.getPropertyValue("--kbc") || getComputedStyle(layout).getPropertyValue("--kbc");
+      saveKbWidths(kbw.trim(), kbc.trim());
+    };
+
     const specs: Array<[string, (x: number) => void]> = [
       ["kbResizer", (x) => {
         const w = Math.min(Math.max(x - layout.getBoundingClientRect().left, KBW_MIN), KBW_MAX);
         layout.style.setProperty("--kbw", `${w}px`);
+        persist();
       }],
       ["kbChatResizer", (x) => {
-        const w = Math.min(Math.max(layout.getBoundingClientRect().right - x, KBC_MIN), KBC_MAX);
+        const rect = layout.getBoundingClientRect();
+        const side = layout.querySelector(".kb-side") as HTMLElement | null;
+        const sideW = layout.classList.contains("side-hidden")
+          ? 0
+          : (side?.getBoundingClientRect().width ?? 0);
+        // 左/右 resizer 各约 5px；中栏可压到 0，助手可完全占满剩余宽度
+        const max = Math.max(KBC_MIN, rect.width - sideW - 10);
+        const w = Math.min(Math.max(rect.right - x, KBC_MIN), max);
         layout.style.setProperty("--kbc", `${w}px`);
+        persist();
       }],
     ];
     const detachers: Array<() => void> = [];
@@ -422,9 +608,53 @@ export default function KbPage() {
       detachers.push(bindDragBar(el, (ev) => onMove(ev.clientX)));
     });
     return () => detachers.forEach((fn) => fn());
-  }, []);
+  }, [projectId, projectsLoaded, projectsError, projects.length]);
 
   const searchingView = query.trim() && (searching || searchErr !== null);
+  const currentProject = projects.find((p) => p.id === projectId);
+  const toastEl = toastMsg ? <div className="toast show">{toastMsg}</div> : null;
+
+  if (projectsLoaded && !projects.length) {
+    return (
+      <div className="page state-page">
+        <PageState
+          icon="📁"
+          title="还没有项目"
+          desc="知识库已与项目绑定。先到项目页添加一个目录，再回来浏览与编辑该项目下的知识库。"
+          actions={
+            <>
+              <button className="btn-primary" onClick={() => navigate("/projects")}>去项目页</button>
+              <button className="mini-btn" onClick={() => void reloadProjects()}>↻ 重试</button>
+            </>
+          }
+        />
+        {toastEl}
+      </div>
+    );
+  }
+
+  if (projectsError) {
+    return (
+      <div className="page state-page">
+        <PageState
+          icon="⚠️"
+          title="项目列表加载失败"
+          desc={projectsError}
+          actions={<button className="btn-primary" onClick={() => void reloadProjects()}>↻ 重试</button>}
+        />
+        {toastEl}
+      </div>
+    );
+  }
+
+  if (!projectsLoaded || !projectId) {
+    return (
+      <div className="page state-page">
+        <PageState icon="📚" title="正在加载项目…" desc="请稍候" />
+        {toastEl}
+      </div>
+    );
+  }
 
   return (
     <>
@@ -437,14 +667,34 @@ export default function KbPage() {
           <div className="kb-side-head">📚 目录<span className="num">{total === null ? "–" : `${total} 项`}</span><div className="spacer"></div>
             <button className="icon-btn" title="隐藏目录树" onClick={() => setSideHidden(true)}>«</button>
           </div>
+          <div className="kb-project">
+            <label className="kb-project-label" htmlFor="kbProjectSelect">当前项目</label>
+            <select
+              id="kbProjectSelect"
+              className="kb-project-select"
+              value={projectId}
+              disabled={busy}
+              onChange={(e) => onProjectChange(e.target.value)}
+              title="切换项目会刷新知识库目录"
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </div>
           <div className="kb-search"><span className="mag">🔍</span>
-            <input value={query} placeholder="全库搜索文件名…" onChange={(e) => onQueryChange(e.target.value)} />
+            <input
+              value={query}
+              placeholder="全库搜索文件名…"
+              disabled={!!treeErr}
+              onChange={(e) => onQueryChange(e.target.value)}
+            />
           </div>
           {searchingView ? (
             <TreeBoxPlaceholder msg={searchErr !== null ? searchErr : "搜索中…"} root={root} />
           ) : treeErr !== null && !query.trim() ? (
-            /* 原型同盒覆盖：搜索出结果后错误行让位于命中列表，清空搜索再回显 */
-            <TreeBoxPlaceholder msg={treeErr} root={root} />
+            /* 未挂载 / 目录不可用等：友好 detail 直接展示在树盒，保留项目选择器可切换 */
+            <TreeBoxPlaceholder msg={treeErr} root={root} onRetry={reloadTree} />
           ) : (
             <KbTreePane
               root={root}
@@ -452,6 +702,7 @@ export default function KbPage() {
               expanded={expanded}
               activeRel={activeRel}
               total={total}
+              projectName={currentProject?.name ?? ""}
               searchHits={searchHits}
               onToggleDir={onToggleDir}
               onOpenFile={onOpenFile}

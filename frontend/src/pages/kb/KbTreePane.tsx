@@ -10,6 +10,7 @@ export interface KbTreePaneProps {
   expanded: Record<string, boolean>;
   activeRel: string;
   total: number | null;                        // 计数 num
+  projectName?: string;                        // 空库提示里点名当前项目
   searchHits: KbSearchHit[] | null;            // 非 null = 搜索结果态
   onToggleDir: (rel: string) => void;
   onOpenFile: (rel: string) => void;
@@ -21,6 +22,7 @@ export default function KbTreePane({
   expanded,
   activeRel,
   total,
+  projectName = "",
   searchHits,
   onToggleDir,
   onOpenFile,
@@ -67,8 +69,14 @@ export default function KbTreePane({
         ) : (
           <>
             {nodes("", 0)}
-            {/* 原型空根渲染空白框；React 侧补一行可读提示（total 消费点，样式复用 .hd） */}
-            {total === 0 && <div className="hd">知识库暂无文件</div>}
+            {/* 挂载点存在但为空：友好空态（样式复用 .hd） */}
+            {total === 0 && (
+              <div className="hd" style={{ whiteSpace: "pre-wrap" }}>
+                {projectName
+                  ? `「${projectName}」的知识库还是空的。\n可点「＋ 新建笔记」，或让右侧助手起草后确认写入。`
+                  : "知识库还是空的。可点「＋ 新建笔记」，或让右侧助手起草后确认写入。"}
+              </div>
+            )}
           </>
         )}
       </div>

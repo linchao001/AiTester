@@ -44,6 +44,11 @@ def design_root(project_dir: str | Path) -> Path:
     return Path(project_dir) / PROJECT_RUNTIME_DIRNAME / "design"
 
 
+def knowledge_mount(project_dir: str | Path) -> Path:
+    """项目内知识库挂载点：``{project.dir}/.AiTester/knowledge``（通常为指向实体的 junction）。"""
+    return project_runtime_root(project_dir) / "knowledge"
+
+
 def reme_paths_for_project_cwd(text: str) -> str:
     """把 Reme workspace 相对路径前缀改写成相对项目根（cwd）的 ``.AiTester/...``。
 

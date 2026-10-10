@@ -67,11 +67,11 @@ export default function KbAssistantPane({
     onAsk(v); // busy 锁在 KbPage.ask 内统一守卫（原型 KB.busy :2676）
   };
 
-  // 原型 :2696-2698 —— Ctrl/Cmd+Enter 发送
+  // 与聊天页同款：Enter 发送，Shift+Enter 换行（不再要求 Ctrl/Cmd+Enter）
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      send();
+      if (!busy) send();
     }
   };
 
@@ -120,10 +120,12 @@ export default function KbAssistantPane({
         <textarea
           value={input}
           placeholder="例如：把当前笔记补上 description / 导出 test 目录的 P0 用例清单"
+          title="Enter 发送 · Shift+Enter 换行"
+          disabled={busy}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={onKeyDown}
         />
-        <div className="bar"><span className="tip">助手只生成草案，写入磁盘前需你确认</span><div className="spacer"></div>
+        <div className="bar"><span className="tip">Enter 发送 · Shift+Enter 换行 · 写入磁盘前需确认</span><div className="spacer"></div>
           {busy ? (
             <button className="ws-btn" disabled={stopRequested}
               title={stopRequested ? "停止中…" : "停止生成"} onClick={onStop}>■ 停止</button>

@@ -232,28 +232,37 @@ export interface KbScanDoc { rel: string; name: string; size: number; mtime: num
 export interface KbScanResponse { root: string; scanned: number; truncated: boolean; docs: KbScanDoc[] }
 export interface KbWriteResponse { rel: string; size: number; mtime: number }
 
+/** 知识库浏览：根随项目走（{project.dir}/.AiTester/knowledge），必须带 project_id。 */
 const browseApi = (sub: string, params: Record<string, string | number>) =>
   `/api/kb/browse/${sub}?${new URLSearchParams(
     Object.entries(params).map(([k, v]) => [k, String(v)])).toString()}`;
 
-export function kbTree(path: string): Promise<KbTreeResponse> {
-  return apiFetch<KbTreeResponse>(browseApi("tree", { path }));
+export function kbTree(projectId: string, path: string): Promise<KbTreeResponse> {
+  return apiFetch<KbTreeResponse>(browseApi("tree", { project_id: projectId, path }));
 }
-export function kbReadFile(path: string): Promise<KbFileResponse> {
-  return apiFetch<KbFileResponse>(browseApi("file", { path }));
+export function kbReadFile(projectId: string, path: string): Promise<KbFileResponse> {
+  return apiFetch<KbFileResponse>(browseApi("file", { project_id: projectId, path }));
 }
-export function kbSearchFiles(q: string, limit = 120): Promise<KbSearchResponse> {
-  return apiFetch<KbSearchResponse>(browseApi("search", { q, limit }));
+export function kbSearchFiles(projectId: string, q: string, limit = 120): Promise<KbSearchResponse> {
+  return apiFetch<KbSearchResponse>(browseApi("search", { project_id: projectId, q, limit }));
 }
-export function kbScanFiles(path: string, limit = 800, md = true): Promise<KbScanResponse> {
-  return apiFetch<KbScanResponse>(browseApi("scan", { path, limit, md: md ? "1" : "0" }));
+export function kbScanFiles(
+  projectId: string, path: string, limit = 800, md = true,
+): Promise<KbScanResponse> {
+  return apiFetch<KbScanResponse>(browseApi("scan", {
+    project_id: projectId, path, limit, md: md ? "1" : "0",
+  }));
 }
-export function kbPutFile(path: string, content: string, mtime: number): Promise<KbWriteResponse> {
-  return apiFetch<KbWriteResponse>(browseApi("file", { path, mtime }), {
+export function kbPutFile(
+  projectId: string, path: string, content: string, mtime: number,
+): Promise<KbWriteResponse> {
+  return apiFetch<KbWriteResponse>(browseApi("file", { project_id: projectId, path, mtime }), {
     method: "PUT", headers: JSON_HEADERS, body: JSON.stringify({ content }) });
 }
-export function kbPostFile(path: string, content: string): Promise<KbWriteResponse> {
-  return apiFetch<KbWriteResponse>(browseApi("file", { path }), {
+export function kbPostFile(
+  projectId: string, path: string, content: string,
+): Promise<KbWriteResponse> {
+  return apiFetch<KbWriteResponse>(browseApi("file", { project_id: projectId, path }), {
     method: "POST", headers: JSON_HEADERS, body: JSON.stringify({ content }) });
 }
 
