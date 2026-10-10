@@ -315,11 +315,11 @@ def test_send_with_unknown_sess_id_raises(tmp_path, project) -> None:
 
 
 def test_platform_agent_never_uses_file_memory(tmp_path, project) -> None:
-    svc_proj, _pid, _ = project
+    svc_proj, pid, _ = project
     svc = _RecordingService(provider=MockProvider(), sessions=_locator(svc_proj),
                             projects=svc_proj)
     svc.agent_runtime = _sentinel_runtime()
-    svc.send("kb-console", "hi", "kb_assistant")
+    svc.send("kb-console", "hi", "kb_assistant", pid)
     assert isinstance(svc.seen_memory[0], InMemoryMemoryStore)
 
 
@@ -364,7 +364,7 @@ def test_kb_assistant_history_uses_short_window(tmp_path, project) -> None:
     """知识库助手 QA 短窗：进模型最近 8 条（4 轮），记忆仍保留全量。"""
     from aitester.services.chat import KB_HISTORY_MAX
 
-    svc_proj, _pid, _ = project
+    svc_proj, pid, _ = project
     seen: list[list] = []
 
     class _SpyProvider(ChunkedStreamMixin):
@@ -388,7 +388,7 @@ def test_kb_assistant_history_uses_short_window(tmp_path, project) -> None:
     for i in range(10):
         svc.memory.save(key, "user", f"问{i}")
         svc.memory.save(key, "assistant", f"答{i}")
-    svc.send("kb-console", "新问题", "kb_assistant")
+    svc.send("kb-console", "新问题", "kb_assistant", pid)
     contents = [m.content for m in seen[0]]
     # [system] + KB_HISTORY_MAX + [本轮 user]
     assert len(contents) == 1 + KB_HISTORY_MAX + 1
@@ -546,9 +546,12 @@ def test_send_rejects_project_mismatch(tmp_path, project) -> None:
     assert exc.value.detail == "会话不存在或已被删除"
 
 
-def test_platform_agent_ignores_project(tmp_path, project) -> None:
-    svc, _pid, _ = project
+def test_platform_agent_requires_project(tmp_path, project) -> None:
+    svc, pid, _ = project
     chat = ChatService(provider=MockProvider(), agent_runtime=_runtime(tmp_path),
                        sessions=_locator(svc), projects=svc)
-    result = chat.send("kb-console", "记一笔", "kb_assistant", "")  # 空 project_id：/kb 链路不破（spec 裁定 7）
+    with pytest.raises(ProjectConfigError) as exc:
+        chat.send("kb-console", "记一笔", "kb_assistant", "")
+    assert "请先选择项目" in str(exc.value)
+    result = chat.send("kb-console", "记一笔", "kb_assistant", pid)
     assert result["session_id"] == "kb-console"

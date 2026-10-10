@@ -66,7 +66,7 @@ class AuthItem:
 
 def build_gate_context(perm_mode: str, project_dir: str, session_key: str,
                        remembered: set[str]) -> GateContext | None:
-    """free 档与平台智能体（无项目落点）都是 None：节点整段直通，零行为变化。"""
+    """free 档或空项目落点 → None：节点整段直通。平台智能体由 chat 层不传 gate。"""
     if perm_mode == "free" or not project_dir:
         return None
     return GateContext(perm_mode=perm_mode, project_dir=project_dir,

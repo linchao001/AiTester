@@ -201,8 +201,9 @@ class ChatService:
     ) -> PreparedRun:
         """守门 + 装配 + 记忆选择 + 上下文拼装：全部会以 4xx 结束的段落只在这里存在一份。
 
-        项目维度（第 2 片）：可见智能体的会话必须属于一个项目，落点取项目 dir；
-        平台功能智能体不属于项目，project_id 一律忽略（spec 裁定 7，/kb 链路依赖此）。
+        项目维度：所有智能体（含 kb_assistant）都必须绑定项目；落点取项目 dir，
+        Reme 走 ``{dir}/.AiTester``。平台智能体仍不落 session_history / 个人记忆钩子，
+        只保留进程内短窗多轮。
         """
         if self.agent_runtime is None:
             raise ProviderConfigError(
@@ -210,11 +211,8 @@ class ChatService:
             )
         mode = validate_perm_mode(perm_mode)      # 第一句：非法档位在任何副作用之前 400
         platform = is_platform_agent(agent_id)
-        project: dict[str, Any] | None = None
-        pid = ""
-        if not platform:
-            project = self._guard_project(project_id)
-            pid = (project_id or "").strip()
+        project = self._guard_project(project_id)
+        pid = (project_id or "").strip()
         sid = (session_id or "").strip()
         store = None
         if self.sessions is not None and not platform and pid:
@@ -235,7 +233,7 @@ class ChatService:
             if existing.project_id != pid:
                 raise SessionStoreError("会话不属于该项目")
 
-        # 装配落点：可见智能体用项目 dir（产出物归位），平台智能体沿用 _build_platform_agent 内部算的 workspace
+        # 装配落点：项目 dir（产出物 / 相对路径归位）；平台智能体 Reme 同绑该项目 .AiTester
         instance = self.agent_runtime.build(
             agent_id,
             sid,
@@ -243,7 +241,7 @@ class ChatService:
             # 验真与落点必须认同一个展开结果，否则 `~` 项目会被 `mkdir` 建成字面 `~` 目录树
             # （dir_exists 先 expanduser 才答「可达」，fs_tool._resolve 却从不展 `~`）：只在这里展开，
             # 落盘数据与 UI 仍是用户输入的原始形态，无迁移
-            cwd=str(Path(project["dir"]).expanduser()) if project is not None else ".",
+            cwd=str(Path(project["dir"]).expanduser()),
             project_id=pid,
         )
 
@@ -258,8 +256,7 @@ class ChatService:
             memory = self.memory
 
         # 判定与落点认同一个展开：dir 配成 ~/x 时两侧都看到家目录（第 2 片教训的对称面）
-        project_dir = (str(Path(project["dir"]).expanduser().resolve())
-                       if project is not None else "")
+        project_dir = str(Path(project["dir"]).expanduser().resolve())
         key = f"{instance.agent_id}:{sid}"
         # 只截进模型的 prompt；记忆/UI 仍可留全量。kb_assistant 用短窗，主聊天仍 HISTORY_MAX。
         history = memory.recall(key)[-_history_max_for(instance.agent_id):]
@@ -277,6 +274,10 @@ class ChatService:
                     insert_at,
                     SystemMessage(content=f"[aitester_personal_memory]\n{hit}"),
                 )
+        # 平台智能体：有项目落点但仍不走文件写授权闸（工具面只读检索 + 确认卡写）
+        gate = None if platform else build_gate_context(
+            mode, project_dir, key, self.pending.remembered_for(key),
+        )
         return PreparedRun(
             key=key,
             session_id=sid,
@@ -291,7 +292,7 @@ class ChatService:
             agent_id=instance.agent_id,
             project_id=pid,
             project_dir=project_dir,
-            gate=build_gate_context(mode, project_dir, key, self.pending.remembered_for(key)),
+            gate=gate,
             case_env=instance.case_env,
             usage=instance.usage,
         )
@@ -313,7 +314,11 @@ class ChatService:
                              steps=steps, stopped=stopped, context=snapshot)
         self.repo.put(f"session:{prepared.key}",
                       {"session_id": prepared.key, "last_reply": reply})
-        if self.personal is not None and prepared.project_id and prepared.agent_id:
+        # 平台智能体（kb_assistant）即使已绑项目也不写 Reme 个人记忆
+        if (self.personal is not None
+                and prepared.project_id
+                and prepared.agent_id
+                and not is_platform_agent(prepared.agent_id)):
             # 按用户回合累计；默认每 5 轮后台 flush（对齐 QwenPaw auto_memory_interval）
             self.personal.note_user_turn(
                 project_id=prepared.project_id,

@@ -35,7 +35,7 @@ class KbSearchTool(AiTooler):
     args_schema: type[BaseModel] = KbSearchInput
     kb: Any = None
     agent_id: str = "console"
-    project_id: str = "default"
+    project_id: str = ""
 
     def _run(self, query: str, limit: int = 5, bucket: str = "all", **_: Any) -> str:
         from aitester.project_runtime import reme_paths_for_project_cwd
@@ -70,7 +70,7 @@ class KbSaveTool(AiTooler):
     args_schema: type[BaseModel] = KbSaveInput
     kb: Any = None
     agent_id: str = "console"
-    project_id: str = "default"
+    project_id: str = ""
 
     def _run(self, title: str, content: str, bucket: str = "business/wiki", **_: Any) -> str:
         try:

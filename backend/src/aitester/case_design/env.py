@@ -16,7 +16,7 @@ from aitester.project_runtime import design_root
 class CaseDesignEnv:
     project_dir: str
     kb: Any                       # RemeMemoryManager（或其同签名替身）；未启用时为 None 的调用方不给 env
-    project_id: str = ""          # Reme 池键解析用；空则走 default/_platform
+    project_id: str = ""          # Reme 池键解析用；必须为真实项目 id
 
     @property
     def design(self) -> Path:

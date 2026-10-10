@@ -259,9 +259,9 @@ def test_free_context_never_touches_the_gate(tmp_path: Path) -> None:
     assert counter.writes == [str(resolve_path(str(tmp_path), "out.md"))]
 
 
-def test_build_gate_context_short_circuits_free_and_platform(tmp_path: Path) -> None:
+def test_build_gate_context_short_circuits_free_and_empty_dir(tmp_path: Path) -> None:
     assert build_gate_context("free", str(tmp_path), "k", set()) is None
-    assert build_gate_context("strict", "", "k", set()) is None       # 平台智能体无项目落点
+    assert build_gate_context("strict", "", "k", set()) is None       # 空项目落点直通
 
 
 def test_boundary_out_of_bounds_waits_before_executing(tmp_path: Path) -> None:

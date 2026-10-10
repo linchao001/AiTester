@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aitester.memory.reme.manager import DEFAULT_CONSOLE_AGENT, DEFAULT_PROJECT
+from aitester.memory.reme.manager import DEFAULT_CONSOLE_AGENT
 
 
 class KnowledgeMemory:
@@ -28,7 +28,7 @@ class KnowledgeMemory:
     def status(
         self,
         *,
-        project_id: str = DEFAULT_PROJECT,
+        project_id: str = "",
         agent_id: str = DEFAULT_CONSOLE_AGENT,
     ):
         return self.run_job_sync("status", project_id=project_id, agent_id=agent_id)
@@ -39,7 +39,7 @@ class KnowledgeMemory:
         *,
         limit: int = 5,
         bucket: str = "",
-        project_id: str = DEFAULT_PROJECT,
+        project_id: str = "",
         agent_id: str = DEFAULT_CONSOLE_AGENT,
     ):
         return self.run_job_sync(
@@ -57,7 +57,7 @@ class KnowledgeMemory:
         content: str,
         bucket: str,
         *,
-        project_id: str = DEFAULT_PROJECT,
+        project_id: str = "",
         agent_id: str = DEFAULT_CONSOLE_AGENT,
     ):
         return self.run_job_sync(

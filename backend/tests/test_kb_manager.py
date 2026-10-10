@@ -76,19 +76,22 @@ def test_save_reindex_search_roundtrip(tmp_path):
             title="测试节点",
             content="这是一个测试知识节点。",
             bucket="business/wiki",
+            project_id="p1",
         )
         assert saved.success
         assert (kb_root / "business" / "wiki" / "测试节点.md").is_file()
 
-        bases = mgr.run_job_sync("list_knowledge_bases")
+        bases = mgr.run_job_sync("list_knowledge_bases", project_id="p1")
         assert bases.success
         assert "demo" in json.dumps(bases.metadata, ensure_ascii=False) + str(bases.answer)
 
-        mgr.run_job_sync("reindex")
+        mgr.run_job_sync("reindex", project_id="p1")
         deadline = time.time() + 20
         blob = ""
         while time.time() < deadline:
-            found = mgr.run_job_sync("knowledge_search", query="测试知识节点", limit=5)
+            found = mgr.run_job_sync(
+                "knowledge_search", query="测试知识节点", limit=5, project_id="p1",
+            )
             blob = json.dumps(found.metadata, ensure_ascii=False) + str(found.answer)
             if found.success and "测试节点" in blob:
                 break
@@ -295,10 +298,12 @@ def test_kb_root_dir_and_workspace_dir(tmp_path, monkeypatch):
         project_dir_resolver=lambda pid: tmp_path / "projects" / pid,
     )
     assert m.kb_root_dir == (tmp_path / "bases" / "zhb_kb").resolve()
-    assert m.workspace_dir("default", "kb_assistant") == (
-        tmp_path / "workspaces" / "_platform"
-    ).resolve()
+    with pytest.raises(KbUnavailableError, match="必须绑定项目"):
+        m.workspace_dir("", "kb_assistant")
     assert m.workspace_dir("proj_x", "case_design") == (
+        tmp_path / "projects" / "proj_x" / ".AiTester"
+    ).resolve()
+    assert m.workspace_dir("proj_x", "kb_assistant") == (
         tmp_path / "projects" / "proj_x" / ".AiTester"
     ).resolve()
 

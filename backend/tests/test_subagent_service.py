@@ -179,7 +179,9 @@ def test_assembly_level_structure_locks(tmp_path: Path) -> None:
     assert child.provider.inner is mock                   # provider_override 继承（R13 测试缝）：包的就是那一个
     assert child.provider.usage is parent.usage            # 子共用父账本（CM-6）：一回合只有一本
     assert child.system_prompt.startswith("你是「通用子智能体」")
-    kb_inst = runtime.build("kb_assistant", "kb-console", provider_override=mock)
+    kb_inst = runtime.build(
+        "kb_assistant", "kb-console", provider_override=mock, project_id="proj_1",
+    )
     assert "task" not in {t.tool_id() for t in kb_inst.tools}
 
 

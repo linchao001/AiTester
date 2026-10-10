@@ -80,7 +80,9 @@ class AgentRuntime:
         # 平台功能智能体短路：必须在任何能力配置读取之前（spec 裁定②）——
         # kb_assistant 不在 DEFAULT_AGENT_STATE，走 _agent_state 会误抛 ConfigNotFoundError。
         if is_platform_agent(spec.id):
-            return self._build_platform_agent(spec, session_id, provider_override)
+            return self._build_platform_agent(
+                spec, session_id, provider_override, cwd=cwd, project_id=project_id,
+            )
 
         provider: LlmProvider
         uid: str
@@ -93,7 +95,7 @@ class AgentRuntime:
             provider = self._model_config.build_provider(uid)
         provider, usage = self._metered_pair(provider, uid)
 
-        pid = (project_id or "").strip() or "default"
+        pid = (project_id or "").strip()
         state: dict[str, Any] = self._capability.agent_state(agent_id)
         tools: list[AiTooler] = []
         if state["tool_ids"]:
@@ -131,7 +133,7 @@ class AgentRuntime:
     def _task_tool(self, session_id: str, cwd: str,
                    provider_override: LlmProvider | None,
                    usage: ContextUsage,
-                   project_id: str = "default") -> TaskTool:
+                   project_id: str = "") -> TaskTool:
         """task 工具实例：roster 来自子智能体目录，build_child 现装现弃子实例。
 
         子面与父面同源不同表：工具来自子自己的能力勾选（设置可调），cwd 认同父项目
@@ -188,16 +190,25 @@ class AgentRuntime:
         return build_task_tool(roster, build_child, drive_child, parallel, usage=usage)
 
     def _build_platform_agent(
-        self, spec, session_id: str, provider_override: LlmProvider | None
+        self,
+        spec,
+        session_id: str,
+        provider_override: LlmProvider | None,
+        *,
+        cwd: str = ".",
+        project_id: str = "",
     ) -> AgentInstance:
         """平台功能智能体：强制绑定 spec.default_tool_ids，不读能力配置勾选状态。
 
         工具面天然按「清单 ∩ 实际可注册集合」收敛（spec 裁定②）：kb 关闭/未注入时
         knowledge_search / prepare_kb_write 不在注册表，get_many 得空面。
-        cwd 固定平台 fallback workspace（data/workspaces/_platform，与 Reme 池键对齐），
-        会话记忆键 f"{spec.id}:{session_id}" 与守卫键同构），knowledge junction 由
-        装配期 best-effort 预热首启实例挂载（冷 workspace 修复，失败不阻断装配）。
+        必须绑定项目：cwd=项目根，Reme 池键=``{dir}/.AiTester``（与 case_design 同实例）。
+        会话仍走进程内短窗记忆（不落 session_history）；knowledge junction 由装配期
+        best-effort 预热首启实例挂载（冷 workspace 修复，失败不阻断装配）。
         """
+        pid = (project_id or "").strip()
+        if not pid:
+            raise ConfigNotFoundError("知识库助手必须先选择项目")
         provider: LlmProvider
         uid: str
         if provider_override is not None:
@@ -206,16 +217,12 @@ class AgentRuntime:
             uid = self._model_config.default_uid
             provider = self._model_config.build_provider(uid)
         provider, usage = self._metered_pair(provider, uid)
-        cwd = "."
         if self._kb is not None:
-            workspace = self._kb.workspace_dir("default")
-            workspace.mkdir(parents=True, exist_ok=True)
-            cwd = str(workspace)
             # 热挂载：knowledge junction 由 reme 实例首启创建；此处 best-effort 跑一次
             # status 把首启提前到装配期，令首轮 knowledge_search 实例就绪。
             # 失败绝不影响 build：实例坏时后续 knowledge_search 自会按 503/错误文案收敛。
             try:
-                self._kb.run_job_sync("status", project_id="default", agent_id=spec.id)
+                self._kb.run_job_sync("status", project_id=pid, agent_id=spec.id)
             except Exception:  # 预热仅尽力而为，任何异常记录后继续装配
                 logger.warning("kb_assistant 实例预热失败（不影响装配）", exc_info=True)
         registry = build_default_registry(
@@ -224,7 +231,7 @@ class AgentRuntime:
             observed=self._observations,
             kb=self._kb,
             agent_id=spec.id,
-            project_id="default",
+            project_id=pid,
             usage=usage,
         )
         return AgentInstance(

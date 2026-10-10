@@ -18,9 +18,7 @@ from aitester.memory.reme.config import KbConfig, build_reme_config
 from aitester.memory.reme.paths import resolve_kb_root
 from aitester.project_runtime import project_runtime_root
 
-DEFAULT_PROJECT = "default"
 DEFAULT_CONSOLE_AGENT = "console"
-PLATFORM_WORKSPACE_NAME = "_platform"
 
 # project_id → 项目绑定目录（原始或绝对路径均可）；解析失败应抛错
 ProjectDirResolver = Callable[[str], str | Path]
@@ -54,12 +52,13 @@ class RemeMemoryManager:
     def __init__(
         self,
         settings: Any,
-        data_dir: Path,
+        data_dir: Path | None = None,
         *,
         project_dir_resolver: ProjectDirResolver | None = None,
     ) -> None:
         self._settings = settings
-        self._data_dir = Path(data_dir)
+        # data_dir 曾用于 _platform fallback；现忽略，保留形参兼容旧调用方
+        del data_dir
         self._project_dir_resolver = project_dir_resolver
         # 池键 = 解析后的 workspace 绝对路径（同路径共享一实例；agent_id 不参与）
         self._apps: dict[str, Any] = {}
@@ -82,19 +81,16 @@ class RemeMemoryManager:
         """共享 KB 实体目录（browse 接口与草案工具共用的唯一真相根）。"""
         return resolve_kb_root(self._settings)
 
-    def platform_workspace_dir(self) -> Path:
-        """平台智能体 /api/kb 无项目时的 fallback workspace。"""
-        return (self._data_dir / "workspaces" / PLATFORM_WORKSPACE_NAME).resolve()
-
-    def workspace_dir(self, project_id: str = DEFAULT_PROJECT, agent_id: str = "") -> Path:
+    def workspace_dir(self, project_id: str = "", agent_id: str = "") -> Path:
         """解析 Reme workspace 根。agent_id 保留形参兼容调用方，不参与路径。
 
-        项目智能体：``{project.dir}/.AiTester``（平台产物收口；cwd 仍为项目根）。
+        必须绑定真实项目：``{project.dir}/.AiTester``（产物收口；工具 cwd 仍为项目根）。
+        无项目 / 空 project_id 一律拒绝（不再提供平台 fallback workspace）。
         """
         del agent_id  # 2A：实例与路径按项目（路径）粒度，与 agent 无关
-        pid = (project_id or "").strip() or DEFAULT_PROJECT
-        if pid == DEFAULT_PROJECT:
-            return self.platform_workspace_dir()
+        pid = (project_id or "").strip()
+        if not pid:
+            raise KbUnavailableError("知识库操作必须绑定项目")
         if self._project_dir_resolver is None:
             raise KbUnavailableError(
                 f"无法解析项目「{pid}」的工作目录：未配置 project_dir_resolver"
@@ -109,7 +105,7 @@ class RemeMemoryManager:
             raise KbUnavailableError(f"项目「{pid}」未配置本地目录")
         return project_runtime_root(raw)
 
-    def pool_key(self, project_id: str = DEFAULT_PROJECT, agent_id: str = "") -> str:
+    def pool_key(self, project_id: str = "", agent_id: str = "") -> str:
         return str(self.workspace_dir(project_id, agent_id))
 
     def start(self) -> None:
@@ -212,7 +208,7 @@ class RemeMemoryManager:
         self,
         model: Any,
         *,
-        project_id: str = DEFAULT_PROJECT,
+        project_id: str = "",
         agent_id: str = DEFAULT_CONSOLE_AGENT,
         timeout: float = 60.0,
     ) -> None:
@@ -222,7 +218,7 @@ class RemeMemoryManager:
         self,
         name: str,
         *,
-        project_id: str = DEFAULT_PROJECT,
+        project_id: str = "",
         agent_id: str = DEFAULT_CONSOLE_AGENT,
         timeout: float = 60.0,
         **kwargs: Any,
@@ -233,7 +229,7 @@ class RemeMemoryManager:
         self,
         name: str,
         *,
-        project_id: str = DEFAULT_PROJECT,
+        project_id: str = "",
         agent_id: str = DEFAULT_CONSOLE_AGENT,
         **kwargs: Any,
     ):

@@ -55,7 +55,6 @@ def create_app(
         if memory_manager is not None
         else RemeMemoryManager(
             settings=s,
-            data_dir=DATA_DIR,
             project_dir_resolver=_project_dir,
         )
     )

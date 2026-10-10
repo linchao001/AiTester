@@ -18,7 +18,7 @@ class SendRequest(BaseModel):
     session_id: str = ""
     message: str = Field(min_length=1)
     agent_id: str = "case_design"
-    # 必填判据在 service 层：schema 无从知道 is_platform_agent（平台智能体天然不属于项目）
+    # 必填判据在 service 层（含 kb_assistant：必须先选项目）
     project_id: str = ""
     # 三档权限（第 5 片）：缺省 free = 零行为变化；合法性由 auth_rules.validate_perm_mode 判，
     # 这里不做 Literal——/kb 与旧客户端不发这字段，而中文 detail 要过路由的 _GUARD_MAP

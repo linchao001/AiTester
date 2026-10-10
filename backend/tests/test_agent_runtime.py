@@ -241,22 +241,30 @@ def test_kb_assistant_forced_binding_ignores_capability(tmp_path: Path) -> None:
     s = Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"))
     model = ModelConfigService(FileJsonConfigRepository(tmp_path / "m.json"), s)
     cap = CapabilityConfigService(FileJsonConfigRepository(tmp_path / "c.json"), model)
+    proj = tmp_path / "proj"
+    proj.mkdir()
 
     class _StubKb:
         is_enabled = True
         kb_root_dir = tmp_path / "bases" / "zhb_kb"
-        def workspace_dir(self, project_id="default", agent_id=""):
-            return tmp_path / "workspaces" / "_platform"
-        def run_job_sync(self, name, *, project_id="default", agent_id="console", **kw):
+        def workspace_dir(self, project_id="", agent_id=""):
+            return proj / ".AiTester"
+        def run_job_sync(self, name, *, project_id="", agent_id="console", **kw):
             # 终审项 4 后装配期会预热 status job：RecordingKb 风格记录即可，不触真 reme
             return SimpleNamespace(success=True, answer="ok", metadata={})
 
     runtime = AgentRuntime(cap, model, FileObservationStore(), kb=_StubKb())
-    inst = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
+    inst = runtime.build(
+        "kb_assistant", "kb-console", provider_override=MockProvider(),
+        cwd=str(proj), project_id="proj_1",
+    )
     assert [t.name for t in inst.tools] == ["knowledge_search", "prepare_kb_write"]
     # 不受能力勾选管辖：case_design 工具集清空也不影响 kb_assistant
     cap.set_agent_tools("case_design", [])
-    inst2 = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
+    inst2 = runtime.build(
+        "kb_assistant", "kb-console", provider_override=MockProvider(),
+        cwd=str(proj), project_id="proj_1",
+    )
     assert len(inst2.tools) == 2
 
 
@@ -265,6 +273,8 @@ def test_kb_assistant_warms_kb_instance_on_build(tmp_path: Path) -> None:
     s = Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"))
     model = ModelConfigService(FileJsonConfigRepository(tmp_path / "m.json"), s)
     cap = CapabilityConfigService(FileJsonConfigRepository(tmp_path / "c.json"), model)
+    proj = tmp_path / "proj"
+    proj.mkdir()
 
     class _RecordingKb:
         is_enabled = True
@@ -273,17 +283,20 @@ def test_kb_assistant_warms_kb_instance_on_build(tmp_path: Path) -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[str, str, str]] = []
 
-        def workspace_dir(self, project_id="default", agent_id=""):
-            return tmp_path / "workspaces" / "_platform"
+        def workspace_dir(self, project_id="", agent_id=""):
+            return proj / ".AiTester"
 
-        def run_job_sync(self, name, *, project_id="default", agent_id="console", **kw):
+        def run_job_sync(self, name, *, project_id="", agent_id="console", **kw):
             self.calls.append((name, project_id, agent_id))
             return SimpleNamespace(success=True, answer="ok", metadata={})
 
     kb = _RecordingKb()
     runtime = AgentRuntime(cap, model, FileObservationStore(), kb=kb)
-    inst = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
-    assert kb.calls == [("status", "default", "kb_assistant")]  # 调用形状对齐 manager 签名
+    inst = runtime.build(
+        "kb_assistant", "kb-console", provider_override=MockProvider(),
+        cwd=str(proj), project_id="proj_1",
+    )
+    assert kb.calls == [("status", "proj_1", "kb_assistant")]  # 绑当前项目 Reme
     assert len(inst.tools) == 2
 
 
@@ -292,6 +305,8 @@ def test_kb_assistant_build_survives_warm_failure(tmp_path: Path) -> None:
     s = Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"))
     model = ModelConfigService(FileJsonConfigRepository(tmp_path / "m.json"), s)
     cap = CapabilityConfigService(FileJsonConfigRepository(tmp_path / "c.json"), model)
+    proj = tmp_path / "proj"
+    proj.mkdir()
 
     class _FailingKb:
         is_enabled = True
@@ -300,18 +315,30 @@ def test_kb_assistant_build_survives_warm_failure(tmp_path: Path) -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[str, str, str]] = []
 
-        def workspace_dir(self, project_id="default", agent_id=""):
-            return tmp_path / "workspaces" / "_platform"
+        def workspace_dir(self, project_id="", agent_id=""):
+            return proj / ".AiTester"
 
-        def run_job_sync(self, name, *, project_id="default", agent_id="console", **kw):
+        def run_job_sync(self, name, *, project_id="", agent_id="console", **kw):
             self.calls.append((name, project_id, agent_id))
             raise RuntimeError("reme 实例起不来")
 
     kb = _FailingKb()
     runtime = AgentRuntime(cap, model, FileObservationStore(), kb=kb)
-    inst = runtime.build("kb_assistant", "s", provider_override=MockProvider())
-    assert kb.calls == [("status", "default", "kb_assistant")]
+    inst = runtime.build(
+        "kb_assistant", "s", provider_override=MockProvider(),
+        cwd=str(proj), project_id="proj_1",
+    )
+    assert kb.calls == [("status", "proj_1", "kb_assistant")]
     assert [t.name for t in inst.tools] == ["knowledge_search", "prepare_kb_write"]
+
+
+def test_kb_assistant_requires_project_id(tmp_path: Path) -> None:
+    s = Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"))
+    model = ModelConfigService(FileJsonConfigRepository(tmp_path / "m.json"), s)
+    cap = CapabilityConfigService(FileJsonConfigRepository(tmp_path / "c.json"), model)
+    runtime = AgentRuntime(cap, model, FileObservationStore(), kb=None)
+    with pytest.raises(ConfigNotFoundError, match="必须先选择项目"):
+        runtime.build("kb_assistant", "s", provider_override=MockProvider())
 
 
 def test_kb_assistant_unregistered_kb_degrades(tmp_path: Path) -> None:
@@ -321,5 +348,7 @@ def test_kb_assistant_unregistered_kb_degrades(tmp_path: Path) -> None:
     cap = CapabilityConfigService(FileJsonConfigRepository(tmp_path / "c.json"), model)
 
     runtime = AgentRuntime(cap, model, FileObservationStore(), kb=None)
-    inst = runtime.build("kb_assistant", "s", provider_override=MockProvider())
+    inst = runtime.build(
+        "kb_assistant", "s", provider_override=MockProvider(), project_id="proj_1",
+    )
     assert [t.name for t in inst.tools] == []

@@ -67,6 +67,23 @@ def _seed_kb(tmp_path):
     return kb_root
 
 
+def _mgr(tmp_path) -> RemeMemoryManager:
+    """节点 job 测试共用：绑真实项目 workspace，不再走 _platform。"""
+    return RemeMemoryManager(
+        settings=_settings(tmp_path),
+        data_dir=tmp_path / "data",
+        project_dir_resolver=lambda pid: tmp_path / "projects" / pid,
+    )
+
+
+_PID = "p1"
+
+
+def _job(mgr: RemeMemoryManager, name: str, **kwargs: Any):
+    kwargs.setdefault("project_id", _PID)
+    return mgr.run_job_sync(name, **kwargs)
+
+
 def _expected_front_keys(layer: str) -> list[str]:
     """frontmatter 键序契约：公共键 id/type/name 在前，层字段按 _NODE_FIELDS 表序，updated_at 最后。"""
     return ["id", "type", "name", *_NODE_FIELDS[layer], "updated_at"]
@@ -151,29 +168,29 @@ def test_plugin_entry_point_installed():
 
 def test_node_roundtrip_via_manager(tmp_path):
     kb_root = _seed_kb(tmp_path)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
-        up = mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE)
+        up = _job(mgr, "case_node_upsert", layer="chain", node=CHAIN_NODE)
         assert up.success, up.answer
         path = kb_root / "business" / "chains" / "ch-0001.md"
         assert path.is_file()
         # junction 单挂整个 KB 根：实体侧写入在 workspace/knowledge 下立即可见
-        mount = mgr.workspace_dir("default") / "knowledge" / "business" / "chains" / "ch-0001.md"
+        mount = mgr.workspace_dir(_PID) / "knowledge" / "business" / "chains" / "ch-0001.md"
         assert mount.is_file()
 
-        lst = mgr.run_job_sync("case_nodes_list", layer="chain")
+        lst = _job(mgr, "case_nodes_list", layer="chain")
         assert lst.success and lst.metadata["count"] == 1
         row = lst.metadata["nodes"][0]
         assert row["id"] == "ch-0001" and row["type"] == "chain"
         assert row["parent"] == "" and row["level"] == 1
 
-        d1 = mgr.run_job_sync("case_node_delete", layer="chain", id="ch-0001")
+        d1 = _job(mgr, "case_node_delete", layer="chain", id="ch-0001")
         assert d1.success and d1.metadata["deleted"] is True
         assert not path.is_file()
-        d2 = mgr.run_job_sync("case_node_delete", layer="chain", id="ch-0001")
+        d2 = _job(mgr, "case_node_delete", layer="chain", id="ch-0001")
         assert d2.success and d2.metadata["deleted"] is False  # 幂等：回写重试不炸（A7）
-        lst2 = mgr.run_job_sync("case_nodes_list", layer="chain")
+        lst2 = _job(mgr, "case_nodes_list", layer="chain")
         assert lst2.metadata["count"] == 0 and lst2.metadata["nodes"] == []
     finally:
         mgr.close_all()
@@ -187,13 +204,13 @@ def test_field_fidelity_all_layers_via_job_channel(tmp_path):
     多父故事 chains=["ch-0001","ch-0002"]（「重复比遗漏好」语义）也走 job 通道验证。
     """
     _seed_kb(tmp_path)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
         for layer, node in (("chain", CHAIN_NODE), ("story", STORY_NODE), ("point", POINT_NODE)):
-            up = mgr.run_job_sync("case_node_upsert", layer=layer, node=node)
+            up = _job(mgr, "case_node_upsert", layer=layer, node=node)
             assert up.success, up.answer
-            lst = mgr.run_job_sync("case_nodes_list", layer=layer)
+            lst = _job(mgr, "case_nodes_list", layer=layer)
             assert lst.success and lst.metadata["count"] == 1, lst.metadata
             row = lst.metadata["nodes"][0]
             assert list(row.keys()) == _expected_front_keys(layer), (layer, list(row.keys()))
@@ -206,11 +223,11 @@ def test_field_fidelity_all_layers_via_job_channel(tmp_path):
             # 多父故事：chains 列表原样读回（Minor 5，旧版只在纯函数层验过）
             if layer == "story":
                 assert row["chains"] == ["ch-0001", "ch-0002"]
-            d1 = mgr.run_job_sync("case_node_delete", layer=layer, id=node["id"])
+            d1 = _job(mgr, "case_node_delete", layer=layer, id=node["id"])
             assert d1.success and d1.metadata["deleted"] is True
-            d2 = mgr.run_job_sync("case_node_delete", layer=layer, id=node["id"])
+            d2 = _job(mgr, "case_node_delete", layer=layer, id=node["id"])
             assert d2.success and d2.metadata["deleted"] is False
-            lst2 = mgr.run_job_sync("case_nodes_list", layer=layer)
+            lst2 = _job(mgr, "case_nodes_list", layer=layer)
             assert lst2.metadata["count"] == 0 and lst2.metadata["nodes"] == []
     finally:
         mgr.close_all()
@@ -220,15 +237,15 @@ def test_empty_carried_fields_survive_job_channel(tmp_path):
     """共用字段缺省（priority 未给 → DraftNode 默认 P1）与层内空列表（assumptions=[]）
     走 job 通道后必须「键在、值原样」回来——宇宙读回不许出现缺键。"""
     _seed_kb(tmp_path)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
         st2 = _payload("story", id="st-0002", name="操作实体乙", chains=["ch-0001"],
                        actor="测试账号", trigger="再发起", expected="变更留痕")
         assert st2["priority"] == "P1" and st2["assumptions"] == [] and st2["preconditions"] == ""
-        up = mgr.run_job_sync("case_node_upsert", layer="story", node=st2)
+        up = _job(mgr, "case_node_upsert", layer="story", node=st2)
         assert up.success, up.answer
-        lst = mgr.run_job_sync("case_nodes_list", layer="story")
+        lst = _job(mgr, "case_nodes_list", layer="story")
         assert lst.success and lst.metadata["count"] == 1
         row = lst.metadata["nodes"][0]
         assert list(row.keys()) == _expected_front_keys("story")
@@ -242,10 +259,10 @@ def test_step_rejects_id_with_trailing_newline(tmp_path):
     """Minor 3：`.match`+`^…$` 会放走 "ch-0001\\n" → 文件名 ch-0001\\n.md（POSIX 垃圾）。
     step 是 FS 边界，_validate_id 必须 fullmatch 响亮拒绝，且失败路径零落盘。"""
     _seed_kb(tmp_path)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
-        bad = mgr.run_job_sync("case_node_upsert", layer="chain",
+        bad = _job(mgr, "case_node_upsert", layer="chain",
                                node={**CHAIN_NODE, "id": "ch-0001\n"})
         assert bad.success is False
         # 只断言 success 在 Windows 上会被冒充：`match` 放行后 `_atomic_write` 写
@@ -262,13 +279,13 @@ def test_list_yields_marker_row_for_corrupt_file(tmp_path):
     """Minor 4：坏文件 marker 分支原零用例——桶里一个坏节点文件不许炸 list，
     必须以 {"id":"", "file", "error"} 标记行进列表（P-3 判「未维护」依赖此形状）。"""
     _seed_kb(tmp_path)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
-        assert mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE).success
+        assert _job(mgr, "case_node_upsert", layer="chain", node=CHAIN_NODE).success
         corrupt = tmp_path / "knowledge_bases" / "demo" / "business" / "chains" / "bad.md"
         corrupt.write_text("没有任何 frontmatter 的坏文件", encoding="utf-8")
-        lst = mgr.run_job_sync("case_nodes_list", layer="chain")
+        lst = _job(mgr, "case_nodes_list", layer="chain")
         assert lst.success, lst.answer
         assert lst.metadata["count"] == 2
         marker = [r for r in lst.metadata["nodes"] if r.get("file") == "bad.md"]
@@ -292,15 +309,15 @@ def test_atomic_write_removes_tmp_on_replace_failure(tmp_path):
 
 def test_step_rejects_bad_input(tmp_path):
     _seed_kb(tmp_path)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
-        bad_layer = mgr.run_job_sync("case_nodes_list", layer="bogus")
+        bad_layer = _job(mgr, "case_nodes_list", layer="bogus")
         assert bad_layer.success is False and "bogus" in bad_layer.answer
-        bad_id = mgr.run_job_sync("case_node_upsert", layer="chain",
+        bad_id = _job(mgr, "case_node_upsert", layer="chain",
                                   node={**CHAIN_NODE, "id": "st-0001"})
         assert bad_id.success is False and "st-0001" in bad_id.answer
-        no_node = mgr.run_job_sync("case_node_upsert", layer="chain")
+        no_node = _job(mgr, "case_node_upsert", layer="chain")
         assert no_node.success is False and "node" in no_node.answer
         chain_dir = tmp_path / "knowledge_bases" / "demo" / "business" / "chains"
         assert list(chain_dir.glob("*.md")) == []              # 失败路径零落盘
@@ -311,16 +328,16 @@ def test_step_rejects_bad_input(tmp_path):
 def test_node_bucket_joins_index(tmp_path):
     """P-4 正式断言：新桶经 reindex 后对 knowledge_search 可见（T1 探针结论落成常驻测试）。"""
     _seed_kb(tmp_path)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
-        up = mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE)
+        up = _job(mgr, "case_node_upsert", layer="chain", node=CHAIN_NODE)
         assert up.success
-        mgr.run_job_sync("reindex")
+        _job(mgr, "reindex")
         blob = ""
         deadline = time.time() + 20
         while time.time() < deadline:
-            found = mgr.run_job_sync("knowledge_search", query="实体甲链路", limit=5)
+            found = _job(mgr, "knowledge_search", query="实体甲链路", limit=5)
             blob = json.dumps(found.metadata, ensure_ascii=False) + str(found.answer)
             if found.success and "实体甲链路" in blob:
                 break
@@ -366,10 +383,10 @@ def test_cf1_buckets_exist_and_are_in_watch_dirs_before_application_ctor(tmp_pat
             super().__init__(**kwargs)
 
     monkeypatch.setattr(reme, "Application", SpyApplication)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
-        assert mgr.run_job_sync("status").success
+        assert _job(mgr, "status").success
     finally:
         monkeypatch.setattr(reme, "Application", real_application)
         mgr.close_all()
@@ -387,17 +404,17 @@ def test_cf2_watch_loop_indexes_new_node_without_reindex(tmp_path):
     晚建的桶也会被根规则兜住——因此本测试验「链路通」，结构性前提（显式 watch_dirs
     + 桶先于 Application 构造存在）由 CF1 测试单独钉住，防 watch 配置漂移。"""
     _seed_kb(tmp_path)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
         # 先 status：拉起实例并让 index_update_loop 定基线，再 upsert，避免写与 watch 竞态
-        assert mgr.run_job_sync("status").success
-        up = mgr.run_job_sync("case_node_upsert", layer="story", node=STORY_NODE)
+        assert _job(mgr, "status").success
+        up = _job(mgr, "case_node_upsert", layer="story", node=STORY_NODE)
         assert up.success, up.answer
         blob = ""
         deadline = time.time() + 30
         while time.time() < deadline:
-            found = mgr.run_job_sync("knowledge_search", query="操作实体甲", limit=5)
+            found = _job(mgr, "knowledge_search", query="操作实体甲", limit=5)
             blob = json.dumps(found.metadata, ensure_ascii=False) + str(found.answer)
             if found.success and "操作实体甲" in blob:
                 break
@@ -417,13 +434,13 @@ def test_upsert_creates_missing_bucket_without_ensure_step(tmp_path, monkeypatch
     chains_dir = kb_root / "business" / "chains"
     monkeypatch.setattr(reme_manager, "_ensure_node_buckets", lambda cfg: None)
     assert not chains_dir.exists()
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
-        up = mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE)
+        up = _job(mgr, "case_node_upsert", layer="chain", node=CHAIN_NODE)
         assert up.success, up.answer
         assert (chains_dir / "ch-0001.md").is_file()
-        lst = mgr.run_job_sync("case_nodes_list", layer="chain")
+        lst = _job(mgr, "case_nodes_list", layer="chain")
         assert lst.success and lst.metadata["count"] == 1
         assert lst.metadata["nodes"][0]["id"] == "ch-0001"
     finally:
@@ -437,17 +454,17 @@ def test_upsert_with_identical_content_touches_nothing(tmp_path):
     """同内容重复 upsert：不重写文件、不刷 updated_at——「未涉及节点逐字节不变」靠这一条成立。"""
     kb_root = _seed_kb(tmp_path)
     path = kb_root / "business" / "chains" / "ch-0001.md"
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
-        first = mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE)
+        first = _job(mgr, "case_node_upsert", layer="chain", node=CHAIN_NODE)
         assert first.success, first.answer
         assert first.metadata["unchanged"] is False           # 首写（库里没这个文件）必是真写
         t1 = path.read_text(encoding="utf-8")
         mtime1 = path.stat().st_mtime_ns
         # updated_at 是秒级时间戳：隔一秒再写才验得出「时间戳没被刷」而不是「恰好同一秒」
         time.sleep(1.1)
-        meta = mgr.run_job_sync("case_node_upsert", layer="chain", node=dict(CHAIN_NODE))
+        meta = _job(mgr, "case_node_upsert", layer="chain", node=dict(CHAIN_NODE))
         assert meta.success and meta.metadata["unchanged"] is True
         assert "unchanged ch-0001" == meta.answer
         t2 = path.read_text(encoding="utf-8")
@@ -461,14 +478,14 @@ def test_upsert_with_changed_content_rewrites_and_refreshes_timestamp(tmp_path):
     """内容变了就必须重写并刷时间戳：幂等只免「没改还写」，不免「改了不写」。"""
     kb_root = _seed_kb(tmp_path)
     path = kb_root / "business" / "chains" / "ch-0001.md"
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
-        assert mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE).success
+        assert _job(mgr, "case_node_upsert", layer="chain", node=CHAIN_NODE).success
         t1 = path.read_text(encoding="utf-8")
         time.sleep(1.1)
         changed = {**CHAIN_NODE, "name": "实体甲链路（改名）"}
-        meta = mgr.run_job_sync("case_node_upsert", layer="chain", node=changed)
+        meta = _job(mgr, "case_node_upsert", layer="chain", node=changed)
         assert meta.success and meta.metadata["unchanged"] is False
         assert meta.answer == f"upserted {changed['id']}"
         t3 = path.read_text(encoding="utf-8")
@@ -484,15 +501,15 @@ def test_body_containing_updated_at_literal_is_not_false_equal(tmp_path):
     """假等值防线：节点名里塞 `updated_at: 2020-01-01T00:00:00` 时，剥时间戳只能作用在 frontmatter。"""
     kb_root = _seed_kb(tmp_path)
     chains_dir = kb_root / "business" / "chains"
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
         nasty = {**CHAIN_NODE, "name": "链A updated_at: 2020-01-01T00:00:00"}
         # 同一路径先落 nasty 再落干净节点：两次都必须是真写（内容确有不同）
-        up1 = mgr.run_job_sync("case_node_upsert", layer="chain", node=nasty)
+        up1 = _job(mgr, "case_node_upsert", layer="chain", node=nasty)
         assert up1.success and up1.metadata["unchanged"] is False, up1.metadata
         t1 = (chains_dir / "ch-0001.md").read_text(encoding="utf-8")
-        up2 = mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE)
+        up2 = _job(mgr, "case_node_upsert", layer="chain", node=CHAIN_NODE)
         assert up2.success and up2.metadata["unchanged"] is False, up2.metadata
         t2 = (chains_dir / "ch-0001.md").read_text(encoding="utf-8")
         assert t1 != t2                                    # 两个节点各落各的内容，没被假等值吞掉

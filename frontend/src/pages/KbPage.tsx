@@ -484,8 +484,8 @@ export default function KbPage() {
     setLastAi(text, drafts, false, error, stopped);
   }, [setLastAi]);
 
-  /** brief Step 3 ask：session_id/agent_id 固定；页面已强制选项目，但 kb_assistant 仍是平台智能体，
-   *  后端忽略 project_id（共享实体经 junction 内容一致）。kb-console 临时键不落 jsonl。 */
+  /** session_id/agent_id 固定；必须带当前项目，Reme 绑该项目 .AiTester。
+   *  kb-console 临时键不落 jsonl（进程内短窗 + 本页 localStorage）。 */
   const ask = useCallback(async (text: string) => {
     if (busyRef.current) return;
     if (!projectIdRef.current) { toast("请先选择项目"); return; }
@@ -502,7 +502,7 @@ export default function KbPage() {
     let errMsg = "";
     try {
       await chatSendStream(
-        { session_id: "kb-console", message: text, agent_id: "kb_assistant", project_id: "" },
+        { session_id: "kb-console", message: text, agent_id: "kb_assistant", project_id: projectIdRef.current },
         (ev) => {
           if (ev.type === "start") runIdRef.current = ev.run_id;
           Object.assign(st, applyEvent(st, ev));   // 折叠就地推进：本栏只需一份累加器

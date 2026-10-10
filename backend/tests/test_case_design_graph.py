@@ -46,10 +46,10 @@ class _KbOn:
     def close_all(self, timeout: float = 30.0):
         pass
 
-    def workspace_dir(self, project_id: str = "default", agent_id: str = "") -> Path:
-        return self.kb_root_dir / "workspaces" / "_platform"
+    def workspace_dir(self, project_id: str = "", agent_id: str = "") -> Path:
+        return self.kb_root_dir / "projects" / (project_id or "p1") / ".AiTester"
 
-    def run_job_sync(self, name, *, project_id="default", agent_id="console", **kwargs):
+    def run_job_sync(self, name, *, project_id="", agent_id="console", **kwargs):
         return SimpleNamespace(success=True, answer="ok", metadata={})
 
 
@@ -82,7 +82,10 @@ def test_runtime_builds_case_env_for_loop_graph_only(tmp_path: Path) -> None:
     assert isinstance(instance.case_env, CaseDesignEnv)
     assert instance.case_env.project_dir == str(project)     # 落点=项目 dir（产物归项目）
     assert instance.case_env.kb is kb
-    platform = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
+    platform = runtime.build(
+        "kb_assistant", "kb-console", provider_override=MockProvider(),
+        cwd=str(project), project_id="proj_1",
+    )
     assert platform.case_env is None                          # 非 loop 图不构 env
 
 
