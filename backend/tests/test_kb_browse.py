@@ -293,16 +293,9 @@ def test_error_bodies_carry_editable_false(tmp_path, kb_content):
         assert r.status_code == 413 and r.json()["editable"] is False
 
 
-def test_tool_and_browse_share_hidden_predicate(tmp_path, kb_content):
-    # 终审项 2 闭环：工具拒过的路径 browse 也 403——同一判据（paths.is_hidden）两侧共消费
-    from langchain_core.tools import ToolException
-
-    from aitester.adapters.tools.kb_tools import PrepareKbWriteTool
-
-    tool = PrepareKbWriteTool(kb_root=kb_content)
+def test_browse_still_hides_dot_dirs(tmp_path, kb_content):
+    # 中栏 browse 仍直读直写并隐藏点目录；助手草案已改走 Reme 桶，不再做路径隐藏共判
     (kb_content / ".scratch").mkdir()
-    with pytest.raises(ToolException, match="hidden or internal"):
-        tool._run(op="create", path=".scratch/x.md", content="c", summary="s")
     proj = tmp_path / "proj"
     with _client(tmp_path) as c:
         pid = _mk_project(c, proj)

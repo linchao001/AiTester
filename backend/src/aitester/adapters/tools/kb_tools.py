@@ -90,66 +90,109 @@ class KbSaveTool(AiTooler):
 
 
 class PrepareKbWriteInput(BaseModel):
-    op: Literal["create", "modify"] = Field(
-        description="create: new file; modify: overwrite an existing file after user confirmation.")
-    path: str = Field(
-        description="Markdown path relative to the knowledge-base root, e.g. '_inbox/note.md'. Only .md is accepted.")
+    title: str = Field(description="Knowledge node title (Reme save_to_knowledge title).")
     content: str = Field(
-        description="Full file content after writing, frontmatter included.")
+        description="Node body / summary text for Reme save_to_knowledge (Markdown body, not a full file).")
+    bucket: str = Field(
+        default="business/wiki",
+        description="Published bucket, e.g. business/wiki, test/test_cases, test/test_design.")
     summary: str = Field(
         description="One-line description of what this draft does, shown on the user's confirmation card.")
 
 
+def _canonicalize_bucket(bucket: str) -> str:
+    """对齐 Reme 发布桶；非法桶直接拒，避免确认后 save 静默落到默认桶。"""
+    raw = (bucket or "").strip().replace("\\", "/").strip("/")
+    try:
+        from reme.knowledge.store import canonicalize_published_bucket
+    except ImportError as exc:  # pragma: no cover — 运行时必有 reme
+        raise ToolException("Reme is unavailable; cannot validate knowledge bucket.") from exc
+    canon = canonicalize_published_bucket(raw)
+    if canon is None:
+        raise ToolException(
+            "Invalid bucket for Reme save_to_knowledge. Use a published bucket such as "
+            "business/wiki, business/procedure, test/test_cases, or test/test_design "
+            "(legacy flat names like 'wiki' are also accepted)."
+        )
+    return canon
+
+
+def _display_path(bucket: str, title: str) -> str:
+    """草案卡展示用相对路径提示（最终落点以 Reme integrate 为准）。"""
+    try:
+        from reme.knowledge.dream import _slugify
+        slug = _slugify(title) or "node"
+    except Exception:
+        slug = "node"
+    return f"{bucket}/{slug}.md"
+
+
 class PrepareKbWriteTool(AiTooler):
+    """产出 Reme ``save_to_knowledge`` 草案：零写盘，确认后由前端调 /api/kb/save。"""
+
     name: str = "prepare_kb_write"
     description: str = (
-        "Prepare a knowledge-base write as a user-confirmable draft. This tool never touches disk: "
-        "it only validates the target and returns a draft the user must confirm in the UI before "
-        "anything is saved. Use it for every knowledge-base write and never claim the write has "
-        "happened — say the user needs to confirm the draft card instead."
+        "Prepare a Reme save_to_knowledge draft for user confirmation. This tool never "
+        "touches disk and never calls save_to_knowledge: it only validates title/content/bucket "
+        "and returns a draft card. After the user confirms, the UI saves via Reme. "
+        "Use this for every knowledge-base write; never claim the write has happened."
     )
     args_schema: type[BaseModel] = PrepareKbWriteInput
     response_format: Literal["content", "content_and_artifact"] = "content_and_artifact"
     kb_root: Path = Path(".")
 
-    def _run(self, op: str, path: str, content: str, summary: str) -> tuple[str, dict[str, Any]]:
-        # 延迟导入：adapters.tools 初始化链上导入 aitester.memory.reme.paths 会经
-        # services/__init__ 反向触发 agent_runtime→adapters.tools 循环导入
-        from aitester.memory.reme.paths import hidden_segment, mtime_ms
+    def _run(
+        self, title: str, content: str, bucket: str = "business/wiki", summary: str = "",
+    ) -> tuple[str, dict[str, Any]]:
+        name = (title or "").strip()
+        body = (content or "").strip()
+        note = (summary or "").strip()
+        if not name:
+            raise ToolException("Invalid title: provide a non-empty knowledge node title.")
+        if not body:
+            raise ToolException("Invalid content: provide non-empty node body/summary text.")
+        canon = _canonicalize_bucket(bucket)
+        root = Path(self.kb_root).resolve()
+        rel = _display_path(canon, name)
+        abs_display = str((root / rel).resolve()) if root.exists() else rel
+        # 同名节点是否已发布：仅影响卡上「新建/修改」徽标；真正合并由 Reme save 决定
+        op = "modify" if _title_likely_published(root, name, canon) else "create"
+        draft = {
+            "op": op,
+            "title": name,
+            "content": body,
+            "bucket": canon,
+            "summary": note,
+            "path": rel,
+            "abs_display": abs_display,
+            "base": None,
+            "mtime": 0,
+        }
+        verb = "update" if op == "modify" else "new node"
+        return (
+            f"Draft ready ({verb}, NOT yet written): title={name!r} bucket={canon}. "
+            "Ask the user to confirm the draft card; nothing is saved until they confirm "
+            "(UI will call Reme save_to_knowledge)."
+        ), draft
 
-        rel = (path or "").strip().replace("\\", "/").lstrip("/")
-        if not rel or "\0" in rel:
-            raise ToolException("Invalid path: provide a non-empty path relative to the knowledge base root.")
-        if not rel.lower().endswith(".md"):
-            raise ToolException("Only Markdown (.md) files can be written to the knowledge base.")
-        root = Path(self.kb_root).resolve()  # 纵深防御：默认部署的根可能未规范化（短名/junction）
-        if not root.is_dir():
-            raise ToolException("Knowledge base root does not exist on disk yet.")
-        target = (root / rel).resolve()
-        if target != root and root not in target.parents:
-            raise ToolException("Invalid path: target escapes the knowledge base root.")
-        rel = target.relative_to(root).as_posix()
-        # 与 browse 读侧同一隐藏判据：草稿期即拒，杜绝「确认写入后 browse 403」的死路（终审项 2）
-        hidden = hidden_segment(tuple(rel.split("/")))
-        if hidden:
-            raise ToolException(
-                f"Invalid path segment '{hidden}': hidden or internal names (dot-prefixed, "
-                ".git/__pycache__/node_modules-like, .pyc/.idx-like) cannot be written to the "
-                "knowledge base; pick a visible path such as '_inbox/note.md' and redraft."
-            )
-        if op == "modify":
-            if not target.is_file():
-                raise ToolException(f"Cannot modify: {rel} does not exist; use op 'create' instead.")
-            base = target.read_text(encoding="utf-8", errors="replace")
-            mtime = mtime_ms(target.stat())
-        else:
-            if target.exists():
-                raise ToolException(f"Cannot create: {rel} already exists; use op 'modify' or another name.")
-            if not target.parent.is_dir():
-                raise ToolException(f"Cannot create: parent directory of {rel} does not exist.")
-            base, mtime = None, 0
-        draft = {"op": op, "path": rel, "abs_display": str(target), "summary": summary,
-                 "content": content, "base": base, "mtime": mtime}
-        verb = "new file" if op == "create" else "modification"
-        return (f"Draft ready ({verb}, NOT yet written): {rel}. "
-                "Ask the user to confirm the draft card; nothing is saved until they confirm."), draft
+
+def _title_likely_published(root: Path, title: str, bucket: str) -> bool:
+    """轻量提示：桶目录下是否已有同名 frontmatter name（失败当新建）。"""
+    folder = root / bucket
+    if not folder.is_dir():
+        return False
+    needle = f'name: "{title}"'
+    needle_alt = f"name: '{title}'"
+    try:
+        for path in folder.rglob("*.md"):
+            if not path.is_file():
+                continue
+            try:
+                head = path.read_text(encoding="utf-8", errors="replace")[:800]
+            except OSError:
+                continue
+            if needle in head or needle_alt in head:
+                return True
+    except OSError:
+        return False
+    return False

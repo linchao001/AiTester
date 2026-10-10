@@ -287,12 +287,16 @@ export function wsPutFile(pid: string, path: string, content: string, mtime: num
     method: "PUT", headers: JSON_HEADERS, body: JSON.stringify({ content }) });
 }
 
+/** 助手草案：确认后走 /api/kb/save → Reme save_to_knowledge（非 browse 直写）。 */
 export interface KbDraft {
+  title: string;
+  content: string;
+  bucket: string;
+  summary: string;
   op: "create" | "modify";
+  /** 展示用预期相对路径，最终落点以 Reme 为准。 */
   path: string;
   abs_display: string;
-  summary: string;
-  content: string;
   base: string | null;
   mtime: number;
 }

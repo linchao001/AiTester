@@ -42,6 +42,13 @@ SYSTEM_PROMPT = "你是 AiTester 测试智能体（骨架占位）。"
 # 只截 prompt，磁盘保留全量：不截则真实模型下长会话每轮 token 线性上涨（spec 裁定 6）
 # 与 frontend/src/pages/chat/utils.ts 的 HISTORY_MAX 同一常数（第 4 片裁定 6）
 HISTORY_MAX = 40
+# 知识库助手面向 QA：进模型只要短窗多轮（4 轮 ≈ 8 条 user/assistant），不必跟主聊天共用 40
+KB_HISTORY_MAX = 8
+KB_ASSISTANT_ID = "kb_assistant"
+
+
+def _history_max_for(agent_id: str) -> int:
+    return KB_HISTORY_MAX if agent_id == KB_ASSISTANT_ID else HISTORY_MAX
 
 logger = logging.getLogger(__name__)
 
@@ -254,7 +261,8 @@ class ChatService:
         project_dir = (str(Path(project["dir"]).expanduser().resolve())
                        if project is not None else "")
         key = f"{instance.agent_id}:{sid}"
-        history = memory.recall(key)[-HISTORY_MAX:]
+        # 只截进模型的 prompt；记忆/UI 仍可留全量。kb_assistant 用短窗，主聊天仍 HISTORY_MAX。
+        history = memory.recall(key)[-_history_max_for(instance.agent_id):]
         messages = _to_langchain_messages(
             self.context.build(instance.system_prompt, history, message)
         )

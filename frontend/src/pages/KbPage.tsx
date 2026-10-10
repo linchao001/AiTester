@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom";
 import {
   ApiError, chatSendStream, chatStop, getProjects,
-  kbPostFile, kbPutFile, kbReadFile, kbSearchFiles, kbTree,
+  kbPostFile, kbPutFile, kbReadFile, kbSave, kbSearchFiles, kbTree,
   type KbBrowseItem, type KbDraft, type KbSearchHit, type KbWriteResponse, type Project,
 } from "../api/client";
 import { applyEvent, finalize, liveText, newStreamState } from "./chat/streamState";
@@ -550,16 +550,37 @@ export default function KbPage() {
     }));
   }, []);
 
-  /** brief Step 3 confirmDraft：确认文案用界面别名路径（后端 abs_display 含实体根路径，不外显）；
-      setDraftState("writing") 在 await 前同步迁移——「✓ 确认写入磁盘」双击第二击时按钮已不渲染，无重复写盘窗口。
-      d.mtime 必带（PUT 基线；不带基线是已知 plan 限制，不得复现）。 */
+  /** 草案确认：走 Reme save_to_knowledge（/api/kb/save），不经 browse 直写。
+      setDraftState("writing") 在 await 前同步迁移，避免双击重复提交。 */
   const confirmDraft = useCallback(async (mi: number, di: number, d: KbDraft) => {
-    if (!window.confirm(`确认写入知识库磁盘？\n${d.op === "create" ? "新建" : "覆盖"}：${kbDisp(d.path)}`)) return;
+    const where = d.path ? kbDisp(d.path) : `${d.bucket} · ${d.title}`;
+    if (!window.confirm(`确认写入知识库（Reme）？\n${d.op === "create" ? "新建" : "合并/更新"}：${where}`)) return;
     setDraftState(mi, di, "writing");
-    const j = await kbWrite(d.path, d.content, d.op === "create" ? "POST" : "PUT", d.mtime);
-    if (!j) { setDraftState(mi, di, "failed"); return; } // 409 已在 kbWrite 内 toast+重载，不二次弹窗
-    setDraftState(mi, di, "done", j.mtime);
-  }, [kbWrite, setDraftState]);
+    try {
+      const j = await kbSave(d.title, d.content, d.bucket);
+      if (!j.success) {
+        toast(typeof j.answer === "string" && j.answer ? j.answer : "知识库写入失败");
+        setDraftState(mi, di, "failed");
+        return;
+      }
+      // 写成功后刷新树缓存（桶目录），索引仍由 Reme watch 收敛
+      const dir = d.bucket;
+      kidsRef.current = { ...kidsRef.current };
+      delete kidsRef.current[dir];
+      delete kidsRef.current[""];
+      setKids(kidsRef.current);
+      loadKids(dir).catch(() => {});
+      loadKids("").catch(() => {});
+      const written = Array.isArray(j.metadata?.written) ? String(j.metadata.written[0] ?? "") : "";
+      toast(written
+        ? `已写入 ${kbDisp(written)} · 索引自动收敛后可被检索（约数十秒）`
+        : (typeof j.answer === "string" && j.answer) || "已写入知识库");
+      setDraftState(mi, di, "done", Date.now());
+    } catch (err) {
+      toast(err instanceof Error ? err.message : String(err));
+      setDraftState(mi, di, "failed");
+    }
+  }, [loadKids, setDraftState, toast]);
 
   const cancelDraft = useCallback((mi: number, di: number) => {
     setDraftState(mi, di, "canceled");

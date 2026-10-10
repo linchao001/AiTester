@@ -193,7 +193,7 @@ class AgentRuntime:
         """平台功能智能体：强制绑定 spec.default_tool_ids，不读能力配置勾选状态。
 
         工具面天然按「清单 ∩ 实际可注册集合」收敛（spec 裁定②）：kb 关闭/未注入时
-        knowledge_search / prepare_kb_write 不在注册表，get_many 取交集只剩三件套。
+        knowledge_search / prepare_kb_write 不在注册表，get_many 得空面。
         cwd 固定平台 fallback workspace（data/workspaces/_platform，与 Reme 池键对齐），
         会话记忆键 f"{spec.id}:{session_id}" 与守卫键同构），knowledge junction 由
         装配期 best-effort 预热首启实例挂载（冷 workspace 修复，失败不阻断装配）。
@@ -211,9 +211,8 @@ class AgentRuntime:
             workspace = self._kb.workspace_dir("default")
             workspace.mkdir(parents=True, exist_ok=True)
             cwd = str(workspace)
-            # 热挂载（终审项 4）：knowledge junction 由 reme 实例首启（mount_knowledge，
-            # 仅发生在 manager._start_app）创建；此处 best-effort 跑一次 status job 把
-            # 首启提前到装配期，令首轮 read/grep/glob 不再看到空目录。
+            # 热挂载：knowledge junction 由 reme 实例首启创建；此处 best-effort 跑一次
+            # status 把首启提前到装配期，令首轮 knowledge_search 实例就绪。
             # 失败绝不影响 build：实例坏时后续 knowledge_search 自会按 503/错误文案收敛。
             try:
                 self._kb.run_job_sync("status", project_id="default", agent_id=spec.id)

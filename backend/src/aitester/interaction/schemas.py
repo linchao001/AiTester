@@ -35,11 +35,18 @@ class StreamStopResponse(BaseModel):
 
 
 class KbDraft(BaseModel):
-    op: str
-    path: str
-    abs_display: str
-    summary: str = ""
+    """助手写入草案：确认后走 Reme save_to_knowledge（title/content/bucket）。
+
+    path/abs_display 仅供卡片展示预期落点；base/mtime 保留兼容，Reme 确认路径不用。
+    """
+
+    title: str
     content: str
+    bucket: str
+    summary: str = ""
+    op: str = "create"
+    path: str = ""
+    abs_display: str = ""
     base: str | None = None
     mtime: int = 0
 

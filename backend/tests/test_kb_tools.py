@@ -1,7 +1,12 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from langchain_core.tools import ToolException
+
 from aitester.adapters.tools import build_default_registry
+from aitester.adapters.tools.kb_tools import PrepareKbWriteTool
+from aitester.interaction.schemas import KbDraft
 from aitester.memory.reme.manager import RemeMemoryManager
 
 
@@ -95,12 +100,6 @@ def test_kb_tool_timeout_yields_non_empty_error(tmp_path):
     assert "timed out" in out2
 
 
-import pytest
-from langchain_core.tools import ToolException
-
-from aitester.adapters.tools.kb_tools import PrepareKbWriteTool
-
-
 class _StubRootKb:
     is_enabled = True
 
@@ -111,78 +110,63 @@ class _StubRootKb:
         raise AssertionError("prepare_kb_write 不应触发任何 job")
 
 
-def _tool(tmp_path):
+def _tool(tmp_path: Path) -> PrepareKbWriteTool:
     (tmp_path / "business" / "wiki").mkdir(parents=True)
-    (tmp_path / "business" / "wiki" / "x.md").write_text("old", encoding="utf-8")
     return PrepareKbWriteTool(kb_root=tmp_path)
 
 
-def test_prepare_modify_draft_zero_write(tmp_path):
+def test_prepare_reme_draft_zero_write(tmp_path):
     tool = _tool(tmp_path)
-    x = tmp_path / "business" / "wiki" / "x.md"
-    out, art = tool._run(op="modify", path="business/wiki/x.md", content="new", summary="改一句")
-    assert x.read_text(encoding="utf-8") == "old"  # 零写盘
-    assert art["op"] == "modify" and art["base"] == "old"
-    assert art["mtime"] == int(x.stat().st_mtime_ns // 1_000_000)
-    assert art["abs_display"] == str(x.resolve()) and art["content"] == "new"
-    assert "confirm" in out.lower()  # 模型侧英文确认句
-
-
-def test_prepare_create_draft(tmp_path):
-    tool = _tool(tmp_path)
-    (tmp_path / "_inbox").mkdir()  # create 要求父目录存在（fixture 只建了 business/wiki）
-    out, art = tool._run(op="create", path="_inbox/n.md", content="# N", summary="新建")
-    assert art["base"] is None and art["mtime"] == 0 and art["op"] == "create"
-    assert not (tmp_path / "_inbox" / "n.md").exists()  # 零写盘
+    out, art = tool._run(
+        title="热词说明", content="正文一段", bucket="business/wiki", summary="记一笔",
+    )
     assert "NOT yet written" in out
+    assert "save_to_knowledge" in out
+    assert art["title"] == "热词说明"
+    assert art["content"] == "正文一段"
+    assert art["bucket"] == "business/wiki"
+    assert art["summary"] == "记一笔"
+    assert art["op"] == "create"
+    assert art["path"].startswith("business/wiki/")
+    assert art["mtime"] == 0 and art["base"] is None
+    # 零写盘：桶目录仍只有我们建的空目录
+    assert list((tmp_path / "business" / "wiki").glob("*.md")) == []
+
+
+def test_prepare_marks_modify_when_title_exists(tmp_path):
+    tool = _tool(tmp_path)
+    (tmp_path / "business" / "wiki" / "x.md").write_text(
+        '---\nname: "热词说明"\nbucket: business/wiki\n---\n\n# 热词说明\n',
+        encoding="utf-8",
+    )
+    _, art = tool._run(
+        title="热词说明", content="补一句", bucket="wiki", summary="补",
+    )
+    assert art["op"] == "modify"
+    assert art["bucket"] == "business/wiki"  # legacy flat → canonical
 
 
 def test_prepare_validation_errors(tmp_path):
     tool = _tool(tmp_path)
-    with pytest.raises(ToolException):
-        tool._run(op="modify", path="../escape.md", content="c", summary="s")
-    with pytest.raises(ToolException):
-        tool._run(op="modify", path="business/wiki/x.txt", content="c", summary="s")
-    with pytest.raises(ToolException):
-        tool._run(op="create", path="business/wiki/x.md", content="c", summary="s")
-    with pytest.raises(ToolException):
-        tool._run(op="modify", path="ghost.md", content="c", summary="s")
-    with pytest.raises(ToolException):
-        tool._run(op="create", path="ghostdir/x.md", content="c", summary="s")
-
-
-def test_prepare_rejects_hidden_segments(tmp_path):
-    # 终审项 2：与 browse 读侧同判据——草案期即拒（模型可读英文文案自纠），
-    # 杜绝「工具放行→用户确认→browse 403→卡片死路」
-    tool = _tool(tmp_path)
-    for p in (".scratch/x.md", "business/.git/x.md", "__pycache__/x.md",
-              "business/.GIT/x.md", "business/wiki/.Hidden.md"):
-        with pytest.raises(ToolException, match="hidden or internal"):
-            tool._run(op="create", path=p, content="c", summary="s")
-    with pytest.raises(ToolException, match="hidden or internal"):
-        tool._run(op="modify", path="business/.locks/x.md", content="c", summary="s")
+    with pytest.raises(ToolException, match="title"):
+        tool._run(title="  ", content="c", bucket="business/wiki", summary="s")
+    with pytest.raises(ToolException, match="content"):
+        tool._run(title="t", content="", bucket="business/wiki", summary="s")
+    with pytest.raises(ToolException, match="Invalid bucket"):
+        tool._run(title="t", content="c", bucket="_inbox", summary="s")
+    with pytest.raises(ToolException, match="Invalid bucket"):
+        tool._run(title="t", content="c", bucket="not/a/bucket", summary="s")
 
 
 def test_draft_artifact_conforms_to_kb_draft_contract(tmp_path):
-    # 终审项 5：用真实工具产物校验契约（含 summary/abs_display 逐字段钉死），不手抄 dict
-    from aitester.interaction.schemas import KbDraft
-
     tool = _tool(tmp_path)
-    (tmp_path / "_inbox").mkdir()
-    out_modify, art_modify = tool._run(
-        op="modify", path="business/wiki/x.md", content="new", summary="改一句")
-    out_create, art_create = tool._run(
-        op="create", path="_inbox/n.md", content="# N", summary="新建")
-
-    d1 = KbDraft.model_validate(art_modify)
-    assert d1.op == "modify" and d1.path == "business/wiki/x.md"
-    assert d1.abs_display == art_modify["abs_display"] and d1.summary == "改一句"
-    assert d1.content == "new" and d1.base == "old" and d1.mtime > 0
-
-    d2 = KbDraft.model_validate(art_create)
-    assert d2.op == "create" and d2.path == "_inbox/n.md"
-    assert d2.base is None and d2.mtime == 0 and d2.summary == "新建"
-    assert "NOT yet written" in out_modify and "NOT yet written" in out_create
+    _, art = tool._run(
+        title="节点A", content="正文", bucket="business/wiki", summary="摘要",
+    )
+    d = KbDraft.model_validate(art)
+    assert d.title == "节点A" and d.bucket == "business/wiki"
+    assert d.content == "正文" and d.summary == "摘要"
+    assert d.op == "create" and d.path.startswith("business/wiki/")
 
 
 def test_registry_registers_prepare_kb_write(tmp_path):

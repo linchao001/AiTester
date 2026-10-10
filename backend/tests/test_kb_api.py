@@ -89,8 +89,11 @@ def test_chat_send_returns_drafts(tmp_path):
     app = create_app(
         model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
         settings=Settings(_env_file=None), memory_manager=_RecordingKbManager())
-    draft = {"op": "create", "path": "a.md", "abs_display": "P", "summary": "s",
-             "content": "c", "base": None, "mtime": 0}
+    draft = {
+        "op": "create", "title": "a", "content": "c", "bucket": "business/wiki",
+        "summary": "s", "path": "business/wiki/a.md", "abs_display": "P",
+        "base": None, "mtime": 0,
+    }
     app.state.chat_service = SimpleNamespace(
         prepare=lambda sid, msg, aid, project_id="", perm_mode="free": SimpleNamespace(session_id="s9"),
         stream_turn=lambda prepared, control=None, run_id="": iter([
@@ -105,7 +108,8 @@ def test_chat_send_returns_drafts(tmp_path):
             events = sse_frames(r)
     assert events[-1][0] == "done"
     assert [e for e, _ in events].count("draft") == 1
-    assert events[1][1]["draft"]["path"] == "a.md"
+    assert events[1][1]["draft"]["title"] == "a"
+    assert events[1][1]["draft"]["bucket"] == "business/wiki"
 
 
 def test_chat_send_drafts_defaults_empty(tmp_path):
@@ -132,8 +136,11 @@ def test_chat_send_skips_malformed_drafts(tmp_path):
     app = create_app(
         model_config_path=tmp_path / "m.json", capability_config_path=tmp_path / "c.json",
         settings=Settings(_env_file=None), memory_manager=_RecordingKbManager())
-    valid = {"op": "create", "path": "a.md", "abs_display": "P",
-             "summary": "s", "content": "c", "base": None, "mtime": 0}
+    valid = {
+        "op": "create", "title": "a", "content": "c", "bucket": "business/wiki",
+        "summary": "s", "path": "business/wiki/a.md", "abs_display": "P",
+        "base": None, "mtime": 0,
+    }
     malformed = [{"op": "create"}, "garbage", None]
     events_iter = iter(
         [{"type": "draft", "draft": m} for m in malformed] +
@@ -151,5 +158,5 @@ def test_chat_send_skips_malformed_drafts(tmp_path):
     kinds = [e for e, _ in events]
     assert kinds[-1] == "done"
     assert kinds.count("draft") == 1                       # 仅合法草案存活
-    assert events[kinds.index("draft")][1]["draft"]["path"] == "a.md"
+    assert events[kinds.index("draft")][1]["draft"]["title"] == "a"
     assert events[-1][1]["reply"] == "回复还在"

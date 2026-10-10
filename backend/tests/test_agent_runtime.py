@@ -253,20 +253,15 @@ def test_kb_assistant_forced_binding_ignores_capability(tmp_path: Path) -> None:
 
     runtime = AgentRuntime(cap, model, FileObservationStore(), kb=_StubKb())
     inst = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
-    assert [t.name for t in inst.tools] == [
-        "read", "grep_search", "glob_search", "knowledge_search", "prepare_kb_write"]
-    read_tool = inst.tools[0]
-    assert str(read_tool.cwd) == str(tmp_path / "workspaces" / "_platform")
+    assert [t.name for t in inst.tools] == ["knowledge_search", "prepare_kb_write"]
     # 不受能力勾选管辖：case_design 工具集清空也不影响 kb_assistant
     cap.set_agent_tools("case_design", [])
     inst2 = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
-    assert len(inst2.tools) == 5
+    assert len(inst2.tools) == 2
 
 
 def test_kb_assistant_warms_kb_instance_on_build(tmp_path: Path) -> None:
-    # 终审项 4：knowledge junction 由 reme 实例首启创建（manager._start_app →
-    # reme/knowledge/mount.py），装配期必须 best-effort 派发一次 status 预热，
-    # 否则冷 workspace 首轮 read/grep/glob 只见空目录
+    # knowledge junction 由 reme 实例首启创建；装配期 best-effort status 预热
     s = Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"))
     model = ModelConfigService(FileJsonConfigRepository(tmp_path / "m.json"), s)
     cap = CapabilityConfigService(FileJsonConfigRepository(tmp_path / "c.json"), model)
@@ -289,11 +284,11 @@ def test_kb_assistant_warms_kb_instance_on_build(tmp_path: Path) -> None:
     runtime = AgentRuntime(cap, model, FileObservationStore(), kb=kb)
     inst = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
     assert kb.calls == [("status", "default", "kb_assistant")]  # 调用形状对齐 manager 签名
-    assert len(inst.tools) == 5
+    assert len(inst.tools) == 2
 
 
 def test_kb_assistant_build_survives_warm_failure(tmp_path: Path) -> None:
-    # 终审项 4 守卫：预热失败（reme 坏/超时）只记日志，绝不炸 build()
+    # 预热失败（reme 坏/超时）只记日志，绝不炸 build()
     s = Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"))
     model = ModelConfigService(FileJsonConfigRepository(tmp_path / "m.json"), s)
     cap = CapabilityConfigService(FileJsonConfigRepository(tmp_path / "c.json"), model)
@@ -316,16 +311,15 @@ def test_kb_assistant_build_survives_warm_failure(tmp_path: Path) -> None:
     runtime = AgentRuntime(cap, model, FileObservationStore(), kb=kb)
     inst = runtime.build("kb_assistant", "s", provider_override=MockProvider())
     assert kb.calls == [("status", "default", "kb_assistant")]
-    assert [t.name for t in inst.tools] == [
-        "read", "grep_search", "glob_search", "knowledge_search", "prepare_kb_write"]
+    assert [t.name for t in inst.tools] == ["knowledge_search", "prepare_kb_write"]
 
 
 def test_kb_assistant_unregistered_kb_degrades(tmp_path: Path) -> None:
-    # 与上一用例同构（Settings/Model/Capability 三段式），仅 kb=None —— 工具面退化为三件套
+    # kb=None：Reme 工具不在注册表，平台清单 ∩ 注册表 → 空面
     s = Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"))
     model = ModelConfigService(FileJsonConfigRepository(tmp_path / "m.json"), s)
     cap = CapabilityConfigService(FileJsonConfigRepository(tmp_path / "c.json"), model)
 
     runtime = AgentRuntime(cap, model, FileObservationStore(), kb=None)
     inst = runtime.build("kb_assistant", "s", provider_override=MockProvider())
-    assert [t.name for t in inst.tools] == ["read", "grep_search", "glob_search"]
+    assert [t.name for t in inst.tools] == []

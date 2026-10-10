@@ -137,7 +137,7 @@ def test_kb_assistant_is_platform_agent():
     spec = find_agent("kb_assistant")
     assert spec is not None
     assert spec.name == "知识库助手"
-    assert spec.default_tool_ids == ("read", "grep_search", "glob_search", "knowledge_search", "prepare_kb_write")
+    assert spec.default_tool_ids == ("knowledge_search", "prepare_kb_write")
     assert all(s.id != "kb_assistant" for s in AGENT_CATALOG)      # 不进能力配置目录
     assert [s.id for s in PLATFORM_AGENT_CATALOG] == ["kb_assistant"]
 

@@ -189,8 +189,11 @@ def test_send_passes_drafts_through(tmp_path, project):
     from langchain_core.messages import ToolMessage
 
     svc_proj, pid, _ = project
-    draft = {"op": "create", "path": "_inbox/n.md", "abs_display": "P", "summary": "s",
-             "content": "c", "base": None, "mtime": 0}
+    draft = {
+        "op": "create", "title": "n", "content": "c", "bucket": "business/wiki",
+        "summary": "s", "path": "business/wiki/n.md", "abs_display": "P",
+        "base": None, "mtime": 0,
+    }
 
     class _FakeGraph:
         # run_graph 驱动翻到 graph.stream：假图改吐 custom turn + tools updates，
@@ -355,6 +358,46 @@ def test_history_is_trimmed_to_last_history_max(tmp_path, project) -> None:
     assert contents[-2] == "答44"
     assert contents[-1] == "新问题"
     assert len(open_session_store(root, "case_design").messages(sid)) == 92
+
+
+def test_kb_assistant_history_uses_short_window(tmp_path, project) -> None:
+    """知识库助手 QA 短窗：进模型最近 8 条（4 轮），记忆仍保留全量。"""
+    from aitester.services.chat import KB_HISTORY_MAX
+
+    svc_proj, _pid, _ = project
+    seen: list[list] = []
+
+    class _SpyProvider(ChunkedStreamMixin):
+        name = "spy"
+        model_ref = "spy/model"
+
+        def complete(self, messages):
+            return "[spy]"
+
+        def bind_tools(self, tools):
+            return self
+
+        def invoke_messages(self, messages):
+            seen.append(list(messages))
+            return AIMessage(content="[spy] 收到")
+
+    svc = ChatService(provider=_SpyProvider(), sessions=_locator(svc_proj),
+                      projects=svc_proj)
+    svc.agent_runtime = _sentinel_runtime()
+    key = "kb_assistant:kb-console"
+    for i in range(10):
+        svc.memory.save(key, "user", f"问{i}")
+        svc.memory.save(key, "assistant", f"答{i}")
+    svc.send("kb-console", "新问题", "kb_assistant")
+    contents = [m.content for m in seen[0]]
+    # [system] + KB_HISTORY_MAX + [本轮 user]
+    assert len(contents) == 1 + KB_HISTORY_MAX + 1
+    assert contents[0] == "p"
+    assert contents[1] == "问6"          # 20 条里只取最近 8：问6..答9
+    assert contents[-2] == "答9"
+    assert contents[-1] == "新问题"
+    # 记忆不截：原 20 + 本轮 user/assistant
+    assert len(svc.memory.recall(key)) == 22
 
 
 def test_send_stores_failed_tool_step(tmp_path, project) -> None:

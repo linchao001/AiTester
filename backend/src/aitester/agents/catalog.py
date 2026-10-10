@@ -92,10 +92,9 @@ KB_ASSISTANT_SPEC = AgentSpec(
     name="知识库助手",
     desc="知识库页内置助手：检索共享知识库、生成写入草案，用户确认后才落盘。",
     prompt=_load_prompt("kb_assistant"),
+    # 工具面只接 Reme：检索 knowledge_search；写入经 prepare_kb_write 出草案，
+    # 用户确认后走 /api/kb/save → save_to_knowledge（不绑 FS 读写、不直绑 save）。
     default_tool_ids=(
-        "read",
-        "grep_search",
-        "glob_search",
         "knowledge_search",
         "prepare_kb_write",
     ),
