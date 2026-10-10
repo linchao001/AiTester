@@ -9,16 +9,18 @@ from typing import Any
 from aitester.case_design.constants import (
     CASES_DIR_NAME, CASE_DELIVERY_NAME, LAYERS,
 )
+from aitester.project_runtime import design_root
 
 
 @dataclass(frozen=True)
 class CaseDesignEnv:
     project_dir: str
     kb: Any                       # RemeMemoryManager（或其同签名替身）；未启用时为 None 的调用方不给 env
+    project_id: str = ""          # Reme 池键解析用；空则走 default/_platform
 
     @property
     def design(self) -> Path:
-        return Path(self.project_dir) / "design"
+        return design_root(self.project_dir)
 
     def drafts_dir(self, layer: str) -> Path:
         return self.design / "drafts" / layer

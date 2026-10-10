@@ -206,7 +206,7 @@ def test_send_passes_drafts_through(tmp_path, project):
                               "stopped": False, "tool_calls": []})
 
     from aitester.services.agent_runtime import AgentInstance
-    runtime = SimpleNamespace(build=lambda aid, sid, provider_override=None, cwd=".": AgentInstance(
+    runtime = SimpleNamespace(build=lambda aid, sid, provider_override=None, cwd=".", **_: AgentInstance(
         agent_id=aid, system_prompt="p", provider=MockProvider(), tools=[],
         build_graph=lambda provider, tools: _FakeGraph()))
     service = ChatService(agent_runtime=runtime, projects=svc_proj)
@@ -228,7 +228,7 @@ def _sentinel_runtime():
     build_graph 用真实单节点拓扑（tools=[] 退化为直答）：裁剪断言要看进 prompt 的
     langchain 消息对象，echo 路径（provider.complete，收 dict）抓不到。
     """
-    return SimpleNamespace(build=lambda agent_id, session_id, provider_override=None, cwd=".":
+    return SimpleNamespace(build=lambda agent_id, session_id, provider_override=None, cwd=".", **_:
                            AgentInstance(agent_id=agent_id, system_prompt="p",
                                          provider=provider_override or MockProvider(),
                                          tools=[], build_graph=build_agent_graph))
@@ -238,7 +238,7 @@ def _recording_runtime():
     """记 kwargs 的 runtime 替身：build 调用点的 cwd 与延迟建会话的归属只能在此验。"""
     calls: list[dict] = []
 
-    def _build(agent_id, session_id, provider_override=None, cwd="."):
+    def _build(agent_id, session_id, provider_override=None, cwd=".", **_):
         calls.append({"agent_id": agent_id, "session_id": session_id, "cwd": cwd})
         return AgentInstance(agent_id=agent_id, system_prompt="p",
                              provider=provider_override or MockProvider(),
@@ -278,14 +278,14 @@ def test_failed_send_leaves_no_session_on_disk(tmp_path, project) -> None:
     loc = _locator(svc_proj)
     svc = ChatService(provider=MockProvider(), sessions=loc, projects=svc_proj)
 
-    def _boom(agent_id, session_id, provider_override=None, cwd="."):
+    def _boom(agent_id, session_id, provider_override=None, cwd=".", **_):
         raise ProviderConfigError("未配置模型")
 
     svc.agent_runtime = SimpleNamespace(build=_boom)
     with pytest.raises(ProviderConfigError):
         svc.send("", "hi", "case_design", pid)
     assert loc.for_agent(pid, "case_design").list("case_design", pid) == []
-    assert not (root / "session_history").exists() or \
+    assert not (root / ".AiTester" / "session_history").exists() or \
         loc.for_agent(pid, "case_design").list("case_design", pid) == []
 
 
@@ -380,7 +380,7 @@ def test_send_stores_failed_tool_step(tmp_path, project) -> None:
 
     svc = ChatService(provider=MockProvider(), sessions=_locator(svc_proj), projects=svc_proj)
     svc.agent_runtime = SimpleNamespace(
-        build=lambda agent_id, session_id, provider_override=None, cwd=".": AgentInstance(
+        build=lambda agent_id, session_id, provider_override=None, cwd=".", **_: AgentInstance(
             agent_id=agent_id, system_prompt="p", provider=MockProvider(), tools=[],
             build_graph=lambda provider, tools: _FakeGraph()))
     result = svc.send("", "读文件", "case_design", pid)
@@ -452,7 +452,7 @@ def test_persist_writes_tool_result_under_project_session_history(tmp_path, proj
         [{"tool": "read", "ok": True, "round": 1, "detail": "{}", "result": "BODY"}],
         False,
     )
-    hist = root / "session_history" / "case_design"
+    hist = root / ".AiTester" / "session_history" / "case_design"
     assert (hist / "index.json").is_file()
     rows = open_session_store(root, "case_design").messages(prepared.session_id)
     assert rows[0].agent_id == "case_design" and rows[0].session_id == prepared.session_id

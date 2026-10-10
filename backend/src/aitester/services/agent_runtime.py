@@ -71,6 +71,7 @@ class AgentRuntime:
         session_id: str,
         provider_override: LlmProvider | None = None,
         cwd: str = ".",
+        project_id: str = "",
     ) -> AgentInstance:
         spec = find_agent(agent_id)
         if spec is None:
@@ -92,6 +93,7 @@ class AgentRuntime:
             provider = self._model_config.build_provider(uid)
         provider, usage = self._metered_pair(provider, uid)
 
+        pid = (project_id or "").strip() or "default"
         state: dict[str, Any] = self._capability.agent_state(agent_id)
         tools: list[AiTooler] = []
         if state["tool_ids"]:
@@ -103,7 +105,8 @@ class AgentRuntime:
                 observed=self._observations,
                 kb=self._kb,
                 agent_id=agent_id,
-                task=self._task_tool(session_id, cwd, provider_override, usage),
+                project_id=pid,
+                task=self._task_tool(session_id, cwd, provider_override, usage, pid),
                 usage=usage,
             )
             tools = registry.get_many(state["tool_ids"])
@@ -113,7 +116,7 @@ class AgentRuntime:
         case_env = None
         if (spec.graph_builder == "case_design_loop" and self._kb is not None
                 and bool(getattr(self._kb, "is_enabled", False))):
-            case_env = CaseDesignEnv(project_dir=cwd, kb=self._kb)
+            case_env = CaseDesignEnv(project_dir=cwd, kb=self._kb, project_id=pid)
 
         return AgentInstance(
             agent_id=spec.id,
@@ -127,7 +130,8 @@ class AgentRuntime:
 
     def _task_tool(self, session_id: str, cwd: str,
                    provider_override: LlmProvider | None,
-                   usage: ContextUsage) -> TaskTool:
+                   usage: ContextUsage,
+                   project_id: str = "default") -> TaskTool:
         """task 工具实例：roster 来自子智能体目录，build_child 现装现弃子实例。
 
         子面与父面同源不同表：工具来自子自己的能力勾选（设置可调），cwd 认同父项目
@@ -169,6 +173,7 @@ class AgentRuntime:
                     observed=self._observations,
                     kb=self._kb,          # T7：评审子 knowledge_search 与父同一份 KB（原为 kb=None）
                     agent_id=spec.id,
+                    project_id=project_id,
                     usage=usage,          # 子面工具同一条闸同一本账
                 )
                 tools = registry.get_many(tool_ids)
@@ -189,7 +194,7 @@ class AgentRuntime:
 
         工具面天然按「清单 ∩ 实际可注册集合」收敛（spec 裁定②）：kb 关闭/未注入时
         knowledge_search / prepare_kb_write 不在注册表，get_many 取交集只剩三件套。
-        cwd 固定 default 项目的 workspace 目录（实例池键 ("default", spec.id)，
+        cwd 固定平台 fallback workspace（data/workspaces/_platform，与 Reme 池键对齐），
         会话记忆键 f"{spec.id}:{session_id}" 与守卫键同构），knowledge junction 由
         装配期 best-effort 预热首启实例挂载（冷 workspace 修复，失败不阻断装配）。
         """
@@ -203,7 +208,7 @@ class AgentRuntime:
         provider, usage = self._metered_pair(provider, uid)
         cwd = "."
         if self._kb is not None:
-            workspace = self._kb.workspace_dir("default", spec.id)
+            workspace = self._kb.workspace_dir("default")
             workspace.mkdir(parents=True, exist_ok=True)
             cwd = str(workspace)
             # 热挂载（终审项 4）：knowledge junction 由 reme 实例首启（mount_knowledge，
@@ -220,6 +225,7 @@ class AgentRuntime:
             observed=self._observations,
             kb=self._kb,
             agent_id=spec.id,
+            project_id="default",
             usage=usage,
         )
         return AgentInstance(

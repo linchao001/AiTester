@@ -17,16 +17,38 @@ class KbClientError(RuntimeError):
 
 
 class KbClient:
-    def __init__(self, kb: Any, *, agent_id: str = CASE_DESIGN_AGENT_ID,
-                 timeout: float = 120.0) -> None:
+    def __init__(
+        self,
+        kb: Any,
+        *,
+        agent_id: str = CASE_DESIGN_AGENT_ID,
+        project_id: str = "",
+        timeout: float = 120.0,
+    ) -> None:
         self._kb = kb
         self._agent_id = agent_id
+        self._project_id = project_id or "default"
         self._timeout = timeout
+
+    @classmethod
+    def from_env(cls, env: Any, *, agent_id: str = CASE_DESIGN_AGENT_ID,
+                 timeout: float = 120.0) -> "KbClient":
+        return cls(
+            env.kb,
+            agent_id=agent_id,
+            project_id=getattr(env, "project_id", "") or "",
+            timeout=timeout,
+        )
 
     def _job(self, name: str, **kwargs: Any) -> dict[str, Any]:
         try:
-            resp = self._kb.run_job_sync(name, agent_id=self._agent_id,
-                                         timeout=self._timeout, **kwargs)
+            resp = self._kb.run_job_sync(
+                name,
+                project_id=self._project_id,
+                agent_id=self._agent_id,
+                timeout=self._timeout,
+                **kwargs,
+            )
         except TimeoutError as exc:
             raise KbClientError(f"KB job {name} timed out ({self._timeout}s)") from exc
         if not resp.success:

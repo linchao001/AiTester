@@ -46,10 +46,18 @@ def create_app(
     project_config = ProjectService(
         FileJsonConfigRepository(projects_path or DATA_DIR / "projects.json")
     )
+
+    def _project_dir(pid: str) -> str:
+        return project_config.get(pid)["dir"]
+
     memory = (
         memory_manager
         if memory_manager is not None
-        else RemeMemoryManager(settings=s, data_dir=DATA_DIR)
+        else RemeMemoryManager(
+            settings=s,
+            data_dir=DATA_DIR,
+            project_dir_resolver=_project_dir,
+        )
     )
 
     @asynccontextmanager

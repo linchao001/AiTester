@@ -159,7 +159,7 @@ def test_node_roundtrip_via_manager(tmp_path):
         path = kb_root / "business" / "chains" / "ch-0001.md"
         assert path.is_file()
         # junction 单挂整个 KB 根：实体侧写入在 workspace/knowledge 下立即可见
-        mount = mgr.workspace_dir("default", "console") / "knowledge" / "business" / "chains" / "ch-0001.md"
+        mount = mgr.workspace_dir("default") / "knowledge" / "business" / "chains" / "ch-0001.md"
         assert mount.is_file()
 
         lst = mgr.run_job_sync("case_nodes_list", layer="chain")

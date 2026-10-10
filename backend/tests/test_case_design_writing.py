@@ -43,7 +43,7 @@ def test_marks_are_non_empty_and_have_no_product_line_terms():
 def test_env_cases_dir(tmp_path: Path):
     env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)
     env.ensure_dirs()
-    assert env.cases_dir() == tmp_path / "design" / "cases"
+    assert env.cases_dir() == tmp_path / ".AiTester" / "design" / "cases"
     assert env.cases_dir().is_dir()
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+from aitester.project_runtime import session_history_root
 from aitester.services.project_config import ProjectService
 from aitester.services.session_store import SessionStore, open_session_store
 
@@ -33,7 +34,7 @@ class SessionLocator:
     def count_by_project(self, project_id: str) -> int:
         project = self._projects.get(project_id)
         try:
-            hist = Path(project["dir"]).expanduser().resolve() / "session_history"
+            hist = session_history_root(project["dir"])
         except (OSError, ValueError):
             # 与 dir_exists 同口径：畸形 dir（含 NUL）答 0，不把 GET /projects 打成 500
             return 0

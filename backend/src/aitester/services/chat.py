@@ -237,6 +237,7 @@ class ChatService:
             # （dir_exists 先 expanduser 才答「可达」，fs_tool._resolve 却从不展 `~`）：只在这里展开，
             # 落盘数据与 UI 仍是用户输入的原始形态，无迁移
             cwd=str(Path(project["dir"]).expanduser()) if project is not None else ".",
+            project_id=pid,
         )
 
         use_file = store is not None and is_session_id(sid) and not platform
@@ -305,7 +306,8 @@ class ChatService:
         self.repo.put(f"session:{prepared.key}",
                       {"session_id": prepared.key, "last_reply": reply})
         if self.personal is not None and prepared.project_id and prepared.agent_id:
-            self.personal.schedule_auto_memory(
+            # 按用户回合累计；默认每 5 轮后台 flush（对齐 QwenPaw auto_memory_interval）
+            self.personal.note_user_turn(
                 project_id=prepared.project_id,
                 agent_id=prepared.agent_id,
                 session_id=prepared.session_id,
@@ -517,7 +519,14 @@ class ChatService:
         return self.pending.view_for(agent_id, project_id)
 
     def drop_session(self, session_id: str) -> None:
-        """删会话级联：pending 条目与对应的检查点线程一起清。"""
+        """删会话级联：先 flush 未处理 auto_memory，再清 pending / 检查点线程。"""
+        if self.personal is not None:
+            try:
+                self.personal.flush_session(session_id)
+            except Exception:
+                logger.exception(
+                    "auto_memory flush on drop_session failed; soft-skip",
+                )
         for thread_id in self.pending.drop_session(session_id):
             drop_thread(thread_id)
 

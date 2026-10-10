@@ -71,10 +71,13 @@ prepare → recall SessionStore
        → 命中则把摘要注入 messages（SystemMessage 或等价一条，前缀固定便于剥离）
        → stream_graph …
        → _persist SessionStore 成功
-       → PersonalMemory.auto_memory(messages, session_id)  # 后台线程/队列，失败忽略
+       → PersonalMemory.note_user_turn(...)   # 累计用户回合；达 interval 才入队
+       → FIFO 单 worker → auto_memory(messages, session_id)  # 失败忽略
 ```
 
-注入内容**不落** SessionStore（只影响当回合 LLM 上下文）。`auto_memory` 入参消息从当回合 user+assistant（及可选近期 history）组装为 Reme 期望的 Msg dict 列表，与 SessionStore 行无关。
+`auto_memory` **不是按墙钟定时**，而是按用户回合累计（对齐 QwenPaw `auto_memory_interval`，默认 5）。删会话时 `flush_session` 把未处理 pending 立刻入队（对齐 `/new` 摘要语义的一部分）。本期不做上下文压缩提前 flush、`/memorize`、`/compact`。
+
+注入内容**不落** SessionStore（只影响当回合 LLM 上下文）。`auto_memory` 入参消息从累计回合的 user+assistant 快照组装为 Reme 期望的 Msg dict 列表，与 SessionStore 行无关。
 
 ### 配置（Settings 扩展）
 
@@ -84,6 +87,7 @@ personal_memory_enabled: bool = True          # 总开关；False 时钩子与 s
 auto_memory_search_enabled: bool = True       # 回合前检索
 auto_memory_enabled: bool = True              # 回合后抽取
 auto_memory_search_limit: int = 5
+auto_memory_interval: int | None = 5          # 每 N 用户回合 flush；None/<=0 关闭周期
 ```
 
 无 embedding Key 时 `search` 仍可走 BM25（与既有 KB 降级一致）；`auto_memory` 需要有效聊天模型 Key，否则跳过并打日志。

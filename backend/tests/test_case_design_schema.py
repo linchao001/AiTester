@@ -34,9 +34,9 @@ def test_constants_are_single_source():
 
 def test_env_paths(tmp_path: Path):
     env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)
-    assert env.design == tmp_path / "design"
-    assert env.drafts_dir(CHAIN) == tmp_path / "design" / "drafts" / "chain"
-    assert env.reviews_dir == tmp_path / "design" / "reviews"
+    assert env.design == tmp_path / ".AiTester" / "design"
+    assert env.drafts_dir(CHAIN) == tmp_path / ".AiTester" / "design" / "drafts" / "chain"
+    assert env.reviews_dir == tmp_path / ".AiTester" / "design" / "reviews"
 
 
 def test_parse_json_fence_accepts_single_block():
@@ -195,7 +195,7 @@ def test_env_ensure_dirs_uses_layers_single_source(tmp_path: Path, monkeypatch):
     from aitester.case_design import env as env_mod
     monkeypatch.setattr(env_mod, "LAYERS", ("chain", "story", "point", "extra_layer"))
     env_mod.CaseDesignEnv(project_dir=str(tmp_path), kb=None).ensure_dirs()
-    assert (tmp_path / "design" / "drafts" / "extra_layer").is_dir()
+    assert (tmp_path / ".AiTester" / "design" / "drafts" / "extra_layer").is_dir()
 
 
 def test_review_and_matrix_models():

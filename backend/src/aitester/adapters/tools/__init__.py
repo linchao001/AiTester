@@ -22,6 +22,7 @@ def build_default_registry(
     observed: FileObservationStore | None = None,
     kb=None,
     agent_id: str = "console",
+    project_id: str = "default",
     task=None,
     usage=None,
 ) -> ToolRegistry:
@@ -48,8 +49,13 @@ def build_default_registry(
     if task is not None:
         registry.register(task)          # task 由装配层带 usage 构造（见 agent_runtime._task_tool）
     if kb is not None and getattr(kb, "is_enabled", True):
-        registry.register(KbSearchTool(kb=kb, agent_id=agent_id, usage=usage))
-        registry.register(KbSaveTool(kb=kb, agent_id=agent_id, usage=usage))
+        pid = project_id or "default"
+        registry.register(
+            KbSearchTool(kb=kb, agent_id=agent_id, project_id=pid, usage=usage)
+        )
+        registry.register(
+            KbSaveTool(kb=kb, agent_id=agent_id, project_id=pid, usage=usage)
+        )
         registry.register(PrepareKbWriteTool(kb_root=Path(kb.kb_root_dir), usage=usage))
     return registry
 

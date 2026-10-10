@@ -10,8 +10,14 @@ from typing import Any
 _REME_SESSION_ID_PREFIX = "aitsid_sha256_"
 
 
-def to_reme_session_id(session_id: str) -> str:
-    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()
+def to_reme_session_id(session_id: str, *, agent_id: str = "") -> str:
+    """稳定 Reme session 键；纳入 agent_id，使同项目多智能体会话 dialog 可区分。
+
+    search 仍扫整个 workspace 的 daily/digest（跨智能体命中是预期）。
+    材料固定为 ``{agent_id}:{session_id}``（agent 空串时亦带前缀冒号，避免与裸 session 混用）。
+    """
+    material = f"{(agent_id or '').strip()}:{(session_id or '').strip()}"
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
     return f"{_REME_SESSION_ID_PREFIX}{digest}"
 
 

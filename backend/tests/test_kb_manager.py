@@ -37,8 +37,29 @@ def _seed_kb(tmp_path):
     return kb_root
 
 
+def _resolver(tmp_path):
+    """测试用：project_id → tmp_path/projects/<id>。"""
+
+    def resolve(pid: str) -> Path:
+        return tmp_path / "projects" / pid
+
+    return resolve
+
+
+def _mgr(tmp_path, **kw) -> RemeMemoryManager:
+    return RemeMemoryManager(
+        settings=_settings(tmp_path, **kw),
+        data_dir=tmp_path / "data",
+        project_dir_resolver=_resolver(tmp_path),
+    )
+
+
 def test_disabled_manager_raises(tmp_path):
-    mgr = RemeMemoryManager(settings=_settings(tmp_path, kb_enabled=False), data_dir=tmp_path)
+    mgr = RemeMemoryManager(
+        settings=_settings(tmp_path, kb_enabled=False),
+        data_dir=tmp_path,
+        project_dir_resolver=_resolver(tmp_path),
+    )
     mgr.start()
     assert mgr.is_started is False
     with pytest.raises(KbUnavailableError):
@@ -47,7 +68,7 @@ def test_disabled_manager_raises(tmp_path):
 
 def test_save_reindex_search_roundtrip(tmp_path):
     kb_root = _seed_kb(tmp_path)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
         saved = mgr.run_job_sync(
@@ -78,29 +99,53 @@ def test_save_reindex_search_roundtrip(tmp_path):
     assert mgr.is_started is False
 
 
-def test_two_agents_get_two_workspaces(tmp_path):
+def test_two_agents_share_one_workspace(tmp_path):
+    """2A：同 project 不同 agent 共用一个 Reme 实例与同一项目目录 workspace。"""
     _seed_kb(tmp_path)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
         mgr.run_job_sync("status", project_id="p1", agent_id="a1")
         mgr.run_job_sync("status", project_id="p1", agent_id="a2")
-        assert (tmp_path / "data" / "workspaces" / "p1" / "a1").is_dir()
-        assert (tmp_path / "data" / "workspaces" / "p1" / "a2").is_dir()
+        ws = (tmp_path / "projects" / "p1" / ".AiTester").resolve()
+        assert ws.is_dir()
+        assert (ws / "knowledge").is_dir()
+        assert len(mgr._apps) == 1
+        assert mgr.pool_key("p1", "a1") == mgr.pool_key("p1", "a2")
+        assert str(ws) in mgr._apps
     finally:
         mgr.close_all()
 
 
-def test_cross_instance_convergence_without_explicit_reindex(tmp_path):
-    """spec 裁定4：读侧各实例索引经后台 watch 循环最终一致（秒级收敛）。
-
-    实例 A（p1/a1）save + 显式 reindex（写方立即可见语义保留）后，
-    实例 B（p1/a2）不调 reindex：
-    1) B 首启后经 index_update_loop 的 init_changes 全量索引收敛；
-    2) B 运行期间 A 再写入新节点，B 经 watch_changes 增量收敛。
-    """
+def test_two_projects_same_dir_share_instance(tmp_path):
+    """同绑定目录的两个 project_id 合并为同一池键。"""
     _seed_kb(tmp_path)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    shared = tmp_path / "shared_proj"
+    shared.mkdir()
+
+    def resolve(pid: str) -> Path:
+        return shared
+
+    mgr = RemeMemoryManager(
+        settings=_settings(tmp_path),
+        data_dir=tmp_path / "data",
+        project_dir_resolver=resolve,
+    )
+    mgr.start()
+    try:
+        mgr.run_job_sync("status", project_id="p1", agent_id="a1")
+        mgr.run_job_sync("status", project_id="p2", agent_id="a2")
+        assert len(mgr._apps) == 1
+        key = str((shared / ".AiTester").resolve())
+        assert mgr.pool_key("p1") == mgr.pool_key("p2") == key
+    finally:
+        mgr.close_all()
+
+
+def test_cross_project_convergence_without_explicit_reindex(tmp_path):
+    """两项目目录各挂同一实体：写方 reindex 后读方经 watch 收敛。"""
+    _seed_kb(tmp_path)
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
         saved = mgr.run_job_sync(
@@ -121,14 +166,14 @@ def test_cross_instance_convergence_without_explicit_reindex(tmp_path):
                 "knowledge_search",
                 query="跨实例收敛测试",
                 limit=5,
-                project_id="p1",
+                project_id="p2",
                 agent_id="a2",
             )
             blob = json.dumps(found.metadata, ensure_ascii=False) + str(found.answer)
             if found.success and "跨实例节点" in blob:
                 break
             time.sleep(1)
-        assert "跨实例节点" in blob, f"实例 B 首启 30 秒内未经 reindex 未收敛：{blob}"
+        assert "跨实例节点" in blob, f"项目 B 首启 30 秒内未经 reindex 未收敛：{blob}"
 
         saved2 = mgr.run_job_sync(
             "save_to_knowledge",
@@ -146,14 +191,14 @@ def test_cross_instance_convergence_without_explicit_reindex(tmp_path):
                 "knowledge_search",
                 query="实时监听收敛测试",
                 limit=5,
-                project_id="p1",
+                project_id="p2",
                 agent_id="a2",
             )
             blob2 = json.dumps(found2.metadata, ensure_ascii=False) + str(found2.answer)
             if found2.success and "实时监听节点" in blob2:
                 break
             time.sleep(1)
-        assert "实时监听节点" in blob2, f"实例 B 运行期 watch 增量 30 秒内未收敛：{blob2}"
+        assert "实时监听节点" in blob2, f"项目 B 运行期 watch 增量 30 秒内未收敛：{blob2}"
     finally:
         mgr.close_all()
 
@@ -161,7 +206,7 @@ def test_cross_instance_convergence_without_explicit_reindex(tmp_path):
 def test_run_job_async_bridge(tmp_path):
     """Task 5 异步端点消费的 run_job 桥：asyncio.run 驱动真 manager + 真 KB。"""
     _seed_kb(tmp_path)
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
     try:
         async def main():
@@ -174,11 +219,7 @@ def test_run_job_async_bridge(tmp_path):
 
 
 def test_failed_construction_is_popped_and_retries(tmp_path, monkeypatch):
-    """构造期异常（reme Application.__init__ 真会抛）不得留下 FAILED 任务毒化 key。
-
-    首次构造抛错后：_start_tasks 必须已摘除该 key；第二次调用应重新构造并成功，
-    而不是永远重放缓存的旧异常。
-    """
+    """构造期异常不得留下 FAILED 任务毒化 key。"""
     _seed_kb(tmp_path)
     real_application = reme.Application
     attempts = []
@@ -192,29 +233,24 @@ def test_failed_construction_is_popped_and_retries(tmp_path, monkeypatch):
 
     monkeypatch.setattr(reme, "Application", FlakyApplication)
 
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
+    key = mgr.pool_key("p1", "a1")
     try:
-        # 终审裁定：启动失败以 KbUnavailableError 收敛（供路由层映射 503），
-        # 原文案仍随 __cause__ 携带在消息中
         with pytest.raises(KbUnavailableError, match="知识库实例启动失败"):
             mgr.run_job_sync("status", project_id="p1", agent_id="a1", timeout=60.0)
-        assert ("p1", "a1") not in mgr._start_tasks, "失败启动的任务滞留缓存，key 被永久污染"
+        assert key not in mgr._start_tasks, "失败启动的任务滞留缓存，key 被永久污染"
         resp = mgr.run_job_sync("status", project_id="p1", agent_id="a1", timeout=120.0)
         assert resp.success
         assert len(attempts) == 2
-        assert ("p1", "a1") in mgr._apps
+        assert key in mgr._apps
     finally:
         monkeypatch.setattr(reme, "Application", real_application)
         mgr.close_all()
 
 
 def test_concurrent_same_key_starts_exactly_one_application(tmp_path, monkeypatch):
-    """同一 (project, agent) 并发提交只允许启动一个 Application（单飞）。
-
-    测试侧慢钩子：monkeypatch 出的子类在真实 start() 前 sleep，放大
-    check-then-construct 的 await 窗口以暴露竞争——生产代码零改动。
-    """
+    """同一 workspace 路径并发提交只允许启动一个 Application（单飞）。"""
     _seed_kb(tmp_path)
     constructed = []
     real_application = reme.Application
@@ -230,8 +266,9 @@ def test_concurrent_same_key_starts_exactly_one_application(tmp_path, monkeypatc
 
     monkeypatch.setattr(reme, "Application", SlowApplication)
 
-    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = _mgr(tmp_path)
     mgr.start()
+    key = mgr.pool_key("p1", "a1")
     try:
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(
@@ -245,7 +282,7 @@ def test_concurrent_same_key_starts_exactly_one_application(tmp_path, monkeypatc
         assert all(r.success for r in results)
         assert len(constructed) == 1, f"并发下 Application 被重复构造 {len(constructed)} 次"
         assert len(mgr._apps) == 1
-        assert mgr._apps[("p1", "a1")] is constructed[0]
+        assert mgr._apps[key] is constructed[0]
     finally:
         mgr.close_all()
 
@@ -255,6 +292,46 @@ def test_kb_root_dir_and_workspace_dir(tmp_path, monkeypatch):
     m = RemeMemoryManager(
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"), kb_id="zhb_kb"),
         data_dir=tmp_path,
+        project_dir_resolver=lambda pid: tmp_path / "projects" / pid,
     )
     assert m.kb_root_dir == (tmp_path / "bases" / "zhb_kb").resolve()
-    assert m.workspace_dir("default", "kb_assistant") == tmp_path / "workspaces" / "default" / "kb_assistant"
+    assert m.workspace_dir("default", "kb_assistant") == (
+        tmp_path / "workspaces" / "_platform"
+    ).resolve()
+    assert m.workspace_dir("proj_x", "case_design") == (
+        tmp_path / "projects" / "proj_x" / ".AiTester"
+    ).resolve()
+
+
+def test_drop_workspace_closes_instance(tmp_path):
+    _seed_kb(tmp_path)
+    mgr = _mgr(tmp_path)
+    mgr.start()
+    try:
+        mgr.run_job_sync("status", project_id="p1")
+        key = mgr.pool_key("p1")
+        assert key in mgr._apps
+        mgr.drop_workspace(tmp_path / "projects" / "p1" / ".AiTester")
+        assert key not in mgr._apps
+    finally:
+        mgr.close_all()
+
+
+def test_project_workspace_mount_visible(tmp_path):
+    """项目 .AiTester/knowledge/ 为 junction，相对项目根可读为 .AiTester/knowledge/...。"""
+    kb_root = _seed_kb(tmp_path)
+    (kb_root / "business" / "wiki" / "hello.md").write_text("# hi\n", encoding="utf-8")
+    mgr = _mgr(tmp_path)
+    mgr.start()
+    try:
+        mgr.run_job_sync("status", project_id="p1")
+        mount = (
+            tmp_path / "projects" / "p1" / ".AiTester" / "knowledge"
+            / "business" / "wiki" / "hello.md"
+        )
+        assert mount.is_file()
+        assert mount.read_text(encoding="utf-8") == "# hi\n"
+        # 项目根保持干净：不再直接出现 knowledge/
+        assert not (tmp_path / "projects" / "p1" / "knowledge").exists()
+    finally:
+        mgr.close_all()

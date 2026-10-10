@@ -147,6 +147,7 @@ def test_registry_uses_given_cwd_and_shared_observations(
         observed: Any = None,
         kb: Any = None,
         agent_id: str = "console",
+        project_id: str = "default",
         task: Any = None,
         usage: Any = None,                       # C5 新形参：替身的形状要跟住真实签名，否则透传一断链就没人说
     ) -> Any:
@@ -188,6 +189,7 @@ def test_registry_uses_project_cwd_when_given(
         observed: Any = None,
         kb: Any = None,
         agent_id: str = "console",
+        project_id: str = "default",
         task: Any = None,
         usage: Any = None,                       # C5 新形参：替身的形状要跟住真实签名，否则透传一断链就没人说
     ) -> Any:
@@ -243,8 +245,8 @@ def test_kb_assistant_forced_binding_ignores_capability(tmp_path: Path) -> None:
     class _StubKb:
         is_enabled = True
         kb_root_dir = tmp_path / "bases" / "zhb_kb"
-        def workspace_dir(self, project_id, agent_id):
-            return tmp_path / "workspaces" / project_id / agent_id
+        def workspace_dir(self, project_id="default", agent_id=""):
+            return tmp_path / "workspaces" / "_platform"
         def run_job_sync(self, name, *, project_id="default", agent_id="console", **kw):
             # 终审项 4 后装配期会预热 status job：RecordingKb 风格记录即可，不触真 reme
             return SimpleNamespace(success=True, answer="ok", metadata={})
@@ -254,7 +256,7 @@ def test_kb_assistant_forced_binding_ignores_capability(tmp_path: Path) -> None:
     assert [t.name for t in inst.tools] == [
         "read", "grep_search", "glob_search", "knowledge_search", "prepare_kb_write"]
     read_tool = inst.tools[0]
-    assert str(read_tool.cwd) == str(tmp_path / "workspaces" / "default" / "kb_assistant")
+    assert str(read_tool.cwd) == str(tmp_path / "workspaces" / "_platform")
     # 不受能力勾选管辖：case_design 工具集清空也不影响 kb_assistant
     cap.set_agent_tools("case_design", [])
     inst2 = runtime.build("kb_assistant", "kb-console", provider_override=MockProvider())
@@ -276,8 +278,8 @@ def test_kb_assistant_warms_kb_instance_on_build(tmp_path: Path) -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[str, str, str]] = []
 
-        def workspace_dir(self, project_id, agent_id):
-            return tmp_path / "workspaces" / project_id / agent_id
+        def workspace_dir(self, project_id="default", agent_id=""):
+            return tmp_path / "workspaces" / "_platform"
 
         def run_job_sync(self, name, *, project_id="default", agent_id="console", **kw):
             self.calls.append((name, project_id, agent_id))
@@ -303,8 +305,8 @@ def test_kb_assistant_build_survives_warm_failure(tmp_path: Path) -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[str, str, str]] = []
 
-        def workspace_dir(self, project_id, agent_id):
-            return tmp_path / "workspaces" / project_id / agent_id
+        def workspace_dir(self, project_id="default", agent_id=""):
+            return tmp_path / "workspaces" / "_platform"
 
         def run_job_sync(self, name, *, project_id="default", agent_id="console", **kw):
             self.calls.append((name, project_id, agent_id))

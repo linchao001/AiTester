@@ -46,8 +46,8 @@ class _KbOn:
     def close_all(self, timeout: float = 30.0):
         pass
 
-    def workspace_dir(self, project_id: str, agent_id: str) -> Path:
-        return self.kb_root_dir / "workspaces" / project_id / agent_id
+    def workspace_dir(self, project_id: str = "default", agent_id: str = "") -> Path:
+        return self.kb_root_dir / "workspaces" / "_platform"
 
     def run_job_sync(self, name, *, project_id="default", agent_id="console", **kwargs):
         return SimpleNamespace(success=True, answer="ok", metadata={})

@@ -101,7 +101,7 @@ def test_open_session_store_puts_files_under_agent_subdir(tmp_path) -> None:
         sid, "assistant", "ok",
         steps=[{"tool": "read", "ok": True, "round": 1, "detail": "{}", "result": "FILE_BODY"}],
     )
-    root = proj / "session_history" / "case_design"
+    root = proj / ".AiTester" / "session_history" / "case_design"
     assert (root / "index.json").is_file()
     line = json.loads((root / f"{sid}.jsonl").read_text(encoding="utf-8").splitlines()[1])
     assert line["agent_id"] == "case_design"

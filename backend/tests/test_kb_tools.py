@@ -11,7 +11,7 @@ class _FakeKb:
         self.kb_root_dir = root  # prepare_kb_write 注册时读取实体根
 
     def run_job_sync(self, name, *, project_id="default", agent_id="console", timeout=60.0, **kwargs):
-        self.calls.append((name, agent_id, kwargs))
+        self.calls.append((name, project_id, agent_id, kwargs))
         return SimpleNamespace(success=True, answer="命中：测试节点", metadata={})
 
 
@@ -37,14 +37,37 @@ def test_registry_without_kb_has_no_kb_tools():
 
 def test_kb_tools_run_against_manager(tmp_path):
     kb = _FakeKb(tmp_path)
-    reg = build_default_registry(cwd=".", kb=kb, agent_id="case_design")
+    reg = build_default_registry(
+        cwd=".", kb=kb, agent_id="case_design", project_id="proj_x",
+    )
     out = reg.get("knowledge_search").invoke({"query": "热词", "limit": 2})
     assert "测试节点" in out
-    assert kb.calls == [("knowledge_search", "case_design", {"query": "热词", "limit": 2, "bucket": "all"})]
+    assert kb.calls == [
+        ("knowledge_search", "proj_x", "case_design",
+         {"query": "热词", "limit": 2, "bucket": "all"}),
+    ]
 
     out2 = reg.get("save_to_knowledge").invoke({"title": "t", "content": "c"})
     assert out2
-    assert kb.calls[1] == ("save_to_knowledge", "case_design", {"title": "t", "content": "c", "bucket": "business/wiki"})
+    assert kb.calls[1] == (
+        "save_to_knowledge", "proj_x", "case_design",
+        {"title": "t", "content": "c", "bucket": "business/wiki"},
+    )
+
+
+def test_knowledge_search_rewrites_paths_under_aitester(tmp_path):
+    class _PathKb(_FakeKb):
+        def run_job_sync(self, name, *, project_id="default", agent_id="console",
+                         timeout=60.0, **kwargs):
+            return SimpleNamespace(
+                success=True,
+                answer="命中 knowledge/business/wiki/a.md",
+                metadata={},
+            )
+
+    reg = build_default_registry(cwd=".", kb=_PathKb(tmp_path), project_id="p1")
+    out = reg.get("knowledge_search").invoke({"query": "x"})
+    assert out == "命中 .AiTester/knowledge/business/wiki/a.md"
 
 
 def test_kb_disabled_manager_registers_no_tools(tmp_path):

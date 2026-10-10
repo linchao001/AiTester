@@ -1,4 +1,4 @@
-"""ChatService 个人记忆钩子：注入 / 调度 / 软失败。"""
+"""ChatService 个人记忆钩子：注入 / 回合累计调度 / 软失败 / 删会话 flush。"""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ class SpyPersonal:
         self.hit = hit
         self.boom = boom
         self.search_calls: list[dict] = []
-        self.schedule_calls: list[dict] = []
+        self.note_calls: list[dict] = []
+        self.flush_calls: list[str] = []
 
     def auto_search_for_turn(self, **kw: Any) -> str:
         if self.boom:
@@ -25,39 +26,47 @@ class SpyPersonal:
         self.search_calls.append(kw)
         return self.hit
 
-    def schedule_auto_memory(self, **kw: Any) -> None:
-        self.schedule_calls.append(kw)
+    def note_user_turn(self, **kw: Any) -> None:
+        self.note_calls.append(kw)
+
+    def flush_session(self, session_id: str) -> None:
+        self.flush_calls.append(session_id)
 
 
-def _prepared(memory: InMemoryMemoryStore | None = None) -> PreparedRun:
+def _prepared(
+    memory: InMemoryMemoryStore | None = None,
+    *,
+    session_id: str = "sess_1",
+    message: str = "你好",
+) -> PreparedRun:
     mem = memory or InMemoryMemoryStore()
 
     def build(_p, _t) -> Any:
         raise AssertionError("graph should not run in persist-only tests")
 
     return PreparedRun(
-        key="case_design:sess_1",
-        session_id="sess_1",
-        message="你好",
+        key=f"case_design:{session_id}",
+        session_id=session_id,
+        message=message,
         provider=MockProvider(),
         system_prompt="sys",
         build=build,  # type: ignore[arg-type]
         tools=[],
         memory=mem,
-        messages=[SystemMessage(content="sys"), HumanMessage(content="你好")],
+        messages=[SystemMessage(content="sys"), HumanMessage(content=message)],
         agent_id="case_design",
         project_id="proj_1",
         usage=ContextUsage(0),
     )
 
 
-def test_persist_schedules_auto_memory():
+def test_persist_notes_user_turn():
     spy = SpyPersonal()
     svc = ChatService(personal=spy)
     prepared = _prepared()
     svc._persist(prepared, "回复", steps=[], stopped=False)
-    assert len(spy.schedule_calls) == 1
-    call = spy.schedule_calls[0]
+    assert len(spy.note_calls) == 1
+    call = spy.note_calls[0]
     assert call["session_id"] == "sess_1"
     assert call["project_id"] == "proj_1"
     assert call["messages"][0]["content"] == "你好"
@@ -72,6 +81,13 @@ def test_search_failure_does_not_break_persist():
     snap = svc._persist(prepared, "ok", steps=[], stopped=False)
     assert snap is not None
     assert len(svc.memory.recall(prepared.key)) == 2
+
+
+def test_drop_session_flushes_personal_memory():
+    spy = SpyPersonal()
+    svc = ChatService(personal=spy)
+    svc.drop_session("sess_abc")
+    assert spy.flush_calls == ["sess_abc"]
 
 
 def test_prepare_injects_when_spy_returns_hit(monkeypatch):

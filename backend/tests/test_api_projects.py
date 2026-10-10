@@ -220,9 +220,9 @@ def test_delete_project_leaves_session_history_on_disk(tmp_path) -> None:
     store.create(sid, "case_design", pid, "该留在磁盘")
     other_store.create(kept, "case_design", other, "该留")
     assert _delete(application, pid).status_code == 204
-    assert (reqs / "session_history" / "case_design" / f"{sid}.jsonl").exists()
+    assert (reqs / ".AiTester" / "session_history" / "case_design" / f"{sid}.jsonl").exists()
     assert other_store.get(kept) is not None
-    assert (pay / "session_history" / "case_design" / f"{kept}.jsonl").exists()
+    assert (pay / ".AiTester" / "session_history" / "case_design" / f"{kept}.jsonl").exists()
 
 
 def test_delete_project_last_one_keeps_sessions(tmp_path) -> None:
@@ -235,4 +235,4 @@ def test_delete_project_last_one_keeps_sessions(tmp_path) -> None:
     store.create(sid, "case_design", pid, "别跟着死")
     assert _delete(application, pid).status_code == 400
     assert store.get(sid) is not None
-    assert (only / "session_history" / "case_design" / f"{sid}.jsonl").exists()
+    assert (only / ".AiTester" / "session_history" / "case_design" / f"{sid}.jsonl").exists()

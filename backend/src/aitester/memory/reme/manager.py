@@ -1,8 +1,8 @@
-"""ReMe 进程内嵌管理器：专属事件循环线程 + (project, agent) 实例池。
+"""ReMe 进程内嵌管理器：专属事件循环线程 + 按 workspace 路径的实例池。
 
 记忆层生命周期中枢（个人记忆 + 知识库）。裁定依据：
-spec 2026-10-01-knowledge-base-reme-design.md、
-spec 2026-10-10-memory-layer-reme-design.md。
+spec 2026-10-10-reme-workspace-project-dir-design.md（覆盖旧 (project, agent) 池）；
+项目 workspace 落点见 project_runtime（``{dir}/.AiTester``）。
 """
 
 from __future__ import annotations
@@ -11,14 +11,19 @@ import asyncio
 import threading
 from concurrent.futures import Future
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from aitester.case_design.constants import NODE_BUCKETS
 from aitester.memory.reme.config import KbConfig, build_reme_config
 from aitester.memory.reme.paths import resolve_kb_root
+from aitester.project_runtime import project_runtime_root
 
 DEFAULT_PROJECT = "default"
 DEFAULT_CONSOLE_AGENT = "console"
+PLATFORM_WORKSPACE_NAME = "_platform"
+
+# project_id → 项目绑定目录（原始或绝对路径均可）；解析失败应抛错
+ProjectDirResolver = Callable[[str], str | Path]
 
 
 class KbUnavailableError(RuntimeError):
@@ -46,11 +51,19 @@ def _ensure_node_buckets(cfg: KbConfig) -> None:
 
 
 class RemeMemoryManager:
-    def __init__(self, settings: Any, data_dir: Path) -> None:
+    def __init__(
+        self,
+        settings: Any,
+        data_dir: Path,
+        *,
+        project_dir_resolver: ProjectDirResolver | None = None,
+    ) -> None:
         self._settings = settings
         self._data_dir = Path(data_dir)
-        self._apps: dict[tuple[str, str], Any] = {}
-        self._start_tasks: dict[tuple[str, str], asyncio.Task] = {}
+        self._project_dir_resolver = project_dir_resolver
+        # 池键 = 解析后的 workspace 绝对路径（同路径共享一实例；agent_id 不参与）
+        self._apps: dict[str, Any] = {}
+        self._start_tasks: dict[str, asyncio.Task] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._started = False
@@ -69,8 +82,35 @@ class RemeMemoryManager:
         """共享 KB 实体目录（browse 接口与草案工具共用的唯一真相根）。"""
         return resolve_kb_root(self._settings)
 
-    def workspace_dir(self, project_id: str, agent_id: str) -> Path:
-        return self._data_dir / "workspaces" / project_id / agent_id
+    def platform_workspace_dir(self) -> Path:
+        """平台智能体 /api/kb 无项目时的 fallback workspace。"""
+        return (self._data_dir / "workspaces" / PLATFORM_WORKSPACE_NAME).resolve()
+
+    def workspace_dir(self, project_id: str = DEFAULT_PROJECT, agent_id: str = "") -> Path:
+        """解析 Reme workspace 根。agent_id 保留形参兼容调用方，不参与路径。
+
+        项目智能体：``{project.dir}/.AiTester``（平台产物收口；cwd 仍为项目根）。
+        """
+        del agent_id  # 2A：实例与路径按项目（路径）粒度，与 agent 无关
+        pid = (project_id or "").strip() or DEFAULT_PROJECT
+        if pid == DEFAULT_PROJECT:
+            return self.platform_workspace_dir()
+        if self._project_dir_resolver is None:
+            raise KbUnavailableError(
+                f"无法解析项目「{pid}」的工作目录：未配置 project_dir_resolver"
+            )
+        try:
+            raw = self._project_dir_resolver(pid)
+        except Exception as exc:
+            raise KbUnavailableError(
+                f"无法解析项目「{pid}」的工作目录: {exc}"
+            ) from exc
+        if raw is None or str(raw).strip() == "":
+            raise KbUnavailableError(f"项目「{pid}」未配置本地目录")
+        return project_runtime_root(raw)
+
+    def pool_key(self, project_id: str = DEFAULT_PROJECT, agent_id: str = "") -> str:
+        return str(self.workspace_dir(project_id, agent_id))
 
     def start(self) -> None:
         if not getattr(self._settings, "kb_enabled", False) or self._started:
@@ -94,10 +134,10 @@ class RemeMemoryManager:
         assert self._thread is not None
         return asyncio.run_coroutine_threadsafe(coro, self._loop)
 
-    def _kb_config(self, project_id: str, agent_id: str) -> KbConfig:
+    def _kb_config(self, workspace: Path) -> KbConfig:
         s = self._settings
         return KbConfig(
-            workspace_dir=str(self.workspace_dir(project_id, agent_id)),
+            workspace_dir=str(workspace),
             kb_id=s.kb_id,
             kb_bases_dir=s.kb_bases_dir,
             create_missing=s.kb_create_missing,
@@ -107,15 +147,16 @@ class RemeMemoryManager:
             embedding_dimensions=s.kb_embedding_dimensions,
         )
 
-    async def _start_app(self, key: tuple[str, str]):
-        project_id, agent_id = key
+    async def _start_app(self, key: str):
         try:
             # 构造期同样可能抛错（reme Application.__init__ 的挂载检查/mkdir/组件
             # 装配均会真抛），守卫必须覆盖构造+start 全程，否则失败任务滞留
             # _start_tasks，该 key 之后每次 _get_app 都重放旧异常而无法重试
             from reme import Application
 
-            cfg = self._kb_config(project_id, agent_id)
+            workspace = Path(key)
+            workspace.mkdir(parents=True, exist_ok=True)
+            cfg = self._kb_config(workspace)
             # 先建桶再构造 Application：reme watch 形态的漂移保险，非既成保证
             # （当前根递归轮询下后建桶同样可被索引，详见 _ensure_node_buckets docstring）
             _ensure_node_buckets(cfg)
@@ -141,13 +182,13 @@ class RemeMemoryManager:
             self._start_tasks.pop(key, None)
         return app
 
-    async def _get_app(self, project_id: str, agent_id: str):
-        """同 key 单飞：并发调用共享同一个创建任务，绝不会出现第二个实例。
+    async def _get_app(self, project_id: str, agent_id: str = ""):
+        """同路径单飞：并发调用共享同一个创建任务，绝不会出现第二个实例。
 
         只在 manager 专属事件循环内被调用，故对 `_apps`/`_start_tasks` 的
-        读改写之间不引入新的 await，天然原子。
+        读改写之间不引入新的 await，天然原子。agent_id 不参与池键（2A）。
         """
-        key = (project_id, agent_id)
+        key = self.pool_key(project_id, agent_id)
         app = self._apps.get(key)
         if app is not None:
             return app
@@ -198,6 +239,31 @@ class RemeMemoryManager:
     ):
         future = self._submit(self._run(project_id, agent_id, name, kwargs))
         return await asyncio.wrap_future(future)
+
+    def drop_workspace(self, workspace: str | Path, timeout: float = 30.0) -> None:
+        """关闭并摘掉指定 workspace 路径上的实例（项目删除或目录失效时）。"""
+        if not self._started:
+            return
+        key = str(Path(workspace).expanduser().resolve())
+
+        async def _drop() -> None:
+            task = self._start_tasks.get(key)
+            if task is not None and not task.done():
+                await asyncio.gather(task, return_exceptions=True)
+            self._start_tasks.pop(key, None)
+            app = self._apps.pop(key, None)
+            if app is not None:
+                await app.close()
+
+        self._submit(_drop()).result(timeout)
+
+    def drop_project(self, project_id: str, timeout: float = 30.0) -> None:
+        """按 project_id 解析路径后 drop（解析失败则静默，配置已删时常见）。"""
+        try:
+            ws = self.workspace_dir(project_id)
+        except KbUnavailableError:
+            return
+        self.drop_workspace(ws, timeout=timeout)
 
     def close_all(self, timeout: float = 30.0) -> None:
         if not self._started:

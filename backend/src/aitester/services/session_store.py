@@ -165,8 +165,10 @@ class ChatMessage:
 
 
 def open_session_store(project_dir: str | Path, agent_id: str) -> SessionStore:
-    """项目空间唯一真相：{dir}/session_history/<agent_id>/。"""
-    root = Path(project_dir).expanduser().resolve() / "session_history" / agent_id
+    """项目空间唯一真相：{dir}/.AiTester/session_history/<agent_id>/。"""
+    from aitester.project_runtime import session_history_root
+
+    root = session_history_root(project_dir) / agent_id
     return SessionStore(root, agent_id=agent_id)
 
 

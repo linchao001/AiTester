@@ -84,9 +84,16 @@ def projects_update(project_id: str, req: ProjectUpdateRequest, request: Request
 @router.delete("/{project_id}", status_code=204)
 def projects_delete(project_id: str, request: Request) -> None:
     try:
+        # 删配置前记下 dir，供 Reme 摘实例（聊天历史仍留在项目 dir，不随配置删）
+        project_dir = _svc(request).get(project_id)["dir"]
         _svc(request).delete(project_id)
     except ConfigNotFoundError as exc:
         raise HTTPException(status_code=404, detail=exc.detail) from exc
     except ProjectConfigError as exc:
         raise HTTPException(status_code=400, detail=exc.detail) from exc
-    # 聊天历史留在项目 dir/session_history/，不随 AiTester 项目配置删除（spec 裁定）
+    memory = getattr(request.app.state, "memory_manager", None)
+    drop = getattr(memory, "drop_workspace", None)
+    if callable(drop):
+        from aitester.project_runtime import project_runtime_root
+
+        drop(project_runtime_root(project_dir))

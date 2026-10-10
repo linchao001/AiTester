@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     auto_memory_search_enabled: bool = True
     auto_memory_enabled: bool = True
     auto_memory_search_limit: int = 5
+    # 每累计 N 个用户回合后台 flush 一次；None 或 <=0 关闭周期触发（对齐 QwenPaw）
+    auto_memory_interval: int | None = 5
 
 
 @lru_cache

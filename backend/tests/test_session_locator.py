@@ -20,7 +20,7 @@ def test_for_agent_writes_under_project_session_history(tmp_path) -> None:
     store = loc.for_agent(pid, "case_design")
     sid = store.new_id()
     store.create(sid, "case_design", pid, "q")
-    assert (root / "session_history" / "case_design" / "index.json").is_file()
+    assert (root / ".AiTester" / "session_history" / "case_design" / "index.json").is_file()
 
 
 def test_count_by_project_sums_sessions_across_agents(tmp_path) -> None:

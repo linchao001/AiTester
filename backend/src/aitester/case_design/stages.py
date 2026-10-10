@@ -107,7 +107,7 @@ class Ctx:
 
     def kb_rows(self, layer: str) -> list[dict]:
         if layer not in self._kb_cache:
-            self._kb_cache[layer] = KbClient(self.env.kb).list_layer(layer)
+            self._kb_cache[layer] = KbClient.from_env(self.env).list_layer(layer)
         return self._kb_cache[layer]
 
     def kb_rows_closure(self, layer: str) -> list[dict]:
@@ -611,7 +611,7 @@ def _write_manifests(ctx: Ctx, descriptor: dict) -> None:
                     {"layer": layer, "count": len(rows), "nodes": rows})
     _write_json(ctx.env.manifests_dir / "sources.json",
                 {"project_files": list(descriptor.get("source_files") or []),
-                 "kb_files": KbClient(ctx.env.kb).list_business_files()})
+                 "kb_files": KbClient.from_env(ctx.env).list_business_files()})
 
 
 def _target_chains(ctx: Ctx) -> set[str] | None:
@@ -2599,7 +2599,7 @@ def h_writeback(ctx: Ctx) -> Any:
     for layer in LAYERS:
         if led.layer(layer)["state"] == "audited":
             _patch_ids(ctx, layer, "")             # 兜底：任何空 id 在写库前补齐
-    kb = KbClient(ctx.env.kb)
+    kb = KbClient.from_env(ctx.env)
     ok = False
     written = untouched = 0
     # F-6：确定性坏草稿的事实原文（终帧如实报因用）；瞬时错误仍走原 3 次重试预算。

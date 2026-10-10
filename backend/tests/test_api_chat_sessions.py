@@ -162,7 +162,9 @@ def test_messages_endpoint_returns_steps_without_result(tmp_path: Path) -> None:
     assert step == {"tool": "read", "ok": True, "round": 1, "detail": "{}"}
     assert "result" not in step
     # 磁盘仍有全量 result
-    disk = (root / "session_history" / "case_design" / f"{sid}.jsonl").read_text(encoding="utf-8")
+    disk = (
+        root / ".AiTester" / "session_history" / "case_design" / f"{sid}.jsonl"
+    ).read_text(encoding="utf-8")
     assert "FILE" in disk
 
 
@@ -185,7 +187,9 @@ def test_delete_returns_204_and_removes_everything(tmp_path: Path) -> None:
         "会话不存在或已被删除"
     assert client.get("/api/chat/sessions",
                       params={"agent_id": "case_design", "project_id": pid}).json() == {"sessions": []}
-    assert not (root / "session_history" / "case_design" / f"{sid}.jsonl").exists()
+    assert not (
+        root / ".AiTester" / "session_history" / "case_design" / f"{sid}.jsonl"
+    ).exists()
 
 
 def test_send_defaults_to_empty_session_id(tmp_path: Path) -> None:
@@ -276,7 +280,7 @@ def test_send_returns_nonempty_steps_at_http_level(tmp_path: Path) -> None:
     application.state.chat_service = ChatService(
         provider=MockProvider(),
         agent_runtime=SimpleNamespace(
-            build=lambda agent_id, session_id, provider_override=None, cwd=".": AgentInstance(
+            build=lambda agent_id, session_id, provider_override=None, cwd=".", **_: AgentInstance(
                 agent_id=agent_id, system_prompt="p", provider=MockProvider(),
                 tools=[], build_graph=lambda provider, tools: _FakeGraph())),
         sessions=application.state.sessions,

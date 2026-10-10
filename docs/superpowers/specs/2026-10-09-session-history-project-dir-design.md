@@ -12,7 +12,7 @@
 
 ## 用户裁定（2026-10-09，逐条确认）
 
-1. **整体迁移（A）**：`{项目.dir}/session_history/` 为唯一真相；停止以 `backend/data/sessions` 为读写路径。
+1. **整体迁移（A）**：`{项目.dir}/.AiTester/session_history/` 为唯一真相（见 `2026-10-10-aitester-project-runtime-dir-design.md`）；停止以 `backend/data/sessions` 为读写路径。
 2. **不迁移旧数据（A）**：上线后旧目录会话不再被本系统读取；用户视为新开。
 3. **工具输出全量落盘（A）**：`steps[].result` 原样写入，不截断、不分文件。
 4. **按智能体分子目录（B）**：`session_history/<agent_id>/index.json` + `sess_*.jsonl`。
@@ -24,7 +24,7 @@
 ## 控制端裁定（工程判断，可推翻）
 
 - **工厂**：`open_session_store(project_dir: Path | str, agent_id: str) -> SessionStore`，根为  
-  `Path(project_dir).expanduser().resolve() / "session_history" / agent_id`。  
+  `Path(project_dir).expanduser().resolve() / ".AiTester" / "session_history" / agent_id`。  
   `SessionStore` 本体契约（锁、原子写索引、jsonl 追加、坏索引留档）尽量不动，只换根与消息字段。
 - **去掉** `create_app(..., sessions_dir=...)` 单根注入；测试改为给临时「项目 dir」+ 工厂，或注入可替换的 `open_session_store`。  
   应用态若仍需 `app.state.sessions`，改为持有「解析器」：输入 `project_id`（查 ProjectService 得 dir）+ `agent_id` → 调工厂；**不是**独立 SessionHub 业务层，禁止在解析器里塞列表缓存策略以外的逻辑。
@@ -40,7 +40,7 @@
 ## 目录与数据模型
 
 ```
-{项目.dir}/session_history/
+{项目.dir}/.AiTester/session_history/
   <agent_id>/
     index.json
     sess_<8hex>.jsonl

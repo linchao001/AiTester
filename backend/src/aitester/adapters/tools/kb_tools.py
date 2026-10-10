@@ -28,25 +28,36 @@ class KbSearchTool(AiTooler):
     name: str = "knowledge_search"
     description: str = (
         "Search the global shared knowledge base (e.g. zhb_kb) and return matched "
-        "knowledge nodes with their source paths. Consult it before writing test "
+        "knowledge nodes with their source paths. Paths are relative to the project "
+        "root (cwd), under .AiTester/knowledge/.... Consult it before writing test "
         "cases or answering business questions."
     )
     args_schema: type[BaseModel] = KbSearchInput
     kb: Any = None
     agent_id: str = "console"
+    project_id: str = "default"
 
     def _run(self, query: str, limit: int = 5, bucket: str = "all", **_: Any) -> str:
+        from aitester.project_runtime import reme_paths_for_project_cwd
+
         try:
             resp = self.kb.run_job_sync(
-                "knowledge_search", agent_id=self.agent_id, query=query, limit=limit, bucket=bucket,
+                "knowledge_search",
+                project_id=self.project_id,
+                agent_id=self.agent_id,
+                query=query,
+                limit=limit,
+                bucket=bucket,
             )
         except TimeoutError:
             return "Knowledge base search timed out; retry with a narrower query."
         if not resp.success:
             return f"Knowledge base search failed: {resp.answer}"
         if isinstance(resp.answer, str) and resp.answer.strip():
-            return resp.answer
-        return json.dumps(resp.metadata, ensure_ascii=False, default=str)
+            return reme_paths_for_project_cwd(resp.answer)
+        return reme_paths_for_project_cwd(
+            json.dumps(resp.metadata, ensure_ascii=False, default=str)
+        )
 
 
 class KbSaveTool(AiTooler):
@@ -59,11 +70,17 @@ class KbSaveTool(AiTooler):
     args_schema: type[BaseModel] = KbSaveInput
     kb: Any = None
     agent_id: str = "console"
+    project_id: str = "default"
 
     def _run(self, title: str, content: str, bucket: str = "business/wiki", **_: Any) -> str:
         try:
             resp = self.kb.run_job_sync(
-                "save_to_knowledge", agent_id=self.agent_id, title=title, content=content, bucket=bucket,
+                "save_to_knowledge",
+                project_id=self.project_id,
+                agent_id=self.agent_id,
+                title=title,
+                content=content,
+                bucket=bucket,
             )
         except TimeoutError:
             return "Knowledge base save timed out; check whether the node was written before retrying."
