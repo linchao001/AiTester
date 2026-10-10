@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from aitester.agents import AGENT_CATALOG, PLATFORM_AGENT_CATALOG
-from aitester.services.kb.aliases import PROJECT_KB_DEFAULT, is_registered, registered_aliases
+from aitester.memory.reme.aliases import PROJECT_KB_DEFAULT, is_registered, registered_aliases
 from aitester.services.model_config import ConfigNotFoundError
 from aitester.storage import JsonConfigRepository
 

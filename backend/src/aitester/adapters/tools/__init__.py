@@ -29,7 +29,7 @@ def build_default_registry(
 
     `observed` 为跨请求共享的会话级观察记录，用于「改前必读」守卫；
     不传则新建一个仅在本注册表生命周期内有效的记录。
-    `kb` 为 RemeKbManager（或其同签名替身）；不传则不注册知识库工具；
+    `kb` 为 RemeMemoryManager（或其同签名替身）；不传则不注册知识库工具；
     传了但 `kb_enabled` 关闭（`is_enabled` 为假）同样不注册，模型不可见。
     `task` 为装配层注入的 task 工具实例（子智能体唯一入口）；不传就不注册——
     子智能体自己的注册表装配时不传它，深度 1 由此成为结构锁（R7）。

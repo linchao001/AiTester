@@ -53,7 +53,7 @@ class KbClient:
         """
         # 延迟导入（与 kb_tools.PrepareKbWriteTool 同因）：services 包 __init__ 会经
         # chat→agent_runtime 反向成环，而本模块在启动导入链上（graph_registry→case_design）
-        from aitester.services.kb.paths import hidden_segment
+        from aitester.memory.reme.paths import hidden_segment
 
         root = Path(self._kb.kb_root_dir)
         base = root / "business"

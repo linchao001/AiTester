@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from aitester.adapters.tools import build_default_registry
-from aitester.services.kb.manager import RemeKbManager
+from aitester.memory.reme.manager import RemeMemoryManager
 
 
 class _FakeKb:
@@ -49,14 +49,14 @@ def test_kb_tools_run_against_manager(tmp_path):
 
 def test_kb_disabled_manager_registers_no_tools(tmp_path):
     """kb_enabled=False：manager 实例存在也必须对模型隐藏 KB 工具面。"""
-    disabled = RemeKbManager(settings=_manager_settings(tmp_path, False), data_dir=tmp_path)
+    disabled = RemeMemoryManager(settings=_manager_settings(tmp_path, False), data_dir=tmp_path)
     reg = build_default_registry(cwd=".", kb=disabled)
     assert reg.get("knowledge_search") is None
     assert reg.get("save_to_knowledge") is None
 
 
 def test_kb_enabled_manager_registers_tools(tmp_path):
-    enabled = RemeKbManager(settings=_manager_settings(tmp_path, True), data_dir=tmp_path)
+    enabled = RemeMemoryManager(settings=_manager_settings(tmp_path, True), data_dir=tmp_path)
     reg = build_default_registry(cwd=".", kb=enabled)
     assert reg.get("knowledge_search") is not None
     assert reg.get("save_to_knowledge") is not None

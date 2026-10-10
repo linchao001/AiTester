@@ -13,7 +13,7 @@ resolution-markers = [
 
 [[package]]
 name = "agentscope"
-version = "2.0.6"
+version = "2.0.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -24,7 +24,7 @@ dependencies = [
     { name = "filetype" },
     { name = "httpx" },
     { name = "jinja2" },
-    { name = "json-repair" },
+    { name = "json-repair", extra = ["schema"] },
     { name = "json5" },
     { name = "jsonschema" },
     { name = "mcp" },
@@ -35,17 +35,19 @@ dependencies = [
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-sdk" },
     { name = "opentelemetry-semantic-conventions" },
+    { name = "pypdf" },
     { name = "python-datauri" },
     { name = "python-frontmatter" },
     { name = "python-socketio" },
+    { name = "rich" },
     { name = "shortuuid" },
     { name = "tree-sitter" },
     { name = "tree-sitter-bash" },
     { name = "tzdata" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/42/81/90446a6fa1031b5b54e79f8abb172629897b511320723d4e6f63abb6ffa8/agentscope-2.0.6.tar.gz", hash = "sha256:5fcf2be7b56dabc2ebb616c8999f8ba299355ba4cbae9ac0d4f777ad04e7e3f6", size = 794346, upload-time = "2026-08-07T10:40:17.364Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/66/7ad089fb31721b8470424f6b16fb2ff8835cb91288bfd03a368cc3e61240/agentscope-2.0.9.tar.gz", hash = "sha256:5b71f5894822bb20895d4aaafb1b5cdfd08cb081ee882a92e070d94b06191fb5", size = 1038809, upload-time = "2026-09-28T05:06:53.6Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/96/f9/354cdf98e3f6e5835b2eb0214e6c6a5b0e402dfbade92769d280b683fd44/agentscope-2.0.6-py3-none-any.whl", hash = "sha256:091e7f214eff7fd6f4934d98a7d7c4bb8707a5d4b33d335def7fc31255e7ccb8", size = 1057146, upload-time = "2026-08-07T10:40:15.21Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/42/63b9b79ed6f31ca157a5a7c4fbe0e41fb57ddae831aabd2a06cc3c12885c/agentscope-2.0.9-py3-none-any.whl", hash = "sha256:618e62a946edd5a9293fe757743c6dc2da1a929913a59beaf7009af84cef167a", size = 1356566, upload-time = "2026-09-28T05:06:51.841Z" },
 ]
 
 [[package]]
@@ -243,7 +245,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agentscope", specifier = "==2.0.6" },
+    { name = "agentscope", specifier = "==2.0.9" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "langchain-core", specifier = ">=0.3" },
@@ -252,7 +254,7 @@ requires-dist = [
     { name = "openai", specifier = ">=2" },
     { name = "pydantic-settings", specifier = ">=2.3" },
     { name = "pyyaml", specifier = ">=6" },
-    { name = "reme-ai", path = "../lib/reme_ai-0.4.1.8-py3-none-any.whl" },
+    { name = "reme-ai", path = "../lib/reme_ai-0.4.1.13-py3-none-any.whl" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 
@@ -1492,6 +1494,12 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/72/29/653c36e0de80f7048f01298a9098f1c66bb9da162e92ad6a6e2c3202cc52/json_repair-0.63.5.tar.gz", hash = "sha256:75a6a1a4ea954935dd3fb69b6e49ac0e3e3d69b4290127a0c8d37af93b709f3a", size = 52945, upload-time = "2026-09-22T18:36:08.745Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6b/a4/222e2581667c326183a87df229e772140fbf3e5dc03ec73e2a0e74804114/json_repair-0.63.5-py3-none-any.whl", hash = "sha256:0e39b3066f7829b4bd7fc614e463cfd4ff7a4c46f82f5b65431fc11e29a74c81", size = 51334, upload-time = "2026-09-22T18:36:07.05Z" },
+]
+
+[package.optional-dependencies]
+schema = [
+    { name = "jsonschema" },
+    { name = "pydantic" },
 ]
 
 [[package]]
@@ -3216,8 +3224,8 @@ wheels = [
 
 [[package]]
 name = "reme-ai"
-version = "0.4.1.8"
-source = { path = "../lib/reme_ai-0.4.1.8-py3-none-any.whl" }
+version = "0.4.1.13"
+source = { path = "../lib/reme_ai-0.4.1.13-py3-none-any.whl" }
 dependencies = [
     { name = "aiofiles" },
     { name = "croniter" },
@@ -3231,7 +3239,6 @@ dependencies = [
     { name = "openai" },
     { name = "psutil" },
     { name = "pydantic" },
-    { name = "pypdf" },
     { name = "python-frontmatter" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -3240,21 +3247,22 @@ dependencies = [
     { name = "zstandard" },
 ]
 wheels = [
-    { filename = "reme_ai-0.4.1.8-py3-none-any.whl", hash = "sha256:73d3a6d6bb8558b4739db8301646d9672853c1aa46d620cc59795d71ddd9661d" },
+    { filename = "reme_ai-0.4.1.13-py3-none-any.whl", hash = "sha256:f7074ae29f062c21391dfc966c15ec01a63618844016d56c79a993307c39d775" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "agentscope", extras = ["model-ollama"], marker = "extra == 'core'", specifier = "==2.0.6" },
+    { name = "agentscope", extras = ["model-ollama"], marker = "extra == 'as'", specifier = "==2.0.9" },
     { name = "aiofiles", specifier = ">=24.1.0" },
     { name = "claude-agent-sdk", marker = "extra == 'core'", specifier = ">=0.2.126" },
     { name = "croniter", specifier = ">=2.0" },
-    { name = "dingtalk-stream", marker = "extra == 'core'", specifier = ">=0.24.3" },
     { name = "faiss-cpu", marker = "extra == 'core'", specifier = ">=1.13.2" },
     { name = "fastapi", specifier = ">=0.135.1" },
     { name = "fastmcp", specifier = ">=3.1.0" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
     { name = "jieba", marker = "extra == 'core'", specifier = ">=0.42.1" },
+    { name = "langchain-core", marker = "extra == 'langchain'", specifier = ">=0.3.0" },
+    { name = "langchain-openai", marker = "extra == 'langchain'", specifier = ">=0.3.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "mistletoe", specifier = ">=1.5.1" },
     { name = "neo4j", marker = "extra == 'core'", specifier = ">=6.2.0" },
@@ -3263,20 +3271,24 @@ requires-dist = [
     { name = "openai", specifier = ">=2.26.0" },
     { name = "openai-codex", marker = "extra == 'core'", specifier = ">=0.144.4" },
     { name = "packaging", marker = "extra == 'dev'", specifier = ">=24.2" },
+    { name = "pillow", marker = "extra == 'core'", specifier = ">=10.0.0" },
+    { name = "pillow", marker = "extra == 'image-heif'", specifier = ">=10.0.0" },
+    { name = "pillow-heif", marker = "extra == 'image-heif'", specifier = ">=0.13.0" },
     { name = "polars", marker = "extra == 'core'", specifier = ">=1.43.0" },
     { name = "pproxy", marker = "extra == 'core'", specifier = ">=2.7.9,<3" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.6.1" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pydantic", specifier = ">=2.12.5" },
-    { name = "pypdf", specifier = ">=5.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "python-frontmatter", specifier = ">=1.1.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "reme-ai", extras = ["as"], marker = "extra == 'core'" },
     { name = "reme-ai", extras = ["core"], marker = "extra == 'full'" },
     { name = "reme-ai", extras = ["dev"], marker = "extra == 'full'" },
-    { name = "reme-ai-studio", marker = "extra == 'core'", specifier = "==0.4.1.8" },
-    { name = "reme-ai-studio", marker = "extra == 'web'", specifier = "==0.4.1.8" },
+    { name = "reme-ai", extras = ["image-heif"], marker = "extra == 'full'" },
+    { name = "reme-studio", marker = "extra == 'core'" },
+    { name = "reme-studio", marker = "extra == 'web'" },
     { name = "rich", specifier = ">=14.3.3" },
     { name = "rjieba", marker = "extra == 'core'", specifier = ">=0.2.1" },
     { name = "uvicorn", specifier = ">=0.41.0" },
@@ -3284,7 +3296,7 @@ requires-dist = [
     { name = "zstandard", specifier = ">=0.23.0" },
     { name = "zvec", marker = "extra == 'core'", specifier = ">=0.6.0" },
 ]
-provides-extras = ["web", "core", "dev", "full"]
+provides-extras = ["as", "web", "core", "image-heif", "langchain", "dev", "full"]
 
 [[package]]
 name = "requests"

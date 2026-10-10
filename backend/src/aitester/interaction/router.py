@@ -47,7 +47,7 @@ from aitester.services.capability_config import (
     CapabilityConfigService,
 )
 from aitester.services.chat import PreparedRun
-from aitester.services.kb.manager import KbUnavailableError
+from aitester.memory.reme.manager import KbUnavailableError
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
 from aitester.services.pending import CallDecidedError, PendingGoneError, ResumeNotReadyError
 from aitester.services.project_config import ProjectConfigError
@@ -408,7 +408,7 @@ def capabilities_tool_enabled(
 
 
 def _kb(request: Request):
-    return request.app.state.kb_manager
+    return request.app.state.memory_manager
 
 
 def _kb_payload(resp) -> dict:

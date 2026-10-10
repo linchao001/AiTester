@@ -182,7 +182,7 @@ def test_service_stream_carries_case_env_to_graph(tmp_path: Path) -> None:
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
-        kb_manager=_KbOn(tmp_path / "kb-root"),
+        memory_manager=_KbOn(tmp_path / "kb-root"),
     )
     provider = ScriptedProvider([AIMessage(content=f"第 {i} 稿") for i in range(1, 5)])
     application.state.chat_service = ChatService(

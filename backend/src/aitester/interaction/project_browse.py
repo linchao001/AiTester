@@ -22,7 +22,7 @@ from aitester.interaction.browse_common import (
     resolve_within,
     stat_item,
 )
-from aitester.services.kb.paths import mtime_ms
+from aitester.memory.reme.paths import mtime_ms
 from aitester.services.model_config import ConfigNotFoundError
 from aitester.services.project_config import ProjectService
 

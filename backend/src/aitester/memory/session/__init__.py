@@ -1,7 +1,6 @@
-"""记忆层：会话聊天记录 + Reme 支撑的个人记忆 / 知识库。
+"""会话聊天记录（非 Reme）：UI 与短上下文；也是 auto_memory 的入参数据源。
 
-FileMemoryStore 延迟导出，避免 ``memory → session.file_memory → services → chat → memory``
-在加载 ``memory.reme.*`` 时成环。
+FileMemoryStore 延迟导出，避免经 services 回指 memory 成环。
 """
 
 from aitester.memory.session.base import MemoryStore

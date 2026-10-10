@@ -1,4 +1,4 @@
-"""知识库工具：经 RemeKbManager 调用共享 KB 的检索与写入 job。"""
+"""知识库工具：经 RemeMemoryManager（记忆层）调用共享 KB 的检索与写入 job。"""
 
 from __future__ import annotations
 
@@ -96,9 +96,9 @@ class PrepareKbWriteTool(AiTooler):
     kb_root: Path = Path(".")
 
     def _run(self, op: str, path: str, content: str, summary: str) -> tuple[str, dict[str, Any]]:
-        # 延迟导入：adapters.tools 初始化链上导入 aitester.services.kb.paths 会经
+        # 延迟导入：adapters.tools 初始化链上导入 aitester.memory.reme.paths 会经
         # services/__init__ 反向触发 agent_runtime→adapters.tools 循环导入
-        from aitester.services.kb.paths import hidden_segment, mtime_ms
+        from aitester.memory.reme.paths import hidden_segment, mtime_ms
 
         rel = (path or "").strip().replace("\\", "/").lstrip("/")
         if not rel or "\0" in rel:

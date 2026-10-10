@@ -172,7 +172,7 @@ def test_capabilities_view_unchanged(tmp_path):
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.json",
         settings=Settings(_env_file=None),
-        kb_manager=_RecordingKbManager(),
+        memory_manager=_RecordingKbManager(),
     )
     with TestClient(app) as c:
         j = c.get("/api/capabilities").json()

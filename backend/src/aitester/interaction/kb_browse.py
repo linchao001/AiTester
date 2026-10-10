@@ -24,7 +24,7 @@ from aitester.interaction.browse_common import (
     resolve_within,
     stat_item,
 )
-from aitester.services.kb.paths import is_hidden, mtime_ms, resolve_kb_root
+from aitester.memory.reme.paths import is_hidden, mtime_ms, resolve_kb_root
 
 router = APIRouter(prefix="/api/kb/browse")
 

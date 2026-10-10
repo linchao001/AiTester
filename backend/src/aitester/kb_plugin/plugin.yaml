@@ -1,3 +1,3 @@
 # reme 插件清单：backends 名字只被 _KB_JOBS 白名单引用，不注册任何模型可见工具。
 backends:
-  aitester_kb_nodes_step: "aitester.services.kb.steps:CaseNodesStep"
+  aitester_kb_nodes_step: "aitester.memory.reme.steps:CaseNodesStep"

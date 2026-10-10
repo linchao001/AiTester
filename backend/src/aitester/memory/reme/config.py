@@ -1,6 +1,6 @@
 """构建 ReMe Application 的纯 dict 配置（不加载 reme yaml）。
 
-jobs/steps/components 结构与键名逐项对齐 reme 0.4.1.8 的
+jobs/steps/components 结构与键名逐项对齐 reme 0.4.1.13 的
 reme/config/default.yaml 与 reme/schema/application_config.py；
 最小 dict 形态经 reme 仓库单测 tests/unit/test_knowledge_base.py 实证。
 """
@@ -72,6 +72,9 @@ _KB_JOBS: dict[str, Any] = {
     # knowledge/<bucket> 发布桶绝对路径追加进本 job 的 watch_dirs。
     "index_update_loop": {
         "backend": "background",
+        # knowledge=共享 KB 整根（递归含节点桶）。个人记忆目录 daily/digest 在
+        # build_reme_config 末尾按 workspace 绝对路径追加（避免仅靠 token 时
+        # 目录尚未创建导致 watch 行为漂移）。
         "watch_dirs": ["knowledge"],
         "watch_suffixes": ["md"],
         "steps": [
@@ -118,6 +121,21 @@ _KB_JOBS: dict[str, Any] = {
         "backend": "base",
         "steps": [{"backend": "aitester_kb_nodes_step", "op": "delete"}],
     },
+    # 个人记忆：workspace 日笔记 / digest 混合检索与回合后抽取
+    "search": {
+        "backend": "base",
+        "steps": [{
+            "backend": "search_step",
+            "vector_weight": 0.7,
+            "candidate_multiplier": 3.0,
+            "expand_links": True,
+            "max_links_per_direction": 10,
+        }],
+    },
+    "auto_memory": {
+        "backend": "base",
+        "steps": [{"backend": "auto_memory_step"}],
+    },
 }
 
 
@@ -126,6 +144,11 @@ def build_reme_config(cfg: KbConfig) -> dict[str, Any]:
         "tokenizer": {"default": {"backend": "regex"}},
         "keyword_index": {"default": {"backend": "bm25", "tokenizer": "default"}},
         "file_graph": {"default": {"backend": "local"}},
+        "file_catalog": {
+            "default": {"backend": "local"},
+            "digest": {"backend": "local"},
+            "dream": {"backend": "local"},
+        },
         # update_index_step 按扩展名解析 file_chunker；缺省即整条索引失败（键名/默认值对齐 default.yaml）。
         "file_chunker": {
             "markdown": {
@@ -136,6 +159,10 @@ def build_reme_config(cfg: KbConfig) -> dict[str, Any]:
                 "include_frontmatter_in_metadata": False,
                 "include_frontmatter_keys_in_metadata": [],
             },
+            "default": {
+                "backend": "default",
+                "supported_extensions": ["jsonl"],
+            },
         },
         "file_store": {
             "default": {
@@ -143,6 +170,33 @@ def build_reme_config(cfg: KbConfig) -> dict[str, Any]:
                 "embedding_store": "",
                 "keyword_index": "default",
                 "file_graph": "default",
+            },
+        },
+        # 运行时注入 AiTester LlmProvider；backend=langchain 走 Reme 0.4.1.13 适配层
+        "as_llm": {
+            "default": {
+                "backend": "langchain",
+                "model": "aitester-injected",
+                "stream": True,
+                "context_size": 200000,
+                "max_retries": 3,
+                "credential": {"api_key": "", "base_url": ""},
+                "parameters": {"max_tokens": 8192},
+            },
+        },
+        "agent_wrapper": {
+            "default": {
+                "backend": "agentscope",
+                "as_llm": "default",
+                "builtin_tools": False,
+                "permission_mode": "bypass",
+                "react_config": {"max_iters": 30},
+                "context_config": {
+                    "trigger_ratio": 0.8,
+                    "reserve_ratio": 0.1,
+                    "tool_result_limit": 50000,
+                },
+                "model_config": {"max_retries": 1},
             },
         },
     }
@@ -166,12 +220,21 @@ def build_reme_config(cfg: KbConfig) -> dict[str, Any]:
 
     jobs = copy.deepcopy(_KB_JOBS)
     # P-4：三层节点桶不在 reme 的 PUBLISHED_BUCKETS 里，启动期 augment_jobs_for_knowledge
-    # 不会替我们追加；必须在这里显式把 junction 侧绝对路径摆进 index_update_loop 的 watch_dirs。
-    watch_dirs = jobs["index_update_loop"]["watch_dirs"]
-    for bucket in NODE_BUCKETS:
-        path = str(Path(cfg.workspace_dir) / "knowledge" / bucket)
-        if path not in watch_dirs:
-            watch_dirs.append(path)
+    # 不会替我们追加；必须显式把 junction 侧绝对路径摆进 index/watch 相关 job。
+    # reindex 与 index_update_loop 都要挂：reindex 的 init_changes 只读本 job 的 watch_dirs。
+    ws = Path(cfg.workspace_dir)
+    extra_paths = [
+        str(ws / "knowledge" / bucket) for bucket in NODE_BUCKETS
+    ] + [str(ws / "daily"), str(ws / "digest")]
+    for job_name in ("index_update_loop", "reindex"):
+        job = jobs.get(job_name)
+        if not isinstance(job, dict):
+            continue
+        watch_dirs = list(job.get("watch_dirs") or [])
+        for path in extra_paths:
+            if path not in watch_dirs:
+                watch_dirs.append(path)
+        job["watch_dirs"] = watch_dirs
 
     return {
         "enable_logo": False,

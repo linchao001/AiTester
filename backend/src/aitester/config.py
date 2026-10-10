@@ -7,9 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 @lru_cache(maxsize=1)
 def _kb_embedding_constants() -> tuple[str, str]:
-    # 延迟 import：aitester.services 包初始化会反向依赖 aitester.config，
-    # 顶层直接 from aitester.services.kb.config import ... 会形成循环导入。
-    from aitester.services.kb.config import (
+    # 延迟 import：避免 aitester.config ↔ memory.reme 顶层成环。
+    from aitester.memory.reme.config import (
         DEFAULT_EMBEDDING_BASE_URL,
         DEFAULT_EMBEDDING_MODEL,
     )
@@ -42,6 +41,12 @@ class Settings(BaseSettings):
     )
     kb_embedding_model: str = Field(default_factory=lambda: _kb_embedding_constants()[1])
     kb_embedding_dimensions: int = 1024
+
+    # 个人记忆（Reme search / auto_memory）；会话 SessionStore 仍独立
+    personal_memory_enabled: bool = True
+    auto_memory_search_enabled: bool = True
+    auto_memory_enabled: bool = True
+    auto_memory_search_limit: int = 5
 
 
 @lru_cache

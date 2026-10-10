@@ -88,15 +88,15 @@ def test_chat_echo_rejects_empty_message() -> None:
 
 
 def test_send_uses_injected_provider_and_deltas_match_reply(tmp_path: Path) -> None:
-    # kb_manager 显式给无开关替身（同 test_chat_stream_api._app 口径）：不传则 create_app
-    # 现装真 RemeKbManager（kb_enabled 缺省 True）→ case_design 翻进 loop 而非直通，
+    # memory_manager 显式给无开关替身（同 test_chat_stream_api._app 口径）：不传则 create_app
+    # 现装真 RemeMemoryManager（kb_enabled 缺省 True）→ case_design 翻进 loop 而非直通，
     # 本用例锁的「注入 provider 的纯回合」文案会变（T9 接线实测）
     application = create_app(
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
         settings=Settings(_env_file=None),
-        kb_manager=_NoopKbManager(),
+        memory_manager=_NoopKbManager(),
     )
     assert isinstance(application.state.agent_runtime, AgentRuntime)
     application.state.chat_service = ChatService(
@@ -179,7 +179,7 @@ def test_send_uses_agent_prompt_and_default_agent_id(tmp_path: Path) -> None:
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
         settings=Settings(_env_file=None),
-        kb_manager=_NoopKbManager(),   # 直通缝：同上（不传则真 manager 把本回合翻进 loop）
+        memory_manager=_NoopKbManager(),   # 直通缝：同上（不传则真 manager 把本回合翻进 loop）
     )
     application.state.chat_service = ChatService(
         provider=_SpyProvider(),

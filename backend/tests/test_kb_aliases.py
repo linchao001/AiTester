@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from aitester.config import Settings
-from aitester.services.kb.aliases import (
+from aitester.memory.reme.aliases import (
     PROJECT_KB_DEFAULT,
     UnknownKbAlias,
     is_registered,

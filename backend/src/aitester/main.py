@@ -15,7 +15,7 @@ from aitester.interaction.router import router
 from aitester.interaction.sessions import router as sessions_router
 from aitester.services import CapabilityConfigService, ChatService
 from aitester.services.agent_runtime import AgentRuntime
-from aitester.services.kb.manager import RemeKbManager
+from aitester.memory.reme import PersonalMemory, RemeMemoryManager
 from aitester.services.model_config import ModelConfigService
 from aitester.services.pending import PendingRegistry
 from aitester.services.project_config import ProjectService
@@ -31,7 +31,7 @@ def create_app(
     capability_config_path: Path | None = None,
     projects_path: Path | None = None,
     settings: Settings | None = None,
-    kb_manager=None,
+    memory_manager=None,
 ) -> FastAPI:
     s = settings or get_settings()
     model_config = ModelConfigService(
@@ -46,32 +46,32 @@ def create_app(
     project_config = ProjectService(
         FileJsonConfigRepository(projects_path or DATA_DIR / "projects.json")
     )
-    kb = (
-        kb_manager
-        if kb_manager is not None
-        else RemeKbManager(settings=s, data_dir=DATA_DIR)
+    memory = (
+        memory_manager
+        if memory_manager is not None
+        else RemeMemoryManager(settings=s, data_dir=DATA_DIR)
     )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        kb.start()
+        memory.start()
         # 词表冷取实测要 141 秒：只在后台预热，绝不在回合里现取。失败即退字符兜底，
         # 估算照样出数（context/meter.warm 自己记因），所以这里不判定、不阻断启动。
         threading.Thread(target=meter.warm, name="token-warm", daemon=True).start()
         try:
             yield
         finally:
-            kb.close_all()
+            memory.close_all()
 
     application = FastAPI(title="AiTester backend", lifespan=lifespan)
-    application.state.kb_manager = kb
+    application.state.memory_manager = memory
     application.state.settings = s
     application.state.model_config = model_config
     application.state.capability_config = capability_config
     application.state.project_config = project_config
     application.state.file_observations = FileObservationStore()
     application.state.agent_runtime = AgentRuntime(
-        capability_config, model_config, application.state.file_observations, kb=kb
+        capability_config, model_config, application.state.file_observations, kb=memory
     )
     sessions = SessionLocator(project_config)
     application.state.sessions = sessions
@@ -79,11 +79,16 @@ def create_app(
     application.state.run_registry = RunRegistry()
     # 待批注册表：与 run_registry 同层同风格，只挂 app.state（裁定 2：内存挂起，重启即丢）
     application.state.pending_registry = PendingRegistry()
+    personal = PersonalMemory(
+        memory, s, model_config, capability=capability_config,
+    )
+    application.state.personal_memory = personal
     application.state.chat_service = ChatService(
         agent_runtime=application.state.agent_runtime,
         sessions=sessions,
         projects=project_config,
         pending=application.state.pending_registry,
+        personal=personal,
     )
     application.include_router(router)
     application.include_router(pick_dir_router)

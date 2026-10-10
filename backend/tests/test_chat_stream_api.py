@@ -47,7 +47,7 @@ def _app(tmp_path: Path, provider=None):
         capability_config_path=tmp_path / "c.cap.json",
         projects_path=tmp_path / "p.json",
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases")),
-        kb_manager=_NoopKbManager(),
+        memory_manager=_NoopKbManager(),
     )
     # brief 原码只在 provider 非 None 时替换 ChatService；create_app 默认那份走模型配置
     # 解析，fresh 配置没有默认模型 → prepare 直接 400。缺省注入 MockProvider 才有流可断

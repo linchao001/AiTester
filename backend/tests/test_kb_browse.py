@@ -51,7 +51,7 @@ def _client(tmp_path, kb_root, **skw):
         model_config_path=tmp_path / "m.json",
         capability_config_path=tmp_path / "c.json",
         settings=Settings(_env_file=None, **s_kw),
-        kb_manager=_RecordingKbManager(),
+        memory_manager=_RecordingKbManager(),
     )
     return TestClient(app)
 

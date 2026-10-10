@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from aitester.services.kb.paths import resolve_kb_bases_dir
+from aitester.memory.reme.paths import resolve_kb_bases_dir
 
 PROJECT_KB_DEFAULT = "kb"
 

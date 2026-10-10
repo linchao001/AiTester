@@ -12,10 +12,10 @@ dependencies = [
   "openai>=2",
   "httpx>=0.27",
   # 精确锁版：设计绑定 wheel 内 step/job 名，防 [tool.uv.sources] 丢失后 PyPI 漂移
-  "reme-ai==0.4.1.8",
-  # reme 包顶层 import 链（reme.steps.base_step）硬依赖 agentscope 核心；
-  # 只装基础包以规避 reme-ai[core] 的重依赖（faiss/neo4j/polars 等本期不需要）。
-  "agentscope==2.0.6",
+  "reme-ai==0.4.1.13",
+  # reme 0.4.1.13 起 agentscope 在 extra "as"；进程内嵌仍硬装裸包，版本对齐 whl 声明。
+  # 不装 reme-ai[core]（faiss/neo4j/polars 等本期不需要）。
+  "agentscope==2.0.9",
   # 节点 markdown 的 frontmatter 读写（services/kb/steps.py）；不依赖 reme 链的传递可得性
   "PyYAML>=6",
 ]
@@ -34,4 +34,4 @@ build-backend = "hatchling.build"
 packages = ["src/aitester"]
 
 [tool.uv.sources]
-reme-ai = { path = "../lib/reme_ai-0.4.1.8-py3-none-any.whl" }
+reme-ai = { path = "../lib/reme_ai-0.4.1.13-py3-none-any.whl" }

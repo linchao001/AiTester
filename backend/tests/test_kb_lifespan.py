@@ -27,16 +27,16 @@ def _settings(tmp_path):
     )
 
 
-def test_kb_manager_starts_and_closes_with_app(tmp_path):
+def test_memory_manager_starts_and_closes_with_app(tmp_path):
     fake = _FakeKbManager()
     app = create_app(
         model_config_path=tmp_path / "models.json",
         capability_config_path=tmp_path / "caps.json",
         settings=_settings(tmp_path),
-        kb_manager=fake,
+        memory_manager=fake,
     )
     with TestClient(app):
-        assert app.state.kb_manager is fake
+        assert app.state.memory_manager is fake
         assert fake.started
     assert fake.closed
 

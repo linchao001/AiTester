@@ -130,6 +130,7 @@ class ChatService:
         sessions: SessionLocator | None = None,
         projects: ProjectService | None = None,
         pending: PendingRegistry | None = None,
+        personal: Any | None = None,
     ) -> None:
         self.provider = provider
         self.agent_runtime = agent_runtime
@@ -140,6 +141,8 @@ class ChatService:
         self.projects = projects
         # 待批表：装配位注入（与 run_registry 同处 app.state），单测直调时自持一份
         self.pending = pending if pending is not None else PendingRegistry()
+        # Reme 个人记忆（可选）；None=不挂钩子（存量单测 / 未启用）
+        self.personal = personal
 
     def _complete(
         self,
@@ -239,8 +242,8 @@ class ChatService:
         use_file = store is not None and is_session_id(sid) and not platform
         memory: MemoryStore
         if use_file:
-            # 延迟导入：file_memory 经 services 回指本包，顶层导入会在循环链上炸开（memory/__init__ 顺序约束同源）
-            from aitester.memory import FileMemoryStore
+            # 延迟导入：避免顶层 memory.session.file_memory → services → chat 成环
+            from aitester.memory.session.file_memory import FileMemoryStore
 
             memory = FileMemoryStore(store, pid)
         else:
@@ -254,6 +257,17 @@ class ChatService:
         messages = _to_langchain_messages(
             self.context.build(instance.system_prompt, history, message)
         )
+        if self.personal is not None and not platform and pid:
+            hit = self.personal.auto_search_for_turn(
+                project_id=pid, agent_id=instance.agent_id, query=message,
+            )
+            if hit:
+                # 插在 system 之后：只影响当回合 LLM 上下文，不落 SessionStore
+                insert_at = 1 if messages and isinstance(messages[0], SystemMessage) else 0
+                messages.insert(
+                    insert_at,
+                    SystemMessage(content=f"[aitester_personal_memory]\n{hit}"),
+                )
         return PreparedRun(
             key=key,
             session_id=sid,
@@ -290,6 +304,16 @@ class ChatService:
                              steps=steps, stopped=stopped, context=snapshot)
         self.repo.put(f"session:{prepared.key}",
                       {"session_id": prepared.key, "last_reply": reply})
+        if self.personal is not None and prepared.project_id and prepared.agent_id:
+            self.personal.schedule_auto_memory(
+                project_id=prepared.project_id,
+                agent_id=prepared.agent_id,
+                session_id=prepared.session_id,
+                messages=[
+                    {"role": "user", "content": prepared.message},
+                    {"role": "assistant", "content": reply},
+                ],
+            )
         return snapshot
 
     def stream_turn(

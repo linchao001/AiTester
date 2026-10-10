@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from aitester.config import Settings
-from aitester.services.kb.paths import (
+from aitester.memory.reme.paths import (
     hidden_segment,
     is_hidden,
     mtime_ms,

@@ -1,4 +1,4 @@
-from aitester.services.kb.config import KbConfig, build_reme_config
+from aitester.memory.reme.config import KbConfig, build_reme_config
 
 
 def test_bm25_only_without_api_key():
@@ -14,13 +14,25 @@ def test_bm25_only_without_api_key():
         "status", "list_knowledge_bases", "knowledge_search",
         "save_to_knowledge", "reindex", "list_knowledge_inbox",
         "promote_knowledge_inbox", "merge_knowledge_inbox", "reject_knowledge_inbox",
-        "index_update_loop",
+        "index_update_loop", "search", "auto_memory",
     }
     # spec 裁定4：后台索引环（index_update_loop），读侧各实例秒级收敛
     loop = cfg["jobs"]["index_update_loop"]
     assert loop["backend"] == "background"
     step_backends = [s["backend"] for s in loop["steps"]]
     assert step_backends == ["init_changes_step", "watch_changes_step"]
+    joined = " ".join(str(p).replace("\\", "/") for p in loop["watch_dirs"])
+    assert "/daily" in joined and "/digest" in joined
+
+
+def test_build_reme_config_includes_personal_memory_jobs():
+    cfg = build_reme_config(KbConfig(workspace_dir="/tmp/ws"))
+    assert cfg["jobs"]["search"]["steps"][0]["backend"] == "search_step"
+    assert cfg["jobs"]["auto_memory"]["steps"][0]["backend"] == "auto_memory_step"
+    assert cfg["components"]["as_llm"]["default"]["backend"] == "langchain"
+    assert cfg["components"]["agent_wrapper"]["default"]["backend"] == "agentscope"
+    assert "file_catalog" in cfg["components"]
+
 
 
 def test_embedding_injected_when_key_present():

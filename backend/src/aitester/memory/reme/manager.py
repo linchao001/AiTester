@@ -1,7 +1,8 @@
 """ReMe 进程内嵌管理器：专属事件循环线程 + (project, agent) 实例池。
 
-裁定依据 spec 2026-10-01-knowledge-base-reme-design.md：
-禁 HTTP 服务、每实例独占 workspace、KB 全局共享、embedding 按 Key。
+记忆层生命周期中枢（个人记忆 + 知识库）。裁定依据：
+spec 2026-10-01-knowledge-base-reme-design.md、
+spec 2026-10-10-memory-layer-reme-design.md。
 """
 
 from __future__ import annotations
@@ -13,22 +14,22 @@ from pathlib import Path
 from typing import Any
 
 from aitester.case_design.constants import NODE_BUCKETS
-from aitester.services.kb.config import KbConfig, build_reme_config
-from aitester.services.kb.paths import resolve_kb_root
+from aitester.memory.reme.config import KbConfig, build_reme_config
+from aitester.memory.reme.paths import resolve_kb_root
 
 DEFAULT_PROJECT = "default"
 DEFAULT_CONSOLE_AGENT = "console"
 
 
 class KbUnavailableError(RuntimeError):
-    """知识库未启用或 ReMe 实例不可用。"""
+    """知识库 / Reme 记忆实例未启用或不可用。"""
 
 
 def _ensure_node_buckets(cfg: KbConfig) -> None:
     """三层节点桶物理落地：workspace/knowledge 是整根 junction，实体侧建目录即挂载侧可见。
 
     调用点保持在 Application 构造前，但这是 reme watch 形态的**漂移保险**、不是既成保证：
-    实测（task-5-report 负向探针）reme 0.4.1.8 的 watch 是 knowledge 整根递归轮询，
+    实测（task-5-report 负向探针）reme 的 watch 是 knowledge 整根递归轮询，
     后建的桶下一轮也必然被捕获——勿从「必须先建桶」推出任何运行期保证（评审 Minor 6）。
     KB 根缺失且允许自建时先走 ensure_kb（补 KB.md 骨架——mount 只在根不存在时建骨架，
     根已存在则直接挂载）。根缺失且不允许自建时无声返回，后续 mount 照旧响亮失败。
@@ -44,7 +45,7 @@ def _ensure_node_buckets(cfg: KbConfig) -> None:
         (root / bucket).mkdir(parents=True, exist_ok=True)
 
 
-class RemeKbManager:
+class RemeMemoryManager:
     def __init__(self, settings: Any, data_dir: Path) -> None:
         self._settings = settings
         self._data_dir = Path(data_dir)
@@ -76,7 +77,7 @@ class RemeKbManager:
             return
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
-            target=self._run_loop, name="reme-kb-loop", daemon=True
+            target=self._run_loop, name="reme-memory-loop", daemon=True
         )
         self._thread.start()
         self._started = True
@@ -120,6 +121,14 @@ class RemeKbManager:
             _ensure_node_buckets(cfg)
             app = Application(**build_reme_config(cfg))
             await app.start()
+            # 背景 index_update_loop 需先完成首轮 init_changes 定基线；
+            # 否则紧随其后的写 job（如 case_node_upsert）会与 watch 竞态，
+            # 增量索引长期看不到新文件（reme 0.4.1.13 + CF2 实测）。
+            try:
+                await app.run_job("status")
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
         except BaseException as exc:
             # 启动失败必须摘除在途任务，否则该 key 被永久污染无法重试
             if self._start_tasks.get(key) is asyncio.current_task():
@@ -152,6 +161,21 @@ class RemeKbManager:
     async def _run(self, project_id: str, agent_id: str, name: str, kwargs: dict):
         app = await self._get_app(project_id, agent_id)
         return await app.run_job(name, **kwargs)
+
+    async def _inject_llm(self, project_id: str, agent_id: str, model: Any) -> None:
+        """把 AiTester 聊天对象注入 as_llm（Reme LangChainChatModel 适配）。"""
+        app = await self._get_app(project_id, agent_id)
+        await app.update_component("as_llm", "default", model=model)
+
+    def inject_llm(
+        self,
+        model: Any,
+        *,
+        project_id: str = DEFAULT_PROJECT,
+        agent_id: str = DEFAULT_CONSOLE_AGENT,
+        timeout: float = 60.0,
+    ) -> None:
+        self._submit(self._inject_llm(project_id, agent_id, model)).result(timeout)
 
     def run_job_sync(
         self,

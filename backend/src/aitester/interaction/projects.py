@@ -15,7 +15,7 @@ from aitester.interaction.schemas import (
     ProjectsResponse,
     ProjectUpdateRequest,
 )
-from aitester.services.kb.aliases import PROJECT_KB_DEFAULT
+from aitester.memory.reme.aliases import PROJECT_KB_DEFAULT
 from aitester.services.model_config import ConfigNotFoundError
 from aitester.services.project_config import (
     ProjectConfigError,

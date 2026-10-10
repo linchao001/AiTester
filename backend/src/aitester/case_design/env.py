@@ -14,7 +14,7 @@ from aitester.case_design.constants import (
 @dataclass(frozen=True)
 class CaseDesignEnv:
     project_dir: str
-    kb: Any                       # RemeKbManager（或其同签名替身）；未启用时为 None 的调用方不给 env
+    kb: Any                       # RemeMemoryManager（或其同签名替身）；未启用时为 None 的调用方不给 env
 
     @property
     def design(self) -> Path:

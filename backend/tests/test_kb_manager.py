@@ -9,7 +9,7 @@ import pytest
 import reme
 
 from aitester.config import Settings
-from aitester.services.kb.manager import KbUnavailableError, RemeKbManager
+from aitester.memory.reme.manager import KbUnavailableError, RemeMemoryManager
 
 
 def _settings(tmp_path, **kw):
@@ -38,7 +38,7 @@ def _seed_kb(tmp_path):
 
 
 def test_disabled_manager_raises(tmp_path):
-    mgr = RemeKbManager(settings=_settings(tmp_path, kb_enabled=False), data_dir=tmp_path)
+    mgr = RemeMemoryManager(settings=_settings(tmp_path, kb_enabled=False), data_dir=tmp_path)
     mgr.start()
     assert mgr.is_started is False
     with pytest.raises(KbUnavailableError):
@@ -47,7 +47,7 @@ def test_disabled_manager_raises(tmp_path):
 
 def test_save_reindex_search_roundtrip(tmp_path):
     kb_root = _seed_kb(tmp_path)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         saved = mgr.run_job_sync(
@@ -80,7 +80,7 @@ def test_save_reindex_search_roundtrip(tmp_path):
 
 def test_two_agents_get_two_workspaces(tmp_path):
     _seed_kb(tmp_path)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         mgr.run_job_sync("status", project_id="p1", agent_id="a1")
@@ -100,7 +100,7 @@ def test_cross_instance_convergence_without_explicit_reindex(tmp_path):
     2) B 运行期间 A 再写入新节点，B 经 watch_changes 增量收敛。
     """
     _seed_kb(tmp_path)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         saved = mgr.run_job_sync(
@@ -161,7 +161,7 @@ def test_cross_instance_convergence_without_explicit_reindex(tmp_path):
 def test_run_job_async_bridge(tmp_path):
     """Task 5 异步端点消费的 run_job 桥：asyncio.run 驱动真 manager + 真 KB。"""
     _seed_kb(tmp_path)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         async def main():
@@ -192,7 +192,7 @@ def test_failed_construction_is_popped_and_retries(tmp_path, monkeypatch):
 
     monkeypatch.setattr(reme, "Application", FlakyApplication)
 
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         # 终审裁定：启动失败以 KbUnavailableError 收敛（供路由层映射 503），
@@ -230,7 +230,7 @@ def test_concurrent_same_key_starts_exactly_one_application(tmp_path, monkeypatc
 
     monkeypatch.setattr(reme, "Application", SlowApplication)
 
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         with ThreadPoolExecutor(max_workers=4) as pool:
@@ -252,7 +252,7 @@ def test_concurrent_same_key_starts_exactly_one_application(tmp_path, monkeypatc
 
 def test_kb_root_dir_and_workspace_dir(tmp_path, monkeypatch):
     monkeypatch.delenv("REME_KNOWLEDGE_BASES_DIR", raising=False)
-    m = RemeKbManager(
+    m = RemeMemoryManager(
         settings=Settings(_env_file=None, kb_bases_dir=str(tmp_path / "bases"), kb_id="zhb_kb"),
         data_dir=tmp_path,
     )

@@ -16,9 +16,9 @@ from typing import Any
 import pytest
 
 from aitester.case_design.schema import DraftNode
-from aitester.services.kb.config import KbConfig, build_reme_config
-from aitester.services.kb.manager import RemeKbManager, _ensure_node_buckets
-from aitester.services.kb.steps import (
+from aitester.memory.reme.config import KbConfig, build_reme_config
+from aitester.memory.reme.manager import RemeMemoryManager, _ensure_node_buckets
+from aitester.memory.reme.steps import (
     _NODE_FIELDS,
     _atomic_write,
     parse_node_markdown,
@@ -151,7 +151,7 @@ def test_plugin_entry_point_installed():
 
 def test_node_roundtrip_via_manager(tmp_path):
     kb_root = _seed_kb(tmp_path)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         up = mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE)
@@ -187,7 +187,7 @@ def test_field_fidelity_all_layers_via_job_channel(tmp_path):
     多父故事 chains=["ch-0001","ch-0002"]（「重复比遗漏好」语义）也走 job 通道验证。
     """
     _seed_kb(tmp_path)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         for layer, node in (("chain", CHAIN_NODE), ("story", STORY_NODE), ("point", POINT_NODE)):
@@ -220,7 +220,7 @@ def test_empty_carried_fields_survive_job_channel(tmp_path):
     """共用字段缺省（priority 未给 → DraftNode 默认 P1）与层内空列表（assumptions=[]）
     走 job 通道后必须「键在、值原样」回来——宇宙读回不许出现缺键。"""
     _seed_kb(tmp_path)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         st2 = _payload("story", id="st-0002", name="操作实体乙", chains=["ch-0001"],
@@ -242,7 +242,7 @@ def test_step_rejects_id_with_trailing_newline(tmp_path):
     """Minor 3：`.match`+`^…$` 会放走 "ch-0001\\n" → 文件名 ch-0001\\n.md（POSIX 垃圾）。
     step 是 FS 边界，_validate_id 必须 fullmatch 响亮拒绝，且失败路径零落盘。"""
     _seed_kb(tmp_path)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         bad = mgr.run_job_sync("case_node_upsert", layer="chain",
@@ -262,7 +262,7 @@ def test_list_yields_marker_row_for_corrupt_file(tmp_path):
     """Minor 4：坏文件 marker 分支原零用例——桶里一个坏节点文件不许炸 list，
     必须以 {"id":"", "file", "error"} 标记行进列表（P-3 判「未维护」依赖此形状）。"""
     _seed_kb(tmp_path)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         assert mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE).success
@@ -292,7 +292,7 @@ def test_atomic_write_removes_tmp_on_replace_failure(tmp_path):
 
 def test_step_rejects_bad_input(tmp_path):
     _seed_kb(tmp_path)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         bad_layer = mgr.run_job_sync("case_nodes_list", layer="bogus")
@@ -311,7 +311,7 @@ def test_step_rejects_bad_input(tmp_path):
 def test_node_bucket_joins_index(tmp_path):
     """P-4 正式断言：新桶经 reindex 后对 knowledge_search 可见（T1 探针结论落成常驻测试）。"""
     _seed_kb(tmp_path)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         up = mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE)
@@ -366,7 +366,7 @@ def test_cf1_buckets_exist_and_are_in_watch_dirs_before_application_ctor(tmp_pat
             super().__init__(**kwargs)
 
     monkeypatch.setattr(reme, "Application", SpyApplication)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         assert mgr.run_job_sync("status").success
@@ -383,13 +383,15 @@ def test_cf2_watch_loop_indexes_new_node_without_reindex(tmp_path):
     """CF-1a/CF-1b 接线后的行为面实测：无任何 reindex，运行期 upsert 的节点
     经增量 watch 秒级收敛进索引（P-4 收敛语义常驻证据）。
 
-    实测备注（见 task-5-report）：reme 0.4.1.8 的 watch 是 knowledge 根递归轮询，
+    实测备注（见 task-5-report）：reme 的 watch 是 knowledge 根递归轮询，
     晚建的桶也会被根规则兜住——因此本测试验「链路通」，结构性前提（显式 watch_dirs
     + 桶先于 Application 构造存在）由 CF1 测试单独钉住，防 watch 配置漂移。"""
     _seed_kb(tmp_path)
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
+        # 先 status：拉起实例并让 index_update_loop 定基线，再 upsert，避免写与 watch 竞态
+        assert mgr.run_job_sync("status").success
         up = mgr.run_job_sync("case_node_upsert", layer="story", node=STORY_NODE)
         assert up.success, up.answer
         blob = ""
@@ -409,13 +411,13 @@ def test_upsert_creates_missing_bucket_without_ensure_step(tmp_path, monkeypatch
     """评审 C Minor-2：`_ensure_node_buckets` 自称「漂移保险、非既成保证」，真正兜住
     「桶缺失仍能写」的是 upsert 里 step 自己的 `bucket_dir.mkdir`。把前者置成 no-op，
     断言仍建桶、落文件、list 读回——删掉 steps.py 那行 mkdir 本用例必须变红。"""
-    import aitester.services.kb.manager as kb_manager
+    import aitester.memory.reme.manager as reme_manager
 
     kb_root = _seed_kb(tmp_path)
     chains_dir = kb_root / "business" / "chains"
-    monkeypatch.setattr(kb_manager, "_ensure_node_buckets", lambda cfg: None)
+    monkeypatch.setattr(reme_manager, "_ensure_node_buckets", lambda cfg: None)
     assert not chains_dir.exists()
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         up = mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE)
@@ -435,7 +437,7 @@ def test_upsert_with_identical_content_touches_nothing(tmp_path):
     """同内容重复 upsert：不重写文件、不刷 updated_at——「未涉及节点逐字节不变」靠这一条成立。"""
     kb_root = _seed_kb(tmp_path)
     path = kb_root / "business" / "chains" / "ch-0001.md"
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         first = mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE)
@@ -459,7 +461,7 @@ def test_upsert_with_changed_content_rewrites_and_refreshes_timestamp(tmp_path):
     """内容变了就必须重写并刷时间戳：幂等只免「没改还写」，不免「改了不写」。"""
     kb_root = _seed_kb(tmp_path)
     path = kb_root / "business" / "chains" / "ch-0001.md"
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         assert mgr.run_job_sync("case_node_upsert", layer="chain", node=CHAIN_NODE).success
@@ -482,7 +484,7 @@ def test_body_containing_updated_at_literal_is_not_false_equal(tmp_path):
     """假等值防线：节点名里塞 `updated_at: 2020-01-01T00:00:00` 时，剥时间戳只能作用在 frontmatter。"""
     kb_root = _seed_kb(tmp_path)
     chains_dir = kb_root / "business" / "chains"
-    mgr = RemeKbManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
+    mgr = RemeMemoryManager(settings=_settings(tmp_path), data_dir=tmp_path / "data")
     mgr.start()
     try:
         nasty = {**CHAIN_NODE, "name": "链A updated_at: 2020-01-01T00:00:00"}

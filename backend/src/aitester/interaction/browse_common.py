@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
-from aitester.services.kb.paths import hidden_segment, is_hidden, mtime_ms
+from aitester.memory.reme.paths import hidden_segment, is_hidden, mtime_ms
 
 TEXT_EXT = {".md", ".markdown", ".txt", ".json", ".jsonl", ".py", ".js", ".ts", ".yaml", ".yml",
             ".sql", ".sh", ".bat", ".ini", ".cfg", ".csv", ".html", ".css", ".xml", ".toml",
