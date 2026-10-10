@@ -223,6 +223,36 @@ export function kbSave(title: string, content: string, bucket: string): Promise<
   });
 }
 
+/** 索引同步 / 全量重建：只动派生检索索引，不动知识库正文。 */
+export interface KbIndexCounts {
+  added: number;
+  modified: number;
+  deleted: number;
+}
+export interface KbIndexResult {
+  project_id: string;
+  counts: KbIndexCounts;
+  elapsed_ms: number;
+  success: boolean;
+  cleared?: boolean;
+  error?: string | null;
+}
+export interface KbIndexResponse {
+  success: boolean;
+  results: KbIndexResult[];
+  total_elapsed_ms: number;
+}
+
+export function kbIndexSync(projectId: string): Promise<KbIndexResponse> {
+  const q = new URLSearchParams({ project_id: projectId });
+  return apiFetch<KbIndexResponse>(`/api/kb/index/sync?${q}`, { method: "POST" });
+}
+
+export function kbIndexRebuild(projectId: string): Promise<KbIndexResponse> {
+  const q = new URLSearchParams({ project_id: projectId });
+  return apiFetch<KbIndexResponse>(`/api/kb/index/rebuild?${q}`, { method: "POST" });
+}
+
 export interface KbBrowseItem { name: string; rel: string; dir: boolean; size: number; mtime: number }
 export interface KbTreeResponse { root: string; rel: string; items: KbBrowseItem[] }
 export interface KbFileResponse { rel: string; name: string; ext: string; content: string; size: number; mtime: number; editable: boolean }

@@ -66,6 +66,22 @@ _KB_JOBS: dict[str, Any] = {
             },
         ],
     },
+    # 一次性增量重扫（非 clear）：形态即 index_update_loop 首步抽出。
+    # 名字必须是 index_sync——reme 只给白名单 job 追加发布桶绝对路径，
+    # 别名会导致 init_changes 只扫空 knowledge 目录并谎报 up to date。
+    "index_sync": {
+        "backend": "base",
+        "watch_dirs": ["knowledge"],
+        "watch_suffixes": ["md"],
+        "steps": [
+            {
+                "backend": "init_changes_step",
+                "monitor_type": "file_store",
+                "monitor_name": "default",
+                "dispatch_steps": ["update_index_step"],
+            },
+        ],
+    },
     # reme 内建后台索引环（spec 裁定4：读侧各实例经 watch 循环秒级收敛）。
     # 形态抄实装 reme/config/default.yaml 的 index_update_loop；
     # prepare_knowledge_startup/augment_jobs_for_knowledge 会在启动期把
@@ -221,12 +237,12 @@ def build_reme_config(cfg: KbConfig) -> dict[str, Any]:
     jobs = copy.deepcopy(_KB_JOBS)
     # P-4：三层节点桶不在 reme 的 PUBLISHED_BUCKETS 里，启动期 augment_jobs_for_knowledge
     # 不会替我们追加；必须显式把 junction 侧绝对路径摆进 index/watch 相关 job。
-    # reindex 与 index_update_loop 都要挂：reindex 的 init_changes 只读本 job 的 watch_dirs。
+    # index_sync / reindex / index_update_loop 都要挂：init_changes 只读本 job 的 watch_dirs。
     ws = Path(cfg.workspace_dir)
     extra_paths = [
         str(ws / "knowledge" / bucket) for bucket in NODE_BUCKETS
     ] + [str(ws / "daily"), str(ws / "digest")]
-    for job_name in ("index_update_loop", "reindex"):
+    for job_name in ("index_update_loop", "reindex", "index_sync"):
         job = jobs.get(job_name)
         if not isinstance(job, dict):
             continue

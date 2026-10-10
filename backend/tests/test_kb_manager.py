@@ -120,6 +120,44 @@ def test_two_agents_share_one_workspace(tmp_path):
         mgr.close_all()
 
 
+def test_run_index_busy_rejects_second_call(tmp_path):
+    """同 workspace 索引单飞：在途再入 → IndexBusyError。"""
+    from aitester.memory.reme.manager import IndexBusyError
+
+    _seed_kb(tmp_path)
+    mgr = _mgr(tmp_path)
+    mgr.start()
+    try:
+        gate = asyncio.Event()
+        released = asyncio.Event()
+
+        async def _slow_run(project_id, agent_id, name, kwargs):
+            del project_id, agent_id, name, kwargs
+            gate.set()
+            await released.wait()
+            return SimpleNamespace(
+                success=True,
+                metadata={"counts": {"added": 0, "modified": 0, "deleted": 0}},
+            )
+
+        mgr._run = _slow_run  # type: ignore[method-assign]
+
+        async def _on_loop():
+            # 必须在 Reme 专属循环内并发，busy set 才与 _run_index 同线程
+            t1 = asyncio.create_task(mgr._run_index("p1", "index_sync"))
+            await gate.wait()
+            with pytest.raises(IndexBusyError, match="进行中"):
+                await mgr._run_index("p1", "reindex")
+            released.set()
+            row = await t1
+            assert row["success"] is True
+            assert row["counts"]["added"] == 0
+
+        mgr._submit(_on_loop()).result(timeout=10)
+    finally:
+        mgr.close_all()
+
+
 def test_two_projects_same_dir_share_instance(tmp_path):
     """同绑定目录的两个 project_id 合并为同一池键。"""
     _seed_kb(tmp_path)

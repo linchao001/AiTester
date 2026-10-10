@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom";
 import {
   ApiError, chatSendStream, chatStop, getProjects,
-  kbPostFile, kbPutFile, kbReadFile, kbSave, kbSearchFiles, kbTree,
-  type KbBrowseItem, type KbDraft, type KbSearchHit, type KbWriteResponse, type Project,
+  kbIndexRebuild, kbIndexSync, kbPostFile, kbPutFile, kbReadFile, kbSave, kbSearchFiles, kbTree,
+  type KbBrowseItem, type KbDraft, type KbIndexResponse, type KbSearchHit, type KbWriteResponse,
+  type Project,
 } from "../api/client";
 import { applyEvent, finalize, liveText, newStreamState } from "./chat/streamState";
 import { bindDragBar } from "../components/dragBar";
@@ -110,11 +111,15 @@ export default function KbPage() {
   // —— toast（原型 :1512：2200ms 自动收起，重复触发重置计时）——
   const [toastMsg, setToastMsg] = useState("");
   const toastTimer = useRef<number>();
-  const toast = useCallback((msg: string) => {
+  const toast = useCallback((msg: string, ms = 2200) => {
     setToastMsg(msg);
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToastMsg(""), 2200);
+    toastTimer.current = window.setTimeout(() => setToastMsg(""), ms);
   }, []);
+
+  // —— 索引同步 / 全量重建（相对 browse：只催 Reme 派生索引）——
+  const [indexBusy, setIndexBusy] = useState(false);
+  const indexBusyRef = useRef(false);
 
   // —— 项目：知识库浏览根随项目走，必须先选项目 ——
   const [projects, setProjects] = useState<Project[]>([]);
@@ -586,6 +591,42 @@ export default function KbPage() {
     setDraftState(mi, di, "canceled");
   }, [setDraftState]);
 
+  const formatIndexToast = useCallback((label: string, body: KbIndexResponse) => {
+    const row = body.results[0];
+    const c = row?.counts ?? { added: 0, modified: 0, deleted: 0 };
+    const sec = ((body.total_elapsed_ms || row?.elapsed_ms || 0) / 1000).toFixed(1);
+    if (!body.success) {
+      return `${label}失败：${row?.error || "未知错误"}（${sec}s）`;
+    }
+    return `${label}：新增 ${c.added} · 修改 ${c.modified} · 删除 ${c.deleted}（${sec}s）`;
+  }, []);
+
+  const runIndex = useCallback(async (mode: "sync" | "rebuild") => {
+    if (!projectId || indexBusyRef.current) return;
+    if (mode === "rebuild") {
+      const ok = window.confirm(
+        "将清空当前项目的派生检索索引（切块 / BM25 / 图谱）并全量重建，知识库正文文件不动。"
+        + "\n重建期间请勿写入知识库。"
+        + "\n若已配置向量模型，冷缓存时可能产生 embedding 费用。"
+        + "\n\n确定继续？",
+      );
+      if (!ok) return;
+    }
+    indexBusyRef.current = true;
+    setIndexBusy(true);
+    try {
+      const body = mode === "sync"
+        ? await kbIndexSync(projectId)
+        : await kbIndexRebuild(projectId);
+      toast(formatIndexToast(mode === "sync" ? "索引已同步" : "索引已重建", body), 4200);
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : (err instanceof Error ? err.message : String(err)), 4200);
+    } finally {
+      indexBusyRef.current = false;
+      setIndexBusy(false);
+    }
+  }, [formatIndexToast, projectId, toast]);
+
   // —— 双 resizer：必须在主布局真正挂载后再绑（首帧是项目加载空态，layoutRef 为空；
   //    旧 deps=[] 会永久漏绑，表现为「怎么都拖不动」）。——
   useEffect(() => {
@@ -710,6 +751,26 @@ export default function KbPage() {
               disabled={!!treeErr}
               onChange={(e) => onQueryChange(e.target.value)}
             />
+          </div>
+          <div className="kb-index-actions">
+            <button
+              type="button"
+              className="mini-btn"
+              disabled={indexBusy || !!treeErr}
+              title="增量重扫检索索引，正文不动"
+              onClick={() => void runIndex("sync")}
+            >
+              {indexBusy ? "索引同步中…" : "同步索引"}
+            </button>
+            <button
+              type="button"
+              className="mini-btn danger"
+              disabled={indexBusy || !!treeErr}
+              title="清空派生索引后全量重建，正文不动"
+              onClick={() => void runIndex("rebuild")}
+            >
+              {indexBusy ? "索引同步中…" : "全量重建索引"}
+            </button>
           </div>
           {searchingView ? (
             <TreeBoxPlaceholder msg={searchErr !== null ? searchErr : "搜索中…"} root={root} />

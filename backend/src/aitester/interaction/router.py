@@ -22,6 +22,7 @@ from aitester.interaction.schemas import (
     KbDraft,
     KbInboxMergeRequest,
     KbInboxStemRequest,
+    KbIndexResponse,
     KbResponse,
     KbSaveRequest,
     KbSearchRequest,
@@ -47,7 +48,7 @@ from aitester.services.capability_config import (
     CapabilityConfigService,
 )
 from aitester.services.chat import PreparedRun
-from aitester.memory.reme.manager import KbUnavailableError
+from aitester.memory.reme.manager import IndexBusyError, KbUnavailableError
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
 from aitester.services.pending import CallDecidedError, PendingGoneError, ResumeNotReadyError
 from aitester.services.project_config import ProjectConfigError
@@ -486,3 +487,32 @@ async def kb_inbox_reject(request: Request, body: KbInboxStemRequest):
         return _kb_payload(await _kb(request).run_job("reject_knowledge_inbox", stem=body.stem))
     except KbUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+async def _kb_index(request: Request, job_name: str, project_id: str) -> KbIndexResponse:
+    pid = (project_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="请先选择项目")
+    try:
+        row = await _kb(request).run_index(job_name, project_id=pid)
+    except IndexBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KbUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return KbIndexResponse(
+        success=bool(row.get("success")),
+        results=[row],
+        total_elapsed_ms=int(row.get("elapsed_ms") or 0),
+    )
+
+
+@router.post("/kb/index/sync", response_model=KbIndexResponse)
+async def kb_index_sync(request: Request, project_id: str = Query("")):
+    """增量重扫当前项目 Reme 索引（不清盘）；正文 md 不动。"""
+    return await _kb_index(request, "index_sync", project_id)
+
+
+@router.post("/kb/index/rebuild", response_model=KbIndexResponse)
+async def kb_index_rebuild(request: Request, project_id: str = Query("")):
+    """全量重建当前项目 Reme 派生索引（clear + 重扫）；正文 md 不动。"""
+    return await _kb_index(request, "reindex", project_id)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Callable
@@ -19,6 +20,7 @@ from aitester.memory.reme.paths import resolve_kb_root
 from aitester.project_runtime import project_runtime_root
 
 DEFAULT_CONSOLE_AGENT = "console"
+INDEX_JOBS = frozenset({"index_sync", "reindex"})
 
 # project_id → 项目绑定目录（原始或绝对路径均可）；解析失败应抛错
 ProjectDirResolver = Callable[[str], str | Path]
@@ -26,6 +28,10 @@ ProjectDirResolver = Callable[[str], str | Path]
 
 class KbUnavailableError(RuntimeError):
     """知识库 / Reme 记忆实例未启用或不可用。"""
+
+
+class IndexBusyError(RuntimeError):
+    """同一 workspace 上已有索引同步/重建在途。"""
 
 
 def _ensure_node_buckets(cfg: KbConfig) -> None:
@@ -63,6 +69,8 @@ class RemeMemoryManager:
         # 池键 = 解析后的 workspace 绝对路径（同路径共享一实例；agent_id 不参与）
         self._apps: dict[str, Any] = {}
         self._start_tasks: dict[str, asyncio.Task] = {}
+        # 索引动作单飞：键 = pool_key；只在 Reme 专属循环内读写
+        self._index_busy: set[str] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._started = False
@@ -235,6 +243,58 @@ class RemeMemoryManager:
     ):
         future = self._submit(self._run(project_id, agent_id, name, kwargs))
         return await asyncio.wrap_future(future)
+
+    async def _run_index(self, project_id: str, job_name: str) -> dict[str, Any]:
+        """在专属循环内跑 index_sync / reindex；同 workspace 单飞，在途再入抛 IndexBusyError。"""
+        if job_name not in INDEX_JOBS:
+            raise ValueError(f"未知索引 job: {job_name}")
+        key = self.pool_key(project_id)
+        if key in self._index_busy:
+            raise IndexBusyError("索引任务进行中，请等待当前任务完成")
+        self._index_busy.add(key)
+        t0 = time.perf_counter()
+        try:
+            resp = await self._run(project_id, DEFAULT_CONSOLE_AGENT, job_name, {})
+            meta = getattr(resp, "metadata", None) or {}
+            counts = meta.get("counts") if isinstance(meta.get("counts"), dict) else {}
+            return {
+                "success": bool(getattr(resp, "success", True)),
+                "project_id": project_id,
+                "counts": {
+                    "added": int(counts.get("added", 0) or 0),
+                    "modified": int(counts.get("modified", 0) or 0),
+                    "deleted": int(counts.get("deleted", 0) or 0),
+                },
+                "cleared": bool(meta.get("cleared_store")),
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+            }
+        except (IndexBusyError, KbUnavailableError):
+            raise
+        except Exception as exc:
+            return {
+                "success": False,
+                "project_id": project_id,
+                "counts": {"added": 0, "modified": 0, "deleted": 0},
+                "cleared": False,
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                "error": str(exc),
+            }
+        finally:
+            self._index_busy.discard(key)
+
+    async def run_index(
+        self,
+        job_name: str,
+        *,
+        project_id: str,
+        timeout: float = 120.0,
+    ) -> dict[str, Any]:
+        """产品入口：对当前项目 Reme 实例做增量同步或全量重建（2A：一项目一实例）。"""
+        pid = (project_id or "").strip()
+        if not pid:
+            raise KbUnavailableError("知识库操作必须绑定项目")
+        future = self._submit(self._run_index(pid, job_name))
+        return await asyncio.wait_for(asyncio.wrap_future(future), timeout=timeout)
 
     def drop_workspace(self, workspace: str | Path, timeout: float = 30.0) -> None:
         """关闭并摘掉指定 workspace 路径上的实例（项目删除或目录失效时）。"""

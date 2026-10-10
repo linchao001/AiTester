@@ -1,17 +1,21 @@
+import asyncio
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from aitester.config import Settings
 from aitester.main import create_app
-from aitester.memory.reme.manager import KbUnavailableError
+from aitester.memory.reme.manager import IndexBusyError, KbUnavailableError
 from streaming_fakes import sse_frames
 
 
 class _RecordingKbManager:
-    def __init__(self, exc=None):
+    def __init__(self, exc=None, *, index_exc=None, index_delay=0.0):
         self.calls: list[tuple[str, dict]] = []
+        self.index_calls: list[tuple[str, str]] = []
         self.exc = exc
+        self.index_exc = index_exc
+        self.index_delay = index_delay
 
     def start(self):
         pass
@@ -24,6 +28,21 @@ class _RecordingKbManager:
             raise self.exc
         self.calls.append((name, kwargs))
         return SimpleNamespace(success=True, answer="ok", metadata={"echo": name})
+
+    async def run_index(self, job_name, *, project_id, timeout=120.0):
+        del timeout
+        if self.index_exc is not None:
+            raise self.index_exc
+        if self.index_delay:
+            await asyncio.sleep(self.index_delay)
+        self.index_calls.append((job_name, project_id))
+        return {
+            "success": True,
+            "project_id": project_id,
+            "counts": {"added": 1, "modified": 0, "deleted": 0},
+            "cleared": job_name == "reindex",
+            "elapsed_ms": 12,
+        }
 
 
 def _client(tmp_path, kb):
@@ -83,6 +102,44 @@ def test_kb_get_bases(tmp_path):
     with _client(tmp_path, kb) as client:
         assert client.get("/api/kb/bases").status_code == 200
     assert kb.calls == [("list_knowledge_bases", {})]
+
+
+def test_kb_index_sync_and_rebuild(tmp_path):
+    kb = _RecordingKbManager()
+    with _client(tmp_path, kb) as client:
+        r = client.post("/api/kb/index/sync", params={"project_id": "p1"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["success"] is True
+        assert body["results"][0]["counts"] == {"added": 1, "modified": 0, "deleted": 0}
+        assert body["results"][0]["cleared"] is False
+        r2 = client.post("/api/kb/index/rebuild", params={"project_id": "p1"})
+        assert r2.status_code == 200
+        assert r2.json()["results"][0]["cleared"] is True
+    assert kb.index_calls == [("index_sync", "p1"), ("reindex", "p1")]
+
+
+def test_kb_index_requires_project(tmp_path):
+    kb = _RecordingKbManager()
+    with _client(tmp_path, kb) as client:
+        assert client.post("/api/kb/index/sync").status_code == 400
+        assert client.post("/api/kb/index/rebuild", params={"project_id": "  "}).status_code == 400
+    assert kb.index_calls == []
+
+
+def test_kb_index_busy_maps_409(tmp_path):
+    kb = _RecordingKbManager(index_exc=IndexBusyError("索引任务进行中，请等待当前任务完成"))
+    with _client(tmp_path, kb) as client:
+        r = client.post("/api/kb/index/sync", params={"project_id": "p1"})
+    assert r.status_code == 409
+    assert "进行中" in r.json()["detail"]
+
+
+def test_kb_index_unavailable_maps_503(tmp_path):
+    kb = _RecordingKbManager(index_exc=KbUnavailableError("知识库未启用或未启动"))
+    with _client(tmp_path, kb) as client:
+        r = client.post("/api/kb/index/rebuild", params={"project_id": "p1"})
+    assert r.status_code == 503
 
 
 def test_chat_send_returns_drafts(tmp_path):

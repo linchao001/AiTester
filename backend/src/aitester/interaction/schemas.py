@@ -239,6 +239,29 @@ class KbResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class KbIndexCounts(BaseModel):
+    added: int = 0
+    modified: int = 0
+    deleted: int = 0
+
+
+class KbIndexResult(BaseModel):
+    project_id: str
+    counts: KbIndexCounts = Field(default_factory=KbIndexCounts)
+    elapsed_ms: int = 0
+    success: bool = True
+    cleared: bool = False
+    error: str | None = None
+
+
+class KbIndexResponse(BaseModel):
+    """索引同步 / 全量重建的产品响应（相对 browse 直读，只影响检索派生索引）。"""
+
+    success: bool
+    results: list[KbIndexResult]
+    total_elapsed_ms: int = 0
+
+
 class ProjectInfo(BaseModel):
     """项目条目：kb 只回别名，真实知识库 id 与实体路径不外泄。"""
 
