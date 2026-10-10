@@ -17,7 +17,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import ToolException
 
-from aitester.case_design.constants import INTENT_NAME, NUDGE_CAP
+from aitester.case_design.constants import FACE_REACT_READ, INTENT_NAME, NUDGE_CAP
 from aitester.case_design.driver import case_env_of
 from aitester.case_design.env import CaseDesignEnv
 from aitester.case_design.kb import KbClientError
@@ -26,7 +26,7 @@ from aitester.case_design.outline import compose_outline
 from aitester.case_design.reviewers import _RETRY_HINT
 from aitester.case_design.schema import ClaimsOut, parse_json_fence
 from aitester.case_design.stages import (
-    Ctx, GATE_CHAT_FALLBACK, GATE_GIVEUP_TEXT, _Halt, _claims_brief, _collect_writeback_items,
+    Ctx, GATE_CHAT_FALLBACK, _Halt, _claims_brief, _collect_writeback_items,
     _drafts_errors, _drop_out_of_window_hards, _explicit_approval, _layer_audited,
     _next_step_text, _open_of, _outline_extras, _patch_ids, _rescan_claims, _reset_gate_unclear,
     _wants_restart, _writeback_authorized, drive_turn, h_writeback,
@@ -161,20 +161,16 @@ def _env(tmp_path: Path, kb) -> CaseDesignEnv:
 
 
 def _drive(env, state, task, *, config=None, writer=None, intent="task"):
-    """驱动一次；若踩到首触意向门，把门内多跳吸收掉再返回门后的真帧。
+    """驱动一次；若踩到闲聊门，把门内多跳吸收掉再返回门后的真帧。
 
-    ask（模糊句）：写 intent 文件再进一次。chat（明确闲聊）：无工具面，再进一次收尾
-    （无模型原话时走 GATE_CHAT_FALLBACK）。明确 task 首轮已直开账，这里零操作。
+    chat（非任务）：只读 ReAct 指令后，再进一次收尾（无模型原话时走 GATE_CHAT_FALLBACK）。
+    明确 task 首轮已直开账，这里零操作。intent 参数保留兼容旧调用点，已无作用。
     """
+    del intent  # 意向门已废：热词直开账，其余一律闲聊
     config = config or {"configurable": {"thread_id": "t1"}}
     writer = writer or (lambda e: None)
     turn = drive_turn(state, config, env=env, task_tool=task, writer=writer)
-    gate = turn["case"].get("gate")
-    if gate == "ask" and turn["case"].get("route") == "agent":
-        _append(state, turn)
-        _write(env.design / INTENT_NAME, {"intent": intent})
-        turn = drive_turn(state, config, env=env, task_tool=task, writer=writer)
-    elif gate == "chat" and turn["case"].get("route") == "agent":
+    if turn["case"].get("gate") == "chat" and turn["case"].get("route") == "agent":
         _append(state, turn)
         turn = drive_turn(state, config, env=env, task_tool=task, writer=writer)
     return turn
@@ -684,7 +680,7 @@ def test_human_revision_marks_downstream_stale_and_writeback_skips(tmp_path):
     assert [layer for layer, _ in kb.upserts] == ["chain"]
     assert led.layer("story")["state"] == "stale_pending"
     # 下一条任务：旧账本的 stale 标记随新账本携带
-    _drive(env, {"messages": [HumanMessage("继续更新")], "case": {}}, ScriptTask())
+    _drive(env, {"messages": [HumanMessage("继续更新测试设计")], "case": {}}, ScriptTask())
     fresh = Ledger.load(env.design)
     assert fresh.data["carried_stale"] == ["story", "point"]
     assert fresh.data["task"] == {}                              # 新账本，等待 h_plan 填充
@@ -2016,7 +2012,7 @@ def test_needs_input_halt_refuses_and_costs_nothing(tmp_path):
                         "story": [], "point": []})
     env = _env(tmp_path, kb)
     task = ScriptTask()
-    state = {"messages": [HumanMessage("只更新 ch-9999")], "case": {}}
+    state = {"messages": [HumanMessage("更新测试设计，只针对 ch-9999")], "case": {}}
     _append(state, _drive(env, state, task))
     simulate(env, plan={"task_kind": "design", "entry_layer": "story", "terminal_layer": "point",
                         "target_subtree": "ch-9999", "source_files": [], "note": "窄任务"})
@@ -2138,7 +2134,7 @@ def test_halt_frame_next_step_matches_family(tmp_path):
                         "story": [], "point": []})
     env = _env(tmp_path, kb)
     task = ScriptTask()
-    state = {"messages": [HumanMessage("只更新 ch-9999")], "case": {}}
+    state = {"messages": [HumanMessage("更新测试设计，只针对 ch-9999")], "case": {}}
     _append(state, _drive(env, state, task))
     simulate(env, plan={"task_kind": "design", "entry_layer": "story", "terminal_layer": "point",
                         "target_subtree": "ch-9999", "source_files": [], "note": "窄任务"})
@@ -2166,13 +2162,13 @@ def test_reset_gate_unclear_only_touches_the_named_gate(tmp_path):
     assert led.data["writing"]["gate"]["unclear"] == 0
 
 
-# ---- 2026-10-09 修 1/修 2/修 3：空骨架不归档 + 首触分流（闲聊无工具 / 任务直开账）----
+# ---- 首触分流：空骨架不归档 + 只读 ReAct 闲聊 / 热词直开账 ----
 
-_UNSURE = "帮我看看这份需求怎么处理"          # 无任务热词 → 模糊门（write_only + intent.json）
+_UNSURE = "帮我看看这份需求怎么处理"          # 无任务热词 → 与闲聊同路（react_read）
 
 
 def test_boot_does_not_archive_empty_skeleton(tmp_path):
-    """修 1 正身：ensure_dirs 的空骨架不再被当旧工作面归档（debug2 里那窝 archive 空目录）。"""
+    """ensure_dirs 的空骨架不再被当旧工作面归档。"""
     env = _env(tmp_path, StubKb())                        # _env 已 ensure_dirs：一屋子空骨架
     state = {"messages": [HumanMessage("生成测试设计")], "case": {}}
     _append(state, _drive(env, state, ScriptTask()))      # 明确 task → 直开账（plan 指令在手）
@@ -2181,7 +2177,7 @@ def test_boot_does_not_archive_empty_skeleton(tmp_path):
 
 
 def test_boot_archives_real_workface_without_ledger(tmp_path):
-    """修 1 的对照面：无账本但真有旧制品时，归位照旧发生——谓词只挡空骨架，不挡真现场。"""
+    """无账本但真有旧制品时，归位照旧发生——谓词只挡空骨架，不挡真现场。"""
     env = _env(tmp_path, StubKb())
     _write(env.design / "plan.json", {"note": "上一任务留下的现场"})
     state = {"messages": [HumanMessage("重新生成测试设计")], "case": {}}
@@ -2191,14 +2187,15 @@ def test_boot_archives_real_workface_without_ledger(tmp_path):
     assert led.status == "active" and led.data["task"] == {}             # 新账本等 h_plan
 
 
-def test_gate_hello_is_tool_free_chat(tmp_path):
-    """修 3 正身：「你好」确定性闲聊——无工具面指令、不建骨架、不建账本。"""
+def test_gate_hello_is_react_read_chat(tmp_path):
+    """「你好」→ 只读 ReAct 闲聊指令、不建骨架、不建账本。"""
     env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)   # 直建：不 ensure_dirs
     state = {"messages": [HumanMessage("你好")], "case": {}}
     turn = drive_turn(state, {}, env=env, task_tool=ScriptTask(), writer=lambda e: None)
     assert turn["case"]["route"] == "agent" and turn["case"]["gate"] == "chat"
-    assert turn["case"]["face"] == "chat"
+    assert turn["case"]["face"] == FACE_REACT_READ
     assert "【编排·闲聊】" in turn["messages"][0].content
+    assert "禁止写入" in turn["messages"][0].content
     assert not env.design.exists()                        # 闲聊零落盘
     assert Ledger.load(env.design) is None
 
@@ -2220,7 +2217,7 @@ def test_gate_chat_with_model_words_ends_silently(tmp_path):
     env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)
     state = {"messages": [HumanMessage("你好")], "case": {}}
     t1 = drive_turn(state, {}, env=env, task_tool=ScriptTask(), writer=lambda e: None)
-    assert t1["case"]["gate"] == "chat" and t1["case"]["face"] == "chat"
+    assert t1["case"]["gate"] == "chat" and t1["case"]["face"] == FACE_REACT_READ
     _append(state, t1)
     state["messages"].append(AIMessage("你好！我是测试设计助手。"))
     frames: list[dict] = []
@@ -2230,8 +2227,8 @@ def test_gate_chat_with_model_words_ends_silently(tmp_path):
     assert not env.design.exists() and Ledger.load(env.design) is None
 
 
-def test_gate_task_skips_intent_and_boots(tmp_path):
-    """修 3：明确任务热词跳过 intent 门，同一激活直开账下发计划。"""
+def test_gate_task_skips_chat_and_boots(tmp_path):
+    """明确任务热词跳过闲聊，同一激活直开账下发计划。"""
     env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)
     state = {"messages": [HumanMessage("生成测试设计")], "case": {}}
     turn = drive_turn(state, {}, env=env, task_tool=ScriptTask(), writer=lambda e: None)
@@ -2244,54 +2241,20 @@ def test_gate_task_skips_intent_and_boots(tmp_path):
     assert not (env.design / "archive").exists()
 
 
-def test_gate_unsure_asks_with_write_only_face(tmp_path):
-    """模糊句才进意向门，且 face=write_only（图侧只绑 write，挡知识库）。"""
+def test_gate_unsure_is_react_read_chat(tmp_path):
+    """模糊句与闲聊同路：face=react_read，不写 intent.json、不开账。"""
     env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)
     state = {"messages": [HumanMessage(_UNSURE)], "case": {}}
     turn = drive_turn(state, {}, env=env, task_tool=ScriptTask(), writer=lambda e: None)
-    assert turn["case"]["route"] == "agent" and turn["case"]["gate"] == "ask"
-    assert turn["case"]["face"] == "write_only"
-    assert "【编排·意向】" in turn["messages"][0].content
+    assert turn["case"]["route"] == "agent" and turn["case"]["gate"] == "chat"
+    assert turn["case"]["face"] == FACE_REACT_READ
+    assert "【编排·闲聊】" in turn["messages"][0].content
     assert not env.design.exists()
     assert Ledger.load(env.design) is None
 
 
-def test_gate_missing_intent_nudges_then_gives_up(tmp_path):
-    """模糊门文件一直没出现：跟着重问 NUDGE_CAP 次，超限温柔收尾——不建账本、不挂 halted。"""
-    env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)
-    state = {"messages": [HumanMessage(_UNSURE)], "case": {}}
-    frames: list[dict] = []
-    t = drive_turn(state, {}, env=env, task_tool=ScriptTask(), writer=frames.append)
-    assert t["case"]["gate"] == "ask" and t["case"]["gate_nudge"] == 0    # 首问
-    assert t["case"]["face"] == "write_only"
-    for n in range(1, NUDGE_CAP + 1):
-        _append(state, t)
-        t = drive_turn(state, {}, env=env, task_tool=ScriptTask(), writer=frames.append)
-        assert t["case"]["route"] == "agent" and t["case"]["gate_nudge"] == n
-        assert t["case"]["face"] == "write_only"
-        assert "上一次判定没有生效" in t["messages"][0].content
-    _append(state, t)
-    t = drive_turn(state, {}, env=env, task_tool=ScriptTask(), writer=frames.append)
-    assert t["case"]["route"] == "end"
-    assert GATE_GIVEUP_TEXT in _end_text(frames)
-    assert Ledger.load(env.design) is None                # 全程零账本：没烧过任何付费阶段
-
-
-def test_gate_invalid_intent_reasks_with_errors(tmp_path):
-    """坏判定要带着「错在哪」重问（与 plan/gen 的 _errors_block 同款）。"""
-    env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)
-    state = {"messages": [HumanMessage(_UNSURE)], "case": {}}
-    t1 = drive_turn(state, {}, env=env, task_tool=ScriptTask(), writer=lambda e: None)
-    _append(state, t1)
-    _write(env.design / INTENT_NAME, {"intent": "maybe"})
-    t2 = drive_turn(state, {}, env=env, task_tool=ScriptTask(), writer=lambda e: None)
-    assert t2["case"]["route"] == "agent" and t2["case"]["gate_nudge"] == 1
-    assert t2["case"]["face"] == "write_only"
-    assert "intent「maybe」非法（task/chat）" in t2["messages"][0].content
-
-
 def test_gate_done_ledger_explicit_task_restarts(tmp_path):
-    """done 后明确任务热词：跳过意向门，当场归档重开（修 3 不再先问再确认）。"""
+    """done 后明确任务热词：当场归档重开。"""
     env = _env(tmp_path, StubKb())
     led = Ledger.fresh(env.design)
     led.status = "done"
@@ -2306,8 +2269,8 @@ def test_gate_done_ledger_explicit_task_restarts(tmp_path):
     assert led2.status == "active" and led2.data["task"] == {}
 
 
-def test_gate_done_unsure_asks_before_touching_workface(tmp_path):
-    """done 后模糊句仍先问：问的时候不动旧现场，task 确认才归档重开。"""
+def test_gate_done_unsure_keeps_workface(tmp_path):
+    """done 后模糊句走闲聊：不动旧现场、不开新账。"""
     env = _env(tmp_path, StubKb())
     led = Ledger.fresh(env.design)
     led.status = "done"
@@ -2315,16 +2278,11 @@ def test_gate_done_unsure_asks_before_touching_workface(tmp_path):
     _write(env.design / "plan.json", {"note": "上一任务的现场"})
     state = {"messages": [HumanMessage(_UNSURE)], "case": {}}
     t1 = drive_turn(state, {}, env=env, task_tool=ScriptTask(), writer=lambda e: None)
-    assert t1["case"]["route"] == "agent" and t1["case"]["gate"] == "ask"
-    assert t1["case"]["face"] == "write_only"
-    assert (env.design / "plan.json").is_file()           # 还没确认：现场一个文件没搬
-    _append(state, t1)
-    _write(env.design / INTENT_NAME, {"intent": "task"})
-    t2 = drive_turn(state, {}, env=env, task_tool=ScriptTask(), writer=lambda e: None)
-    assert t2["messages"][0].content.startswith("【编排·计划】")
-    assert len(list((env.design / "archive").rglob("plan.json"))) == 1
-    led2 = Ledger.load(env.design)
-    assert led2.status == "active" and led2.data["task"] == {}
+    assert t1["case"]["route"] == "agent" and t1["case"]["gate"] == "chat"
+    assert t1["case"]["face"] == FACE_REACT_READ
+    assert (env.design / "plan.json").is_file()
+    assert Ledger.load(env.design).status == "done"
+    assert not (env.design / INTENT_NAME).exists()
 
 
 def test_gate_chat_on_done_keeps_workface_and_ledger(tmp_path):
@@ -2347,7 +2305,7 @@ def test_gate_chat_on_done_keeps_workface_and_ledger(tmp_path):
 
 
 def test_gate_halted_resume_bypasses_gate(tmp_path):
-    """已 halted 的续跑优先级最高：不走门、不问判定，直接接断点（修 2 不抢裁定 42 的路）。"""
+    """已 halted 的续跑优先级最高：不走门，直接接断点。"""
     env = _env(tmp_path, StubKb())
     led = Ledger.fresh(env.design)
     led.status = "halted"
@@ -2360,3 +2318,4 @@ def test_gate_halted_resume_bypasses_gate(tmp_path):
     assert turn["messages"][0].content.startswith("【编排·计划】")   # 直接接断点
     assert "【人工补充】再试一次" in turn["messages"][0].content       # 补充语照旧随首次下发消费
     assert Ledger.load(env.design).data["halt"]["resume_note"] == ""
+

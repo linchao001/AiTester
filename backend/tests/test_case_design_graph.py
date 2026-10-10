@@ -159,21 +159,48 @@ def test_case_env_injection_runs_loop_and_halts(tmp_path: Path) -> None:
             and led.data["halt"]["kind"] == "artifact_retry" and led.data["halt"]["stage"] == "plan")
 
 
-def test_chat_first_touch_ends_with_model_words_and_zero_trace(tmp_path: Path) -> None:
-    """真拓扑里的「你好」：无工具闲聊 → 静默结束——reply 就是模型那句话，项目零残留。"""
+def test_react_read_chat_caps_at_max_iters(tmp_path: Path, monkeypatch) -> None:
+    """闲聊只读 ReAct：agent 次数触顶后不再调模型，发上限文案收尾。"""
+    monkeypatch.setattr("aitester.case_design.constants.REACT_READ_MAX_ITERS", 2)
     env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    call = {"id": "c1", "name": "read", "args": {"file_path": "a.txt"}, "type": "tool_call"}
+    # 剧本只够两轮模型；第三轮若再调 provider 会 AssertionError（剧本见底）
     provider = ScriptedProvider([
-        AIMessage(content="你好！我是测试设计助手。"),
+        AIMessage(content="", tool_calls=[{**call, "id": "c1"}]),
+        AIMessage(content="", tool_calls=[{**call, "id": "c2"}]),
+        AIMessage(content="不该被调用到"),
     ])
     frames = list(stream_graph(build_case_design_graph, provider, local_tools(tmp_path),
                                [HumanMessage(content="你好")], case_env=env))
     finish = frames[-1]
     assert finish["type"] == "finish"
+    assert "上限" in finish["reply"] and "2 步" in finish["reply"]
+    assert len(provider.calls) == 2                     # 第 3 次被图侧截断，未进 provider
+
+
+def test_chat_first_touch_ends_with_model_words_and_zero_trace(tmp_path: Path) -> None:
+    """真拓扑里的「你好」：只读 ReAct 闲聊 → 静默结束——reply 就是模型那句话，项目零残留。"""
+    env = CaseDesignEnv(project_dir=str(tmp_path), kb=None)
+    provider = ScriptedProvider([
+        AIMessage(content="你好！我是测试设计助手。"),
+    ])
+    tools = local_tools(tmp_path)
+    frames = list(stream_graph(build_case_design_graph, provider, tools,
+                               [HumanMessage(content="你好")], case_env=env))
+    finish = frames[-1]
+    assert finish["type"] == "finish"
     assert finish["reply"] == "你好！我是测试设计助手。"     # 静默结束：reply 折叠吃模型原话
-    assert len(provider.calls) == 1                          # 仅闲聊一回合，零工具
+    assert len(provider.calls) == 1                          # 闲聊一回合无 tool_calls 即收尾
     chat = provider.calls[0][-1]
     assert isinstance(chat, HumanMessage) and str(chat.id) == "cdchat-1"
     assert chat.content.startswith("【编排·闲聊】")
+    assert "禁止写入" in chat.content
+    # 图构建：全工具面 bind 一次 + 只读面 bind 一次；闲聊 agent 用后者
+    assert len(provider.bind_history) == 2
+    full_names, read_names = set(provider.bind_history[0]), set(provider.bind_history[1])
+    assert "write" in full_names and "write" not in read_names
+    assert "read" in read_names
     assert not (tmp_path / "design").exists()
     assert Ledger.load(env.design) is None
 

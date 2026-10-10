@@ -30,13 +30,14 @@ from aitester.case_design.checks import build_universe, run_checks
 from aitester.case_design.constants import (
     CASE_BATCH_CAP, CASE_DELIVERY_NAME, CASE_PREFIX, CASE_REVIEW_AGENT_ID,
     CASE_REVIEW_BLIND_AGENT_ID, CASES_DIR_NAME, CHAIN, FIX_CAP, HALT_KIND_CN, HALT_KINDS,
-    INTENT_NAME, LAYERS, LAYER_CN, MAX_TRANSITIONS, NUDGE_CAP, OUTLINE_NAME, PLAN_NAME, POINT,
+    FACE_REACT_READ, INTENT_NAME, LAYERS, LAYER_CN, MAX_TRANSITIONS, NUDGE_CAP, OUTLINE_NAME,
+    PLAN_NAME, POINT,
     ROUND_CAP, STORY, TYPE_PREFIX, WRITEBACK_FIX_CAP,
 )
 from aitester.case_design.instructions import (
     attribute_instruction, case_attribute_instruction, case_gate_fix_instruction,
     case_gen_instruction, case_opt_instruction, chat_instruction, gate_fix_instruction,
-    gen_instruction, intent_instruction, opt_instruction, plan_instruction,
+    gen_instruction, opt_instruction, plan_instruction,
 )
 from aitester.case_design.kb import KbClient, KbClientError
 from aitester.case_design.ledger import Ledger, _fresh_halt
@@ -48,7 +49,7 @@ from aitester.case_design.plan import (
 from aitester.case_design.reviewers import run_reviewer
 from aitester.case_design.schema import (
     ClaimsOut, CompareOut, EnumeratorOut, MatrixOut, Opinion, OpinionTarget, ReviewOut,
-    classify_user_intent, dedup_written, parse_case_file, parse_draft_file, validate_intent,
+    classify_user_intent, dedup_written, parse_case_file, parse_draft_file,
 )
 from aitester.case_design.writing import compose_case_delivery, plan_case_targets, run_case_checks
 
@@ -149,7 +150,6 @@ class Ctx:
                 "case": {"route": route, "boot": True, "ticks": self.ticks,
                          "instr_id": self.case.get("instr_id"),
                          "gate": str(self.case.get("gate") or ""),
-                         "gate_nudge": int(self.case.get("gate_nudge") or 0),
                          "face": str(self.case.get("face") or "")}}
 
     def end(self, text: str) -> dict:
@@ -342,18 +342,11 @@ def _halt_frame(ctx: Ctx, base: str) -> str:
             + _next_step_text(str(halt.get("kind") or "")))
 
 
-# ---- 首触意向门（修 2 / 修 3）：明确闲聊无工具、明确任务直开账、模糊句才写 intent ----
+# ---- 首触分流：热词开账 / 其余只读 ReAct 闲聊 ----
 
-# 面向人的两句（不是指令模板）：给不出判定时的收尾、模型没说话时的兜底回复
-GATE_GIVEUP_TEXT = ("没拿到任务判定（design/intent.json 一直没写出来或格式不对），这一轮先停。"
-                    "想开始测试设计时，把业务信息来源和范围直接发给我即可。")
+# 模型没说话时的兜底回复（不是指令模板）
 GATE_CHAT_FALLBACK = ("你好！我是测试设计助手。想生成或更新测试设计时，"
                       "把业务信息来源和范围（比如「全量」或某条链路）发给我就行。")
-
-
-def _gate_instr(ctx: Ctx, errors: list[str] | None = None) -> HumanMessage:
-    """门的指令不走 ctx.instr/ctx.ask：那两者断言账本在案，而门恰恰跑在开账之前。"""
-    return HumanMessage(content=intent_instruction(errors), id=f"cdgate-{ctx.ticks}")
 
 
 def _chat_instr(ctx: Ctx) -> HumanMessage:
@@ -363,7 +356,6 @@ def _chat_instr(ctx: Ctx) -> HumanMessage:
 def _clear_gate(ctx: Ctx) -> None:
     ctx.case["gate"] = ""
     ctx.case["face"] = ""
-    ctx.case["gate_nudge"] = 0
 
 
 def _chat_end(ctx: Ctx) -> dict:
@@ -379,65 +371,29 @@ def _chat_end(ctx: Ctx) -> dict:
     return ctx.end(GATE_CHAT_FALLBACK)
 
 
-def _gate_retry(ctx: Ctx, errors: list[str]) -> dict:
-    nudge = int(ctx.case.get("gate_nudge") or 0)
-    if nudge >= NUDGE_CAP:
-        _clear_gate(ctx)
-        return ctx.end(GATE_GIVEUP_TEXT)               # 无账本可 halted：温和收尾即终局
-    ctx.case["gate_nudge"] = nudge + 1
-    ctx.case["face"] = "write_only"
-    return ctx.turn([_gate_instr(ctx, errors)], "agent")
-
-
-def _gate_resume(ctx: Ctx) -> dict | bool:
-    """模糊门重入：读 design/intent.json。task→True（开账）；chat→零残留静默结束。"""
-    path = ctx.env.design / INTENT_NAME
-    if not path.is_file():
-        return _gate_retry(ctx, [f"未找到 {INTENT_NAME}：判定必须写进这个文件"])
-    raw = _read_json(path)
-    if raw is None:
-        return _gate_retry(ctx, [f"{INTENT_NAME} 不是合法 JSON"])
-    intent, errors = validate_intent(raw)
-    if errors:
-        return _gate_retry(ctx, errors)
-    _unlink_quiet(path)
-    if intent == "chat":
-        return _chat_end(ctx)
-    _clear_gate(ctx)                                   # task：全工具面开账
-    return True
-
-
 def _boot_gate(ctx: Ctx, fresh: bool) -> dict | bool | None:
-    """首触意向门：新用户回合且没有在办任务（无账本或已 done）时，先分流再决定开账。
+    """首触分流：新用户回合且没有在办任务（无账本或已 done）时，先分流再决定开账。
 
-    修 3：确定性 classify——chat→无工具闲聊指令；task→直接开账；unsure→write_only 写 intent。
+    确定性 classify——task→直接开账；chat/unsure→只读 ReAct 闲聊（face=react_read）。
     返回 dict＝门内定帧；True＝task 已确认（调用方开账）；None＝门不适用（回复轮/续跑/活跃任务）。
     已 halted / awaiting_review / writeback_failed / active 一律不走门：续跑语义原样优先。
     """
     gate = str(ctx.case.get("gate") or "")
     if gate == "chat":
         return _chat_end(ctx)
-    if gate == "ask":
-        return _gate_resume(ctx)
     if not fresh:
         return None
     led = Ledger.load(ctx.env.design)
     if led is not None and led.status != "done":
         return None
-    _unlink_quiet(ctx.env.design / INTENT_NAME)        # 过期的旧判定：不许冒充本轮答案
+    _unlink_quiet(ctx.env.design / INTENT_NAME)        # 历史残留：不许干扰本轮现场
     kind = classify_user_intent(_human_text(ctx.state_messages))
-    if kind == "chat":
-        ctx.case["gate"] = "chat"
-        ctx.case["face"] = "chat"
-        ctx.case["gate_nudge"] = 0
-        return ctx.turn([_chat_instr(ctx)], "agent")
     if kind == "task":
         _clear_gate(ctx)
         return True
-    ctx.case["gate"] = "ask"
-    ctx.case["face"] = "write_only"
-    ctx.case["gate_nudge"] = 0
-    return ctx.turn([_gate_instr(ctx)], "agent")
+    ctx.case["gate"] = "chat"
+    ctx.case["face"] = FACE_REACT_READ
+    return ctx.turn([_chat_instr(ctx)], "agent")
 
 
 def _boot(ctx: Ctx, fresh: bool) -> None:
@@ -2673,9 +2629,9 @@ _STAGE_HANDLERS: dict[str, Any] = {
 def drive_turn(state: dict, config: Any, *, env: Any, task_tool: Any, writer: Any) -> dict:
     """一次驱动激活：把游标能走完的内部阶段全走完，产出 {messages, case}。
 
-    首触意向门（_boot_gate）跑在任何阶段之前：明确闲聊无工具直答、明确任务直开账，
-    模糊句才写 intent；chat 零残留收尾。case["route"]=="agent" 时 messages 为一条指令
-    （HumanMessage），图去跑主智能体（face 收窄工具面）；=="end" 时为终局。
+    首触分流（_boot_gate）跑在任何阶段之前：热词 task 直开账；其余只读 ReAct 闲聊后零残留收尾。
+    case["route"]=="agent" 时 messages 为一条指令（HumanMessage），图去跑主智能体
+    （face=react_read 收窄为只读工具）；=="end" 时为终局。
     env=None 直通：零副作用，只按「最后一条是不是用户消息」判 route（free/echo/单测的兼容缝）。
     """
     messages = list(state.get("messages") or [])

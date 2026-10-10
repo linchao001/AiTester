@@ -51,21 +51,51 @@ def build_case_design_graph(provider: LlmProvider, tools: list[AiTooler]) -> Com
     from aitester.orchestration.checkpoint import get_checkpointer
     from aitester.orchestration.gate import make_gate_node
 
+    from langgraph.config import get_stream_writer
+
+    from aitester.case_design.constants import (
+        FACE_REACT_READ, REACT_READ_DENY_TOOLS, REACT_READ_MAX_ITERS,
+    )
+
     tool_node = ToolNode(tools, handle_tool_errors=_tool_error_message)
     bound = provider.bind_tools(tools) if tools else provider
-    write_only = [t for t in tools if getattr(t, "name", None) == "write"]
-    write_bound = provider.bind_tools(write_only) if write_only else provider
+    read_tools = [
+        t for t in tools
+        if getattr(t, "name", None) not in REACT_READ_DENY_TOOLS
+    ]
+    read_bound = provider.bind_tools(read_tools) if read_tools else provider
+
+    def _react_read_iters(state: CaseDesignState) -> int:
+        """已完成的主模型回合数（AIMessage 条数）；进入 agent 时 ≥ 上限则不再开新一轮。"""
+        return sum(1 for m in (state.get("messages") or []) if isinstance(m, AIMessage))
+
+    def _react_read_cap_message(state: CaseDesignState) -> AIMessage:
+        """闲聊 ReAct 触顶：发终话、零 tool_calls，随后 should_continue → driver 收尾。"""
+        text = (f"这一轮调查已达上限（{REACT_READ_MAX_ITERS} 步）。"
+                "若还需要，请再发一条消息继续；要做测试设计或用例编写请明确说明任务。")
+        round_no = _round_no(state)
+        writer = get_stream_writer()
+        writer({"type": "delta", "round": round_no, "text": text})
+        writer({"type": "turn", "round": round_no, "text": text,
+                "stopped": False, "tool_calls": []})
+        return AIMessage(content=text)
 
     def agent_node(state: CaseDesignState, config: RunnableConfig) -> dict:
-        # 修 3：首触 face 收窄——闲聊零工具、模糊意向只许 write，开账后才全工具面。
+        # 首触 face：react_read＝只读/调查工具 ReAct；空＝开账后全工具面。
         face = str((state.get("case") or {}).get("face") or "")
-        llm = provider if face == "chat" else (write_bound if face == "write_only" else bound)
+        if face == FACE_REACT_READ and _react_read_iters(state) >= REACT_READ_MAX_ITERS:
+            return {"messages": [_react_read_cap_message(state)]}
+        llm = read_bound if face == FACE_REACT_READ else bound
         return {"messages": [_stream_round(
             llm, state["messages"], _round_no(state), _run_control(config)
         )]}
 
     def should_continue(state: CaseDesignState) -> str:
-        """agent 之后：有工具调用先去闸门；没有就回 driver 领下一段指令（react 此处直接 END）。"""
+        """agent 之后：有工具调用先去闸门；没有就回 driver 领下一段指令（react 此处直接 END）。
+
+        闲聊上限在 agent_node 拦第 REACT_READ_MAX_ITERS+1 次模型调用；本轮已产出的
+        tool_calls 仍走 gate→tools，再回 agent 时触顶收尾。
+        """
         last = state["messages"][-1]
         if isinstance(last, AIMessage) and last.tool_calls:
             return "gate"

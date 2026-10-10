@@ -20,7 +20,7 @@ LAYER_OF_BUCKET: dict[str, str] = {v: k for k, v in LAYER_BUCKET.items()}
 
 # 预算（A4/A5；改这些数字必须同步改 spec 验收节）
 ROUND_CAP = 5          # 每块评审-优化环 / 每层全局审环的硬上限
-NUDGE_CAP = 3          # plan/gen 制品校验失败的重试上限（超限 halted）；首触意向门同额（超限温柔收尾）
+NUDGE_CAP = 3          # plan/gen 制品校验失败的重试上限（超限 halted）
 FIX_CAP = 2            # opt/attribute 处置表校验失败的重试上限
 WRITEBACK_FIX_CAP = 2  # 回写失败自动重试上限（超限 writeback_failed）
 MAX_TRANSITIONS = 80   # 单次运行驱动激活上限（防转场死循环）
@@ -60,10 +60,17 @@ LEDGER_NAME = "ledger.json"
 PLAN_NAME = "plan.json"
 OUTLINE_NAME = "outline.md"
 
-# 首触意向门（修 2 / 修 3）：新回合先判 task/chat 再开账；文件在 design/ 下，与账本同层。
-# face：chat＝无工具闲聊；write_only＝模糊句只许写 intent.json；空＝全工具面（已开账后）。
+# 首触分流：热词 task → 开账全工具面；其余（chat/unsure）→ 只读 ReAct 闲聊后 END。
+# face：react_read＝只读/调查工具；空＝全工具面（已开账后）。
+FACE_REACT_READ = "react_read"
+INTENT_FACES: tuple[str, ...] = ("", FACE_REACT_READ)
+# 闲聊只读 ReAct：agent 调用次数上限（含将要发起的这一次；到顶不再调工具，收尾回 driver）。
+REACT_READ_MAX_ITERS = 100
+# 闲聊 ReAct 禁止的写/改/执行面（1B）；其余工具可 bind（KB 检索、read、搜索、web、task）。
+REACT_READ_DENY_TOOLS: frozenset[str] = frozenset({
+    "write", "edit", "save_to_knowledge", "prepare_kb_write", "bash", "pwsh",
+})
+# 历史残留文件名：开账前仍尝试清掉，避免旧 intent.json 干扰现场。
 INTENT_NAME = "intent.json"
-INTENTS: tuple[str, ...] = ("task", "chat")
-INTENT_FACES: tuple[str, ...] = ("", "chat", "write_only")
 
 CASE_DESIGN_KEY = "case_design_env"   # case_env 注入通道（与 GATE_KEY 同款；T9 图装配读写此键）

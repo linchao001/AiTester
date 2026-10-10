@@ -55,8 +55,10 @@ class ScriptedProvider(ChunkedStreamMixin):
     def __init__(self, script: list[AIMessage | Exception]) -> None:
         self._script = list(script)
         self.calls: list[list] = []
+        self.bind_history: list[list[str | None]] = []
 
     def bind_tools(self, tools: list) -> "ScriptedProvider":
+        self.bind_history.append([getattr(t, "name", None) for t in tools])
         return self
 
     def invoke_messages(self, messages: list) -> AIMessage:

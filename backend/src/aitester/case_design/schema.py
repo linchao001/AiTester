@@ -14,7 +14,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from aitester.case_design.constants import (
-    CASE_ID_RE, DIRECTIONS, ID_RE, INTENTS, LAYERS, PRIORITY_RANK, TYPE_PREFIX,
+    CASE_ID_RE, DIRECTIONS, ID_RE, LAYERS, PRIORITY_RANK, TYPE_PREFIX,
 )
 
 _FENCE_RE = re.compile(r"```json\s*\n(.*?)\n```", re.DOTALL)
@@ -28,19 +28,8 @@ def parse_json_fence(text: str) -> Any:
     return json.loads(blocks[0])
 
 
-def validate_intent(raw: Any) -> tuple[str, list[str]]:
-    """校验 design/intent.json（首触意向门）：只认 task/chat 两个字面量，错误表非空即重问。"""
-    if not isinstance(raw, dict):
-        return "", ["intent.json 根必须是对象 {intent: ...}"]
-    intent = str(raw.get("intent") or "")
-    errors: list[str] = []
-    if intent not in INTENTS:
-        errors.append(f"intent「{intent}」非法（task/chat）")
-    return (intent if not errors else ""), errors
-
-
-# 确定性首触分流（修 3）：明确闲聊 / 明确任务先判死，模糊句才交给模型写 intent.json。
-# 口径偏保守——宁可 unsure 也不把闲聊开成账、也不把真任务挡成闲聊。
+# 确定性首触分流：热词 task → 开账；正则闲聊 → chat；其余 unsure（驱动侧与 chat 同走只读 ReAct）。
+# 口径偏保守——宁可 unsure 进闲聊，也不把闲聊开成账、也不把真任务挡成闲聊。
 _CHAT_RE = re.compile(
     r"^(?:"
     r"你好|您好|嗨|哈喽|hello|hi|hey|"
@@ -64,7 +53,10 @@ _TASK_MARKS: tuple[str, ...] = (
 
 
 def classify_user_intent(text: str) -> str:
-    """用户原话 → task | chat | unsure（零模型、零 IO）。"""
+    """用户原话 → task | chat | unsure（零模型、零 IO）。
+
+    driver：仅 task 开账；chat 与 unsure 一律只读 ReAct 闲聊（不再写 intent.json）。
+    """
     t = (text or "").strip()
     if not t:
         return "chat"
