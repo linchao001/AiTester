@@ -13,9 +13,22 @@
 
 > 项目目录不可达时无法发送与落盘，请到项目页核对路径。
 
-## 启动
+## 环境要求
 
-### 一键启动（推荐，Windows PowerShell）
+| 组件 | 要求 | 说明 |
+|------|------|------|
+| Python | ≥ 3.11 | 可由 `uv` 自动下载，不必本机预装 |
+| [uv](https://docs.astral.sh/uv/) | 最新版 | 后端依赖与虚拟环境管理 |
+| Node.js | LTS（含 npm） | 前端构建与开发服务器 |
+| 操作系统 | Windows / macOS / Linux | 一键脚本见下 |
+
+一键脚本在缺少 `uv` / Node.js 时会**先自动安装再启动**（Windows 优先 winget/choco；Unix 优先 brew/apt/dnf 等）。
+
+## 安装与启动
+
+### 一键安装并启动（推荐）
+
+**Windows（PowerShell）**
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1
@@ -23,10 +36,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1 -FrontendPort 5175
 ```
 
-会检查端口、安装依赖并同时拉起前后端；就绪后打开提示地址（默认 http://localhost:5173 ）。  
-Ctrl+C 或按任意键停止，并清理相关进程。
+**macOS / Linux / WSL / Git Bash**
 
-首次使用可复制 `backend/.env.example` 为 `backend/.env`（可选种子 Key）；模型与能力也可在启动后于「⚙ 设置」中配置。
+```bash
+bash scripts/dev.sh
+# 5173 被占用时换端口：
+FRONTEND_PORT=5175 bash scripts/dev.sh
+```
+
+脚本会依次：检查并安装运行环境 → `uv sync` / `npm install` → 同时拉起前后端；就绪后打开提示地址（默认 http://localhost:5173 ）。  
+Ctrl+C（或 Windows 下按任意键）停止，并清理相关进程。
+
+首次运行若尚无 `backend/.env`，会从 `backend/.env.example` 自动复制一份（可选种子 Key）；模型与能力也可在启动后于「⚙ 设置」中配置。
+
+### 手动安装依赖（可选）
+
+若不想用一键脚本装工具链，可先自行安装：
+
+```bash
+# uv：https://docs.astral.sh/uv/getting-started/installation/
+# Node.js LTS：https://nodejs.org/
+
+cd backend && uv sync
+cd ../frontend && npm install
+# 可选：cp backend/.env.example backend/.env
+```
 
 ### 分别启动
 

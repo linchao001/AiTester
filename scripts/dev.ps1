@@ -1,17 +1,20 @@
 ﻿#Requires -Version 5.1
 <#
-    AiTester 一键启动（Windows PowerShell）
-    用法：在仓库根执行  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1
+    AiTester 一键安装并启动（Windows PowerShell）
+    用法：在仓库根执行
+      powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev.ps1
+    若本机缺少 uv / Node.js，会先自动安装再拉起前后端。
     同时启动后端(uvicorn :8000)与前端(vite)，Ctrl+C 或按任意键停止，退出时清理整棵进程树。
     端口上若残留本项目上一次启动的服务进程，会先结束其进程树再启动；
     被非本项目进程占用时不自动结束（避免误杀第三方程序），此时用 -FrontendPort 换端口：
-    powershell ... -File scripts\dev.ps1 -FrontendPort 5175
+      powershell ... -File scripts\dev.ps1 -FrontendPort 5175
 #>
 
 param(
     [int]$FrontendPort = 5173
 )
 
+$ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $backendDir = Join-Path $root 'backend'
 $frontendDir = Join-Path $root 'frontend'
@@ -25,6 +28,99 @@ $ownMarkers = @(
     (Join-Path (Join-Path $root 'scripts') 'dev.ps1')
 ) | ForEach-Object { [string]$_ } | Where-Object { $_ } |
     ForEach-Object { $_.ToLower().Replace('/', '\') }
+
+function Refresh-Path {
+    $machine = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $user = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:Path = @($machine, $user) -join ';'
+    foreach ($extra in @(
+            (Join-Path $env:USERPROFILE '.local\bin'),
+            (Join-Path $env:USERPROFILE '.cargo\bin'),
+            (Join-Path $env:LOCALAPPDATA 'Programs\nodejs'),
+            'C:\Program Files\nodejs'
+        )) {
+        if ((Test-Path $extra) -and ($env:Path -notlike "*$extra*")) {
+            $env:Path = "$extra;$env:Path"
+        }
+    }
+}
+
+function Test-Cmd([string]$Name) {
+    return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Ensure-Uv {
+    Refresh-Path
+    if (Test-Cmd 'uv') {
+        Write-Host "[OK] 已找到 uv: $((Get-Command uv).Source)" -ForegroundColor Green
+        return
+    }
+    Write-Host '[..] 未找到 uv，正在安装（官方安装脚本）...' -ForegroundColor Yellow
+    try {
+        Invoke-RestMethod https://astral.sh/uv/install.ps1 | Invoke-Expression
+    } catch {
+        Write-Host "[FAIL] uv 自动安装失败：$($_.Exception.Message)" -ForegroundColor Red
+        Write-Host '       请手动安装：https://docs.astral.sh/uv/getting-started/installation/' -ForegroundColor Yellow
+        exit 1
+    }
+    Refresh-Path
+    if (-not (Test-Cmd 'uv')) {
+        Write-Host '[FAIL] uv 已安装但当前会话仍找不到命令，请重新打开终端后再试' -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "[OK] uv 安装完成: $((Get-Command uv).Source)" -ForegroundColor Green
+}
+
+function Ensure-Node {
+    Refresh-Path
+    if ((Test-Cmd 'node') -and (Test-Cmd 'npm')) {
+        Write-Host "[OK] 已找到 Node.js $($(node -v)) / npm $($(npm -v))" -ForegroundColor Green
+        return
+    }
+    Write-Host '[..] 未找到 Node.js / npm，尝试自动安装...' -ForegroundColor Yellow
+
+    if (Test-Cmd 'winget') {
+        Write-Host '[..] 使用 winget 安装 OpenJS.NodeJS.LTS ...' -ForegroundColor Cyan
+        & winget install --id OpenJS.NodeJS.LTS -e --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host '[FAIL] winget 安装 Node.js 失败' -ForegroundColor Red
+            exit 1
+        }
+    } elseif (Test-Cmd 'choco') {
+        Write-Host '[..] 使用 Chocolatey 安装 nodejs-lts ...' -ForegroundColor Cyan
+        & choco install nodejs-lts -y
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host '[FAIL] Chocolatey 安装 Node.js 失败' -ForegroundColor Red
+            exit 1
+        }
+    } else {
+        Write-Host '[FAIL] 未找到 winget / choco，无法自动安装 Node.js' -ForegroundColor Red
+        Write-Host '       请安装 Node.js LTS：https://nodejs.org/ 后再运行本脚本' -ForegroundColor Yellow
+        exit 1
+    }
+
+    Refresh-Path
+    # winget 安装后偶发 PATH 未立刻可见，短暂重试
+    for ($i = 0; $i -lt 10; $i++) {
+        if ((Test-Cmd 'node') -and (Test-Cmd 'npm')) { break }
+        Start-Sleep -Milliseconds 500
+        Refresh-Path
+    }
+    if (-not ((Test-Cmd 'node') -and (Test-Cmd 'npm'))) {
+        Write-Host '[FAIL] Node.js 已安装但当前会话仍找不到 node/npm，请重新打开终端后再试' -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "[OK] Node.js 安装完成: $($(node -v)) / npm $($(npm -v))" -ForegroundColor Green
+}
+
+function Ensure-EnvFile {
+    $example = Join-Path $backendDir '.env.example'
+    $envFile = Join-Path $backendDir '.env'
+    if ((Test-Path $example) -and -not (Test-Path $envFile)) {
+        Copy-Item $example $envFile
+        Write-Host '[OK] 已从 backend/.env.example 生成 backend/.env（可按需填写种子 Key）' -ForegroundColor Green
+    }
+}
 
 function Get-PortOwner([int]$Port) {
     Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
@@ -78,6 +174,7 @@ function Get-MyProcessIds {
     }
     return $mine.ToArray()
 }
+
 # 循环判定，直到端口空闲。上一轮 dev.ps1 的看门狗可能正在并发拆树，
 # 会出现「套接字仍 Listen 但属主 PID 已退出」的瞬时状态，故每轮重取快照。
 function Clear-Port([int]$Port, [string]$Label) {
@@ -153,19 +250,18 @@ function Wait-Http([string]$Url, [int]$TimeoutSec, [string]$Label) {
     return $false
 }
 
-foreach ($cmd in 'uv', 'npm') {
-    if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
-        Write-Host "[FAIL] 未找到命令 $cmd，请先安装并加入 PATH" -ForegroundColor Red
-        exit 1
-    }
-}
+Write-Host '== 检查 / 安装运行环境 ==' -ForegroundColor Cyan
+Ensure-Uv
+Ensure-Node
+Ensure-EnvFile
 
 Clear-Port -Port $backendPort -Label '后端'
 Clear-Port -Port $frontendPort -Label '前端'
 
-Write-Host '== 安装依赖 ==' -ForegroundColor Cyan
+Write-Host '== 安装项目依赖 ==' -ForegroundColor Cyan
 Push-Location $backendDir
 try {
+    # uv 可按需拉取 Python>=3.11，无需本机预装
     & uv sync
     if ($LASTEXITCODE -ne 0) { Write-Host '[FAIL] uv sync 失败' -ForegroundColor Red; exit 1 }
 } finally {
@@ -179,6 +275,8 @@ if (-not (Test-Path (Join-Path $frontendDir 'node_modules'))) {
     } finally {
         Pop-Location
     }
+} else {
+    Write-Host '[OK] 前端 node_modules 已存在，跳过 npm install' -ForegroundColor Green
 }
 
 Write-Host '== 启动前后端 ==' -ForegroundColor Cyan
@@ -186,7 +284,8 @@ $uvPath = (Get-Command uv).Source
 $backend = Start-Process -FilePath $uvPath `
     -ArgumentList 'run', 'uvicorn', 'aitester.main:app', '--host', '127.0.0.1', '--port', $backendPort, '--reload' `
     -WorkingDirectory $backendDir -NoNewWindow -PassThru
-$frontend = Start-Process -FilePath (Get-Command npm.cmd).Source `
+$npmCmd = if (Test-Cmd 'npm.cmd') { (Get-Command npm.cmd).Source } else { (Get-Command npm).Source }
+$frontend = Start-Process -FilePath $npmCmd `
     -ArgumentList 'run', 'dev', '--', '--port', $frontendPort `
     -WorkingDirectory $frontendDir -NoNewWindow -PassThru
 
