@@ -1,6 +1,11 @@
-"""账本：design/ledger.json 是专属 loop 的唯一长期真相（每步重读、每步写回）。
+"""账本：design/ledger.json 是专属 loop 的**唯一 durable owner**（每步重读、每步写回）。
 
 HISTORY_MAX=40 装不下长期状态（spec §6 硬缝），会话只给指针，文件才是状态面。
+
+与 LangGraph checkpointer 的边界（写死，勿混用）：
+- **本模块**：跨回合业务进度（status / cursor / halt / writing / 预算）。中断续跑只认这里。
+- **checkpointer**（``orchestration/checkpoint.py``）：仅同一次 chat run 内的图挂起
+  （权限 gate → /chat/resume）；run 结束即 ``drop_thread``，**不得**解释「任务跑到哪一层」。
 """
 
 from __future__ import annotations
@@ -107,6 +112,26 @@ class Ledger:
 
     def layer(self, layer: str) -> dict[str, Any]:
         return self.data["layers"][layer]
+
+    def snapshot(self) -> dict[str, Any]:
+        """给 UI／状态 API 的窄读数：够画「续跑／重开」按钮，不泄露整本账。"""
+        cur = self.cursor if isinstance(self.cursor, dict) else {}
+        halt = self.data.get("halt") if isinstance(self.data.get("halt"), dict) else {}
+        status = self.status
+        return {
+            "status": status,
+            "cursor": {
+                "stage": str(cur.get("stage") or ""),
+                "layer": str(cur.get("layer") or ""),
+                "block": str(cur.get("block") or ""),
+                "round": int(cur.get("round") or 0),
+            },
+            "halt_kind": str(halt.get("kind") or ""),
+            # done：只给重开；其余在办态：续跑＋重开（needs_input 仍可点续跑，驱动会零成本拒绝）
+            "can_resume": status in ("active", "halted", "awaiting_review", "writeback_failed"),
+            "can_restart": status in (
+                "active", "halted", "awaiting_review", "writeback_failed", "done"),
+        }
 
     def next_seq(self, layer: str) -> str:
         seq = int(self.data["counters"][layer]) + 1

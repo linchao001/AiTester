@@ -7,6 +7,9 @@ driver 每进一次要么下发一条编排指令（route=agent）、要么发�
 导入环：本模块**零 orchestration import**——复用件全部在 build_case_design_graph 函数体
 内延迟导入。否则 graph_registry 顶层 import 本模块后，「先 import aitester.case_design.graph」
 的次序会撞上半初始化的 orchestration 包（两个入口次序都要安全）。
+
+耐久边界：本图挂的 checkpointer **只**保同 run 内权限中断；跨回合业务游标在
+``design/ledger.json``（单一 durable owner），见 ``ledger.py`` / ``orchestration/checkpoint.py``。
 """
 
 from __future__ import annotations

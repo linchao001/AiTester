@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from aitester.case_design.constants import LAYER_CN
+from aitester.case_design.constants import DESIGN_REL, LAYER_CN
 from aitester.case_design.schema import DraftNode
 
 _MODE_CN = {"first_build": "首建", "update": "更新"}
@@ -19,7 +19,7 @@ def chat_instruction() -> str:
     return (
         "【编排·闲聊】用户这条消息没有明确布置测试设计或用例编写任务。"
         "按普通助手对话处理：可以检索知识库、阅读项目文件、搜索与委派调查类子任务来回答问题；"
-        "禁止写入或修改任何文件（含 design/）、禁止写知识库、禁止执行会改环境的命令。"
+        f"禁止写入或修改任何文件（含 {DESIGN_REL}/）、禁止写知识库、禁止执行会改环境的命令。"
         "不要创建或推进测试设计账本；若对方其实想做设计/写用例，请对方用明确任务说法再说一遍"
         "（例如「生成测试设计」「编写用例」）。"
         "自然回复即可，不要提到本条指令。"
@@ -28,13 +28,14 @@ def chat_instruction() -> str:
 
 def plan_instruction() -> str:
     return (
-        "【编排·计划】开始一次测试设计任务。请只读地弄清两件事，然后只写一个文件 design/plan.json：\n"
+        f"【编排·计划】开始一次测试设计任务。请只读地弄清两件事，然后只写一个文件 "
+        f"{DESIGN_REL}/plan.json：\n"
         "1) 业务信息来源：从上面的用户指令判断本次依据哪些项目内业务文档（需求说明、接口文档等），"
-        "逐个确认存在后列入 source_files（项目相对路径）；不要列 design/ 工作稿，"
+        f"逐个确认存在后列入 source_files（项目相对路径）；不要列 {DESIGN_REL}/ 工作稿，"
         "也不要列知识库里的文件（知识库业务资料由编排层另行装载）。\n"
         "2) 范围归一化：把指令拆成「入口层 / 目标子树 / 终止层」——task_kind 取 "
         "design（测试设计）/ mixed（设计+用例，先做设计侧、过门回写后同轮续编写环）/ "
-        "case_only（纯用例任务：三层只读当分母，本 run 不改三层，只产 design/cases/ 里的用例正文）；"
+        f"case_only（纯用例任务：三层只读当分母，本 run 不改三层，只产 {DESIGN_REL}/cases/ 里的用例正文）；"
         "entry_layer 与 terminal_layer 取 chain|story|point；target_subtree 只接受链路（ch-）id——"
         "「只针对某条链路」这类窄指令填该链路 id，指向用户故事或测试点时"
         "填其所属链路 id，全量任务留空串。\n"
@@ -108,7 +109,7 @@ def attribute_instruction(layer: str, block: str, *, opinions_path: str, out_pat
 def gate_fix_instruction(*, issues_path: str, round_no: int) -> str:
     return "\n".join([
         f"【编排·大纲门修复·第 {round_no} 轮】④ 确定性检查发现结构问题（清单在 {issues_path}）。",
-        "请逐条修复对应的层草稿（design/drafts/ 下），只改被点名的文件：",
+        f"请逐条修复对应的层草稿（{DESIGN_REL}/drafts/ 下），只改被点名的文件：",
         "- broken_parent：引用（parent/chains/story）必须指向引用宇宙内存在的节点 id。",
         "- cross_level：父子 level 必须连续（子 = 父 + 1）。",
         "- priority_violation：子节点优先级不得**高于**其父（重要性 P0 > P1 > P2；父比子更重要是正常降级，子比父更重要才是违例——要么父该提级，要么子该降级）。",
@@ -125,7 +126,7 @@ def case_gen_instruction(*, chain: str, batch: str, manifest_path: str,
         f"【编排·用例批次生成·链路 {chain}·批次 {batch}·第 {batch_no}/{batch_total} 批】\n"
         f"1) 先读分母清单 {manifest_path}：每个点自带 scenario/entities/directions 与所属故事的 "
         f"actor/preconditions/trigger/expected，写用例所需信息全在里面，不必再翻知识库。\n"
-        f"2) 用例正文落 design/cases/{batch}.json，根对象与每条用例的字段逐字如下（多余的键不要加）：\n"
+        f"2) 用例正文落 {DESIGN_REL}/cases/{batch}.json，根对象与每条用例的字段逐字如下（多余的键不要加）：\n"
         '   {"chain": "' + chain + '", "batch": "' + batch + '", "cases": ['
         '{"case_id": "", "title": "…", "covers": ["pt-0000"], "preconditions": "…", '
         '"steps": ["…"], "expected": ["…"], "priority": "P1", "note": ""}]}\n'
@@ -174,7 +175,7 @@ def case_gate_fix_instruction(*, issues_path: str, round_no: int) -> str:
     不写「请自行修复」（主智能体只能按清单动手）。"""
     return "\n".join([
         f"【编排·用例末门修复·第 {round_no} 轮】末门确定性核对发现履约问题（清单在 {issues_path}）。",
-        "请只改被点名的批次正文（design/cases/<批次 id>.json），逐条清零：",
+        f"请只改被点名的批次正文（{DESIGN_REL}/cases/<批次 id>.json），逐条清零：",
         "- uncovered_point：该测试点没有任何用例认领——补一条认领它的用例，"
         "或把它并进已有用例的 covers（并进后那条用例正文必须真的覆盖它）。",
         "- phantom_cover：用例认领了分母外的点——covers 只许填本批清单里真实存在的 pt- 四位数字 id，"

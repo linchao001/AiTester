@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from aitester.project_runtime import PROJECT_RUNTIME_DIRNAME
+
 CHAIN, STORY, POINT = "chain", "story", "point"
 LAYERS: tuple[str, ...] = (CHAIN, STORY, POINT)
 LAYER_CN: dict[str, str] = {CHAIN: "业务链路", STORY: "用户故事", POINT: "测试点"}
@@ -59,6 +61,12 @@ CASE_REVIEW_BLIND_AGENT_ID = "case_review_blind"
 LEDGER_NAME = "ledger.json"
 PLAN_NAME = "plan.json"
 OUTLINE_NAME = "outline.md"
+
+# 智能体可见的设计工作区相对前缀（相对文件工具 cwd=项目根）：与 ``project_runtime.design_root``
+# 同源，勿在各处散写裸 ``design/``——「项目产物收口 .AiTester」后工作区实际落在
+# ``{project}/.AiTester/design``，指令里的路径必须与驱动读取处逐字一致，否则计划/用例阶段
+# 永远读不到智能体写到别处的制品（专属 loop 在 h_plan 即 halted）。
+DESIGN_REL = f"{PROJECT_RUNTIME_DIRNAME}/design"
 
 # 首触分流：热词 task → 开账全工具面；其余（chat/unsure）→ 只读 ReAct 闲聊后 END。
 # face：react_read＝只读/调查工具；空＝全工具面（已开账后）。

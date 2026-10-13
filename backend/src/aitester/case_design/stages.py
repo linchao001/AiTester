@@ -29,7 +29,7 @@ from langgraph.errors import GraphBubbleUp
 from aitester.case_design.checks import build_universe, run_checks
 from aitester.case_design.constants import (
     CASE_BATCH_CAP, CASE_DELIVERY_NAME, CASE_PREFIX, CASE_REVIEW_AGENT_ID,
-    CASE_REVIEW_BLIND_AGENT_ID, CASES_DIR_NAME, CHAIN, FIX_CAP, HALT_KIND_CN, HALT_KINDS,
+    CASE_REVIEW_BLIND_AGENT_ID, CASES_DIR_NAME, CHAIN, DESIGN_REL, FIX_CAP, HALT_KIND_CN, HALT_KINDS,
     FACE_REACT_READ, INTENT_NAME, LAYERS, LAYER_CN, MAX_TRANSITIONS, NUDGE_CAP, OUTLINE_NAME,
     PLAN_NAME, POINT,
     ROUND_CAP, STORY, TYPE_PREFIX, WRITEBACK_FIX_CAP,
@@ -371,12 +371,26 @@ def _chat_end(ctx: Ctx) -> dict:
     return ctx.end(GATE_CHAT_FALLBACK)
 
 
+# done 后同一句批准二次到达（W4-2）：零归档、零重烧，终帧说实话。
+DONE_CLOSED_MSG = (
+    "本任务已闭合：上次批准已生效，现场保留。同一句批准不会再次驱动。"
+    "若要开启新任务，请明说「重开任务」并给出新的范围，或直接发送带生成意图的新描述。"
+)
+# 回写成功终帧尾巴（W4-2）：与基句拼接，逐字断言见测试。
+WRITEBACK_DONE_TIP = (
+    "本门已关闭；继续发消息不会重烧——开启新任务请明说「重开任务」或发送新的生成描述。"
+)
+
+
 def _boot_gate(ctx: Ctx, fresh: bool) -> dict | bool | None:
     """首触分流：新用户回合且没有在办任务（无账本或已 done）时，先分流再决定开账。
 
     确定性 classify——task→直接开账；chat/unsure→只读 ReAct 闲聊（face=react_read）。
     返回 dict＝门内定帧；True＝task 已确认（调用方开账）；None＝门不适用（回复轮/续跑/活跃任务）。
     已 halted / awaiting_review / writeback_failed / active 一律不走门：续跑语义原样优先。
+
+    done 的二次到达（W4-2）：纯批准／重试话术 → 幂等终帧，不归档不重烧；明示重开或
+    带生成热词的新描述才开新账。
     """
     gate = str(ctx.case.get("gate") or "")
     if gate == "chat":
@@ -387,7 +401,22 @@ def _boot_gate(ctx: Ctx, fresh: bool) -> dict | bool | None:
     if led is not None and led.status != "done":
         return None
     _unlink_quiet(ctx.env.design / INTENT_NAME)        # 历史残留：不许干扰本轮现场
-    kind = classify_user_intent(_human_text(ctx.state_messages))
+    human = _human_text(ctx.state_messages)
+    if led is not None and led.status == "done":
+        if _wants_restart(human):
+            _clear_gate(ctx)
+            return True
+        kind = classify_user_intent(human)
+        # 纯批准二次到达：绝不能当新任务热词误烧（W4-2）。
+        if _explicit_approval(human) and kind != "task":
+            return ctx.end(DONE_CLOSED_MSG)
+        if kind == "task":
+            _clear_gate(ctx)
+            return True
+        ctx.case["gate"] = "chat"
+        ctx.case["face"] = FACE_REACT_READ
+        return ctx.turn([_chat_instr(ctx)], "agent")
+    kind = classify_user_intent(human)
     if kind == "task":
         _clear_gate(ctx)
         return True
@@ -1389,11 +1418,11 @@ def h_plan(ctx: Ctx) -> Any:
 
 def _ref_hint(ctx: Ctx, layer: str, block: str) -> str:
     if layer == CHAIN:
-        return "父链路 id 见本块草稿与 design/manifests/kb-chain.json"
+        return f"父链路 id 见本块草稿与 {DESIGN_REL}/manifests/kb-chain.json"
     if layer == STORY:
-        return "链路 id 见 design/drafts/chain/ALL.json"
+        return f"链路 id 见 {DESIGN_REL}/drafts/chain/ALL.json"
     path = _draft_file_of(ctx, STORY, block)
-    return f"故事 id 见 {ctx.rel(path)}" if path else "故事 id 见 design/drafts/story/ 下各块草稿"
+    return f"故事 id 见 {ctx.rel(path)}" if path else f"故事 id 见 {DESIGN_REL}/drafts/story/ 下各块草稿"
 
 
 def _draft_file_of(ctx: Ctx, layer: str, node_id: str) -> Path | None:
@@ -1596,7 +1625,7 @@ def _block_review_brief(ctx: Ctx, layer: str, block: str, round_no: int) -> str:
     open_ops = _open_of(ctx, layer, source="block", block=block)
     lines = [
         f"【块评审·{LAYER_CN[layer]}·块 {block}·第 {round_no} 轮】",
-        f"请只读地审阅草稿 {draft}（可结合 design/manifests/ 下的存量清单），给出本块判决：",
+        f"请只读地审阅草稿 {draft}（可结合 {DESIGN_REL}/manifests/ 下的存量清单），给出本块判决：",
         '{"opinions": [{"target": {"type": "node|seam|outside", "value": "节点 id 或 声称 id"}, '
         '"kind": "漏测|颗粒度|边界归属|命名漂移|失效", "ask": "怎么改", "evidence": "依据"}], '
         '"resolutions": [{"ref": "op-01", "resolved": true, "note": "为何已消化"}]}',
@@ -1781,7 +1810,7 @@ def _draft_fingerprint(ctx: Ctx, layer: str) -> str:
 def _enum_chain(ctx: Ctx) -> None:
     """①-a 盲枚举：面只读 + 简报不给树（结构盲靠白名单清单，不靠提示词叮嘱）。"""
     brief = (
-        "【盲枚举·业务对象盘点】请只读地浏览 design/manifests/sources.json 列出的项目业务资料，"
+        f"【盲枚举·业务对象盘点】请只读地浏览 {DESIGN_REL}/manifests/sources.json 列出的项目业务资料，"
         "不要依赖任何测试设计产物，列出其中出现的业务对象 / 角色 / 阶段。\n"
         '输出一个 JSON：{"items": [{"kind": "业务对象|角色|阶段", "name": "...", '
         '"evidence": "出现在哪个文件"}]}'
@@ -1802,7 +1831,7 @@ def _cmp_chain(ctx: Ctx, round_no: int) -> None:
     draft = ctx.rel(ctx.env.drafts_dir(CHAIN) / "ALL.json")
     brief = (
         f"【对照·落点核对】枚举清单在 {enum_path}；当前链路树草稿在 {draft}"
-        "（存量见 design/manifests/kb-chain.json）。逐条判断每个枚举项在这棵树里有没有落点。\n"
+        f"（存量见 {DESIGN_REL}/manifests/kb-chain.json）。逐条判断每个枚举项在这棵树里有没有落点。\n"
         '输出一个 JSON：{"items": [{"name": "...", "kind": "...", "landing": "节点 id 或空串", '
         '"note": "落点为空时说明缺了什么"}]}（landing 为空 = 树外遗漏）'
     )
@@ -1852,7 +1881,7 @@ def _claims_brief(ctx: Ctx, block: str, rows: list[dict], *, register: bool = Tr
         "请逐条核对每个声称在树内是否真的被覆盖。",
         "待核对声称（ref 原样回填）：",
         json.dumps(rows, ensure_ascii=False),
-        "故事与测试点的存量清单见 design/manifests/kb-story.json 与 design/drafts/。",
+        f"故事与测试点的存量清单见 {DESIGN_REL}/manifests/kb-story.json 与 {DESIGN_REL}/drafts/。",
         # 裁定 32：register=False（点层回扫）只给空数组字面量，不 advertise 条目形状，
         # 否则回扫会开始产意见。
         '输出一个 JSON：{"claims": [{"ref": "...", "verdict": "covered|unclaimed", '
@@ -2361,16 +2390,22 @@ def _writeback_authorized(text: str) -> bool:
     return _approval_clause(text, _APPROVAL_WORDS + _RETRY_WORDS)
 
 
-# 重开措辞（裁定 46）：销毁现场是不可逆动作，判据与批准同一条形状——某分句含措辞且该分句无否定/延后标记。
-_RESTART_WORDS: tuple[str, ...] = ("重开", "重新开始", "从头开始", "从零开始", "作废",
-                                   "放弃这次", "放弃本次", "开新任务", "换新任务")
+# 重开措辞（裁定 46，二次收窄）：销毁现场是不可逆动作，判据与批准同一条形状——
+# 某分句含措辞且该分句无否定/延后标记。裸「重开／作废」已从词表移除——
+# 「这条链路重开了新市场」一类业务叙述不得销毁现场（走查五歧义句真机复现）。
+_RESTART_WORDS: tuple[str, ...] = (
+    "重开任务", "重开这轮", "重开本轮", "重开本次", "重开这次",
+    "重新开始", "从头开始", "从零开始",
+    "作废这次", "作废本次", "作废这轮", "作废本轮", "作废任务",
+    "放弃这次", "放弃本次", "开新任务", "换新任务",
+)
 
 
 def _wants_restart(text: str) -> bool:
     """本轮人话是否明示「作废这次工作、开新任务」。未命中一律续跑——方向偏「少销毁」。
 
     与批准共用 `_approval_clause`（裁定 19／R-27／W3-2 同族）：一条措辞规则只有一个实现处。
-    误判面如实登记：「重开」在无关语境里出现会被判成重开（真值表钉住），走查五实测第 ④ 判据。
+    「重开」须紧邻任务语义（重开任务／这轮／本次…），裸词不再命中。
     """
     return _approval_clause(text, _RESTART_WORDS)
 
@@ -2611,7 +2646,8 @@ def h_writeback(ctx: Ctx) -> Any:
     led.status = "done"
     # 等值判定的单点在 step（裁定 30）：这里不作第二次比较，只把「几个节点其实没被触碰」如实呈递。
     tail = f"（{untouched} 个节点内容与库内一致，未重写。）" if untouched else ""
-    return ctx.end("回写完成：本次过审节点已写入知识库。" + tail)
+    # W4-2：门已关闭写进终帧，避免同一句批准二次到达被读成「再开一轮」。
+    return ctx.end("回写完成：本次过审节点已写入知识库。" + tail + WRITEBACK_DONE_TIP)
 
 
 _STAGE_HANDLERS: dict[str, Any] = {

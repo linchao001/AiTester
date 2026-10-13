@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from aitester.case_design.constants import CHAIN, LAYERS, POINT, ROUND_CAP, STORY
+from aitester.case_design.constants import CHAIN, DESIGN_REL, LAYERS, POINT, ROUND_CAP, STORY
 
 _TASK_KINDS = ("design", "mixed", "case_only")
 _ABSOLUTE_RE = re.compile(r"^(?:[A-Za-z]:|/)")   # 盘符开头（Windows）或 / 开头（POSIX/UNC）
@@ -52,8 +52,8 @@ def validate_plan(raw: Any, project_dir: str) -> tuple[dict, list[str]]:
         rel = str(item or "").strip().replace("\\", "/")
         if not rel:
             continue
-        if rel.startswith("design/"):
-            errors.append(f"来源文件不得列 design/ 工作稿：{rel}")
+        if rel == "design" or rel.startswith("design/") or rel.startswith(DESIGN_REL + "/"):
+            errors.append(f"来源文件不得列 {DESIGN_REL}/ 工作稿：{rel}")
             continue
         if not _is_project_relative(rel):
             errors.append(f"来源文件必须是项目相对路径（不得为绝对路径或含 .. 段）：{rel}")

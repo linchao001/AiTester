@@ -20,6 +20,7 @@ from test_case_design_driver import (
 
 from aitester.adapters.tools.subagent_tools import build_task_tool
 from aitester.case_design.constants import CASE_REVIEW_AGENT_ID, CASE_REVIEW_BLIND_AGENT_ID
+from aitester.case_design.stages import WRITEBACK_DONE_TIP
 from aitester.case_design.graph import build_case_design_graph
 from aitester.case_design.ledger import Ledger
 from aitester.orchestration import stream_graph
@@ -79,21 +80,21 @@ def _first_build_script() -> list[AIMessage]:
          "scenario": "退款金额超过订单金额时提交", "entities": ["退款"],
          "directions": ["负向"], "priority": "P0"}]}
     return [
-        _ai(_tc("w1", "write", "design/plan.json", plan)),                    # 0 明确任务直开账
+        _ai(_tc("w1", "write", ".AiTester/design/plan.json", plan)),                    # 0 明确任务直开账
         _ai("计划已写好。"),                                                   # 1
-        _ai(_tc("w2", "write", "design/drafts/chain/ALL.json", chain_v1)),    # 2
+        _ai(_tc("w2", "write", ".AiTester/design/drafts/chain/ALL.json", chain_v1)),    # 2
         _ai("链路草稿已交。"),                                                 # 3
-        _ai(_tc("r1", "read", "design/drafts/chain/ALL.json")),               # 4
-        _ai(_tc("w3", "write", "design/drafts/chain/ALL.json", chain_v2),     # 5
-            _tc("w4", "write", "design/reviews/blk-chain-ALL-fix-r0.json", fix)),
+        _ai(_tc("r1", "read", ".AiTester/design/drafts/chain/ALL.json")),               # 4
+        _ai(_tc("w3", "write", ".AiTester/design/drafts/chain/ALL.json", chain_v2),     # 5
+            _tc("w4", "write", ".AiTester/design/reviews/blk-chain-ALL-fix-r0.json", fix)),
         _ai("优化完成。"),                                                     # 6
-        _ai(_tc("w5", "write", "design/drafts/story/ch-0001.json", story_1)), # 7
+        _ai(_tc("w5", "write", ".AiTester/design/drafts/story/ch-0001.json", story_1)), # 7
         _ai("故事块一已交。"),                                                  # 8
-        _ai(_tc("w6", "write", "design/drafts/story/ch-0002.json", story_2)), # 9
+        _ai(_tc("w6", "write", ".AiTester/design/drafts/story/ch-0002.json", story_2)), # 9
         _ai("故事块二已交。"),                                                  # 10
-        _ai(_tc("w7", "write", "design/drafts/point/st-0001.json", point_1)), # 11
+        _ai(_tc("w7", "write", ".AiTester/design/drafts/point/st-0001.json", point_1)), # 11
         _ai("测试点块一已交。"),                                                # 12
-        _ai(_tc("w8", "write", "design/drafts/point/st-0002.json", point_2)), # 13
+        _ai(_tc("w8", "write", ".AiTester/design/drafts/point/st-0002.json", point_2)), # 13
         _ai("测试点块二已交。"),                                                # 14
     ]
 
@@ -119,17 +120,17 @@ def _update_script() -> list[AIMessage]:
          "scenario": "退款金额超过订单金额时提交", "entities": ["退款"],
          "directions": ["负向"], "priority": "P0"}]}
     return [
-        _ai(_tc("w1", "write", "design/plan.json", plan)),                        # 0 明确任务直开账
+        _ai(_tc("w1", "write", ".AiTester/design/plan.json", plan)),                        # 0 明确任务直开账
         _ai("计划已写好。"),                                                       # 1
-        _ai(_tc("w2", "write", "design/drafts/chain/ALL.json", chain)),           # 2
+        _ai(_tc("w2", "write", ".AiTester/design/drafts/chain/ALL.json", chain)),           # 2
         _ai("链路增量已交。"),                                                     # 3
-        _ai(_tc("w3", "write", "design/drafts/story/ch-0001.json", story_nc)),    # 4
+        _ai(_tc("w3", "write", ".AiTester/design/drafts/story/ch-0001.json", story_nc)),    # 4
         _ai("故事块一判定无变化。"),                                                # 5
-        _ai(_tc("w4", "write", "design/drafts/story/ch-0002.json", story_new)),   # 6
+        _ai(_tc("w4", "write", ".AiTester/design/drafts/story/ch-0002.json", story_new)),   # 6
         _ai("故事块二已交。"),                                                     # 7
-        _ai(_tc("w5", "write", "design/drafts/point/st-0001.json", point_nc)),    # 8
+        _ai(_tc("w5", "write", ".AiTester/design/drafts/point/st-0001.json", point_nc)),    # 8
         _ai("测试点块一判定无变化。"),                                              # 9
-        _ai(_tc("w6", "write", "design/drafts/point/st-0002.json", point_new)),   # 10
+        _ai(_tc("w6", "write", ".AiTester/design/drafts/point/st-0002.json", point_new)),   # 10
         _ai("测试点块二已交。"),                                                   # 11
     ]
 
@@ -205,7 +206,7 @@ def test_first_build_end_to_end(tmp_path: Path) -> None:
     provider2 = ScriptedProvider([])
     frames2 = list(stream_graph(build_case_design_graph, provider2, tools,
                                 [HumanMessage(content="通过")], case_env=env))
-    assert frames2[-1]["reply"] == "回写完成：本次过审节点已写入知识库。"
+    assert frames2[-1]["reply"] == "回写完成：本次过审节点已写入知识库。" + WRITEBACK_DONE_TIP
     assert "gate-int-r1" in task.call_ids()
     led = Ledger.load(env.design)
     assert led.status == "done"
@@ -278,7 +279,7 @@ def test_update_branch_end_to_end(tmp_path: Path) -> None:
     provider2 = ScriptedProvider([])
     frames2 = list(stream_graph(build_case_design_graph, provider2, tools,
                                 [HumanMessage(content="通过")], case_env=env))
-    assert frames2[-1]["reply"] == "回写完成：本次过审节点已写入知识库。"
+    assert frames2[-1]["reply"] == "回写完成：本次过审节点已写入知识库。" + WRITEBACK_DONE_TIP
     ledger = Ledger.load(env.design)
     assert ledger.status == "done"
     written = {(layer, node["id"]) for layer, node in kb.upserts}
@@ -306,7 +307,7 @@ def test_p4_blind_enumeration_sees_sources_not_tree(tmp_path: Path) -> None:
     assert _end_text(state["frames"]) == "大纲已生成（design/outline.md），等待人工评审。"
     enum_call = next(c for c in task.calls if c["call_id"].startswith("enum-chain-"))
     assert enum_call["agent"] == CASE_REVIEW_BLIND_AGENT_ID
-    assert "design/manifests/sources.json" in enum_call["brief"]
+    assert ".AiTester/design/manifests/sources.json" in enum_call["brief"]
     assert "drafts" not in enum_call["brief"]                # 简报结构性不带树
     manifest = json.loads((env.manifests_dir / "enum-chain.json").read_text(encoding="utf-8"))
     assert manifest["items"] == [{"kind": "业务对象", "name": "订单",
@@ -328,9 +329,9 @@ def _case_only_script() -> list[AIMessage]:
          "expected": ["订单状态为已创建", "库存数量比提交前减少 1"],
          "priority": "P0", "note": ""}]}
     return [
-        _ai(_tc("w1", "write", "design/plan.json", plan)),                    # 0 明确任务直开账
+        _ai(_tc("w1", "write", ".AiTester/design/plan.json", plan)),                    # 0 明确任务直开账
         _ai("计划已写好，本次是纯用例任务。"),                                  # 1
-        _ai(_tc("w2", "write", "design/cases/ch-0001-b1.json", cases)),        # 2
+        _ai(_tc("w2", "write", ".AiTester/design/cases/ch-0001-b1.json", cases)),        # 2
         _ai("第一批用例正文已交。"),                                           # 3
     ]
 
@@ -409,7 +410,7 @@ def test_e2e_needs_input_refuse_then_restart_replans(tmp_path):
                         "story": [], "point": []})
     env = _env(tmp_path, kb)
     task = ScriptTask()
-    state = {"messages": [HumanMessage("只更新 ch-9999")], "case": {}}
+    state = {"messages": [HumanMessage("更新测试设计，只针对 ch-9999")], "case": {}}
     _append(state, _drive(env, state, task))
     simulate(env, plan={"task_kind": "design", "entry_layer": "story", "terminal_layer": "point",
                         "target_subtree": "ch-9999", "source_files": [], "note": "窄任务"})

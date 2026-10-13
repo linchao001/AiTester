@@ -17,7 +17,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import ToolException
 
-from aitester.case_design.constants import FACE_REACT_READ, INTENT_NAME, NUDGE_CAP
+from aitester.case_design.constants import DESIGN_REL, FACE_REACT_READ, INTENT_NAME, NUDGE_CAP
 from aitester.case_design.driver import case_env_of
 from aitester.case_design.env import CaseDesignEnv
 from aitester.case_design.kb import KbClientError
@@ -26,7 +26,7 @@ from aitester.case_design.outline import compose_outline
 from aitester.case_design.reviewers import _RETRY_HINT
 from aitester.case_design.schema import ClaimsOut, parse_json_fence
 from aitester.case_design.stages import (
-    Ctx, GATE_CHAT_FALLBACK, _Halt, _claims_brief, _collect_writeback_items,
+    Ctx, DONE_CLOSED_MSG, GATE_CHAT_FALLBACK, WRITEBACK_DONE_TIP, _Halt, _claims_brief, _collect_writeback_items,
     _drafts_errors, _drop_out_of_window_hards, _explicit_approval, _layer_audited,
     _next_step_text, _open_of, _outline_extras, _patch_ids, _rescan_claims, _reset_gate_unclear,
     _wants_restart, _writeback_authorized, drive_turn, h_writeback,
@@ -533,7 +533,8 @@ def test_writeback_counts_untouched_nodes_and_says_it(tmp_path):
     assert n == 5 and led.status == "done"                        # 整轮首写：五个节点全落库
     assert led.data["writeback"]["written"] == n
     assert led.data["writeback"]["untouched"] == 0
-    assert _end_text(frames) == "回写完成：本次过审节点已写入知识库。"   # 无未触碰时逐字节不变
+    # 裁定 31 基句逐字不动；W4-2 在其后追加「本门已关闭」尾句（untouched==0 也带）。
+    assert _end_text(frames) == "回写完成：本次过审节点已写入知识库。" + WRITEBACK_DONE_TIP
 
     # 同一批节点再过一次门（库内内容已一致）：把账本复位成「刚过审、游标在回写」。
     led.cursor.update({"stage": "writeback"})
@@ -550,7 +551,8 @@ def test_writeback_counts_untouched_nodes_and_says_it(tmp_path):
     assert led.data["writeback"]["written"] == 0
     assert led.data["writeback"]["untouched"] == n
     assert _end_text(frames2) == ("回写完成：本次过审节点已写入知识库。"
-                                  f"（{n} 个节点内容与库内一致，未重写。）")
+                                  f"（{n} 个节点内容与库内一致，未重写。）"
+                                  + WRITEBACK_DONE_TIP)
 
 
 def test_writeback_mixed_round_says_only_the_untouched_subset(tmp_path):
@@ -565,7 +567,8 @@ def test_writeback_mixed_round_says_only_the_untouched_subset(tmp_path):
     assert led.data["writeback"]["written"] == 3
     assert led.data["writeback"]["untouched"] == 2
     assert _end_text(frames) == ("回写完成：本次过审节点已写入知识库。"
-                                 "（2 个节点内容与库内一致，未重写。）")
+                                 "（2 个节点内容与库内一致，未重写。）"
+                                 + WRITEBACK_DONE_TIP)
 
 
 def test_writeback_retry_does_not_call_previous_attempt_writes_untouched(tmp_path):
@@ -586,7 +589,7 @@ def test_writeback_retry_does_not_call_previous_attempt_writes_untouched(tmp_pat
     assert led.data["writeback"]["log"]                           # 失败留痕仍在
     assert led.data["writeback"]["written"] == 5                  # 上一尝试写过的 2 个仍算写入
     assert led.data["writeback"]["untouched"] == 0                # 整轮里五个文件全被动过
-    assert _end_text(frames) == "回写完成：本次过审节点已写入知识库。"   # 基句逐字节，无尾句
+    assert _end_text(frames) == "回写完成：本次过审节点已写入知识库。" + WRITEBACK_DONE_TIP
 
 
 def test_update_no_change_blocks_flow_and_mark_outline(tmp_path):
@@ -1888,7 +1891,9 @@ def test_wants_restart_truth_table():
         ("别重开", False), ("先不重开", False), ("未重开的意思", False),
         ("整体看没什么问题，重开就不必了", False),        # 后半分句自带「不」→ 整条否决
         ("继续", False), ("同意通过", False), ("", False),
-        ("这条链路重开了新市场", True),                   # 已登记的误判面（裁定 46）：钉住现状
+        # 裁定 46 二次收窄：裸「重开／作废」已从词表移除，业务叙述不得销毁现场（走查五误判面清偿）。
+        ("这条链路重开了新市场", False),
+        ("作废", False), ("重开", False),                # 裸词不再命中：须紧邻任务语义
     ):
         assert _wants_restart(text) is expected, text
 
@@ -1961,6 +1966,58 @@ def test_halted_new_turn_with_explicit_restart_archives(tmp_path):
     assert len(_archive_entries(env)) > len(arc_before)              # 明示重开才搬现场
     fresh = Ledger.load(env.design)
     assert fresh.data["task"] == {} and fresh.data["carried_stale"] == ["story"]
+
+
+def test_done_second_approval_is_idempotent(tmp_path):
+    """W4-2：任务已闭合后同一句批准二次到达不得被当新任务重烧——幂等终帧，明示重开才开新账。
+
+    业界「终态执行 id 幂等」的最小落地：done 是终态，纯批准二次到达只回「已闭合」，
+    既不重烧设计环（零写入增量）、也不销毁现场（不可逆）；只有明示「重开任务」才开新账。
+    """
+    kb = StubKb()
+    env = _env(tmp_path, kb)
+    drain(env, kb, ScriptTask())                                     # 跑到 awaiting_review
+    _drive(env, {"messages": [HumanMessage("同意通过")], "case": {}}, ScriptTask())
+    assert Ledger.load(env.design).status == "done"
+    upserts_before = len(kb.upserts)
+    arc_before = _archive_entries(env)
+
+    # 同一句批准二次到达：幂等终帧说「已闭合」，零写入增量、现场不搬
+    frames: list[dict] = []
+    turn = _drive(env, {"messages": [HumanMessage("通过")], "case": {}}, ScriptTask(),
+                  writer=frames.append)
+    assert turn["case"]["route"] == "end"
+    assert _end_text(frames) == DONE_CLOSED_MSG
+    assert len(kb.upserts) == upserts_before
+    assert _archive_entries(env) == arc_before                       # 幂等拒绝不销毁现场
+
+    # 明示重开才开新账：重新下发计划指令（路径与驱动读取处同源），并销毁现场
+    turn2 = _drive(env, {"messages": [HumanMessage("重开任务，按新范围来")], "case": {}},
+                   ScriptTask())
+    assert turn2["case"]["route"] == "agent"
+    assert f"{DESIGN_REL}/plan.json" in turn2["messages"][0].content
+    assert len(_archive_entries(env)) > len(arc_before)              # 只有这句才搬现场
+
+
+def test_ledger_snapshot_exposes_resume_restart_flags():
+    """点 3 显式入口的窄读数：snapshot 只给续跑／重开两个布尔，done 只可重开不可续跑。
+
+    产品面的「从断点继续／重开任务」按钮靠这两个标志点亮；needs_input 仍可点续跑
+    （驱动零成本拒绝），故 halted 一律 can_resume——真拒绝由驱动说，不由读数预判。
+    """
+    def snap(status: str) -> dict:
+        led = Ledger.fresh(Path("."))
+        led.data["status"] = status
+        return led.snapshot()
+    for status in ("active", "halted", "awaiting_review", "writeback_failed"):
+        assert snap(status)["can_resume"] and snap(status)["can_restart"], status
+    done = snap("done")
+    assert done["can_restart"] and not done["can_resume"]            # 闭合只给重开
+    led = Ledger.fresh(Path("."))
+    led.data["status"] = "halted"
+    led.data["halt"]["kind"] = "needs_input"
+    shot = led.snapshot()
+    assert shot["halt_kind"] == "needs_input" and shot["cursor"]["stage"] == "plan"
 
 
 def test_human_wait_halt_resume_goes_back_to_the_gate(tmp_path):
