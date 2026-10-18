@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11+, FastAPI, `queue.Queue` + `threading`, existing Reme `run_job_sync("auto_memory")`.
 
-**Spec:** User-confirmed scope 2; QwenPaw `MemoryMiddleware` / `add_summarize_task` behavior; [2026-10-10-memory-layer-reme-design.md](../specs/2026-10-10-memory-layer-reme-design.md) (layer-2 hooks; do not copy AgentScope middleware).
+**Spec:** User-confirmed scope 2; QwenPaw `MemoryMiddleware` / `add_summarize_task` behavior; [2026-10-11-memory-layer-reme-design.md](../specs/2026-10-11-memory-layer-reme-design.md) (layer-2 hooks; do not copy AgentScope middleware).
 
 ## Global Constraints
 
@@ -81,6 +81,6 @@ Per `session_id`: `pending` (FIFO markers + message snapshots), `seen` (cap 1000
 ### Task 4: Docs touch (memory design note)
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-10-10-memory-layer-reme-design.md` (interval semantics paragraph only)
+- Modify: `docs/superpowers/specs/2026-10-11-memory-layer-reme-design.md` (interval semantics paragraph only)
 
 - [x] **Step 1: Document interval + delete flush; note compress/memorize deferred**

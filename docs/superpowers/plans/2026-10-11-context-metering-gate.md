@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11 / FastAPI / LangGraph + langchain-core 1.6.6 / `tiktoken` 0.14.0（已装）/ React 18 + TypeScript 5.5（vite，无测试运行器）/ pytest。
 
-**Spec:** `docs/superpowers/specs/2026-10-09-context-management-design.md`（裁定 CM-1–CM-8、硬规则 R-C1–R-C6、坐标表）
+**Spec:** `docs/superpowers/specs/2026-10-11-context-management-design.md`（裁定 CM-1–CM-8、硬规则 R-C1–R-C6、坐标表）
 
 ---
 
@@ -1610,8 +1610,8 @@ git commit -m "feat(context): 上下文条改吃后端真值快照——删掉�
 
 **Files:**
 - Create: `backend/tests/test_context_e2e.py`
-- Modify: `docs/superpowers/plans/2026-10-09-context-metering-gate.md`（本文件，勾 step + 补「执行状态」段）
-- Modify: `docs/superpowers/specs/2026-10-09-context-management-design.md`（新增「## 实施澄清」小节，登记本片与 spec 原文有差之处）
+- Modify: `docs/superpowers/plans/2026-10-11-context-metering-gate.md`（本文件，勾 step + 补「执行状态」段）
+- Modify: `docs/superpowers/specs/2026-10-11-context-management-design.md`（新增「## 实施澄清」小节，登记本片与 spec 原文有差之处）
 
 **Interfaces:**
 - Consumes: C1–C6 全部
@@ -1724,7 +1724,7 @@ Expected: 全绿（基线 888 → 本片累计 **+43 左右**：C1 7 / C2 5 / C3
 - [x] **Step 4: 提交 + 推送**
 
 ```bash
-git add backend/tests/test_context_e2e.py docs/superpowers/plans/2026-10-09-context-metering-gate.md docs/superpowers/specs/2026-10-09-context-management-design.md
+git add backend/tests/test_context_e2e.py docs/superpowers/plans/2026-10-11-context-metering-gate.md docs/superpowers/specs/2026-10-11-context-management-design.md
 git commit -m "test(context): 离线端到端与两图同尺差分——读数三处同源、门禁收口"
 git push origin master:main
 ```
@@ -1734,8 +1734,8 @@ git push origin master:main
 ### Task C8: 付费走查（隔离实例 8014）——四条判据 + 清场 + 回填
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-10-09-context-management-design.md`（新增「## 走查一（第一片）」小节，逐条读数回填）
-- Modify: `docs/superpowers/plans/2026-10-09-context-metering-gate.md`（勾 step + 执行状态）
+- Modify: `docs/superpowers/specs/2026-10-11-context-management-design.md`（新增「## 走查一（第一片）」小节，逐条读数回填）
+- Modify: `docs/superpowers/plans/2026-10-11-context-metering-gate.md`（勾 step + 执行状态）
 - Create（走查证据，非提交物）：`D:/tmp/walkthrough_ctx/`（新建目录；**不许动 `D:/tmp/walkthrough_case`**）
 
 **Interfaces:**
@@ -1805,7 +1805,7 @@ ls -1 "C:/Users/qifengshunshi/.reme/knowledge_bases" | wc -l           # 期望 
 把四条判据的实测读数、成本 call 数（`^event: call` 计数，按裁定只报数不设线）、以及**走查中新发现的未修问题**（呈报项，等用户点头才开片）写进 spec「## 走查一（第一片）」小节与本计划「执行状态」段，然后：
 
 ```bash
-git add docs/superpowers/specs/2026-10-09-context-management-design.md docs/superpowers/plans/2026-10-09-context-metering-gate.md
+git add docs/superpowers/specs/2026-10-11-context-management-design.md docs/superpowers/plans/2026-10-11-context-metering-gate.md
 git commit -m "docs(context): 走查一读数回填——真值到位、闸门真管、到线只呈递"
 git push origin master:main
 ```

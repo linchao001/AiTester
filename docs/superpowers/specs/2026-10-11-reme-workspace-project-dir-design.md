@@ -2,12 +2,12 @@
 
 日期：2026-10-10  
 状态：用户确认裁定（1A + 2A），已实施；**落点子树已被**  
-[`2026-10-10-aitester-project-runtime-dir-design.md`](2026-10-10-aitester-project-runtime-dir-design.md)  
+[`2026-10-11-aitester-project-runtime-dir-design.md`](2026-10-11-aitester-project-runtime-dir-design.md)  
 **覆盖**：项目 Reme `workspace_dir` 现为 `{project.dir}/.AiTester`（不再直接落项目根）。  
 废止/覆盖：
 
 - `2026-10-01-knowledge-base-reme-design.md` 裁定 3（`(project, agent)` 独占 `backend/data/workspaces/...`）
-- `2026-10-10-memory-layer-reme-design.md` 裁定 3 中同口径句（实例粒度与 workspace 落点）
+- `2026-10-11-memory-layer-reme-design.md` 裁定 3 中同口径句（实例粒度与 workspace 落点）
 
 保留不变：KB 实体全局单份（`~/.reme/knowledge_bases/<kb_id>`）、进程内嵌、embedding 按 Key、个人记忆 job 面。
 

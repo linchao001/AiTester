@@ -4,8 +4,8 @@
 状态：用户确认裁定（cwd=项目根 + 路径改写；不自动迁移）  
 覆盖：
 
-- `2026-10-10-reme-workspace-project-dir-design.md` 裁定 1A 中「不另造隐藏子树 / 接受 Reme 目录落在项目根」
-- `2026-10-09-session-history-project-dir-design.md` 中 `{项目.dir}/session_history/` 落点
+- `2026-10-11-reme-workspace-project-dir-design.md` 裁定 1A 中「不另造隐藏子树 / 接受 Reme 目录落在项目根」
+- `2026-10-11-session-history-project-dir-design.md` 中 `{项目.dir}/session_history/` 落点
 - case_design 产物 `{项目.dir}/design/`
 
 保留不变：KB 实体全局单份（`~/.reme/knowledge_bases/<kb_id>`）、池键按解析后 workspace 路径、平台 fallback `data/workspaces/_platform`、智能体文件工具 cwd=项目绑定目录。

@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11+ / FastAPI / Reme 0.4.1.13 / agentscope 2.0.9（仅 agent_wrapper 环）/ LangChain + AiTester `LlmProvider` 注入 `as_llm` / LangGraph 主对话不变 / pytest.
 
-**Spec:** [docs/superpowers/specs/2026-10-10-memory-layer-reme-design.md](../specs/2026-10-10-memory-layer-reme-design.md)
+**Spec:** [docs/superpowers/specs/2026-10-11-memory-layer-reme-design.md](../specs/2026-10-11-memory-layer-reme-design.md)
 
 ## Global Constraints
 

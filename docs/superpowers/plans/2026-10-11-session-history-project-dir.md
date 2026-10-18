@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12 / FastAPI / pytest + TestClient；React + TypeScript（前端仅改 `client.ts` + `ChatPage.tsx` 传参）；无新依赖。
 
-**Spec:** `docs/superpowers/specs/2026-10-09-session-history-project-dir-design.md`
+**Spec:** `docs/superpowers/specs/2026-10-11-session-history-project-dir-design.md`
 
 ## Global Constraints
 
@@ -41,7 +41,7 @@
 | `backend/tests/test_session_locator.py` | Create | locator 解析与计数 |
 | `backend/tests/test_api_chat_sessions.py` | Modify | 新 Query；落盘路径断言；result 剥离 |
 | `backend/tests/test_*.py`（凡 `sessions_dir=`） | Modify | 去掉该参；经 locator/`_seed_project` 取 store |
-| `docs/superpowers/specs/2026-10-09-session-history-project-dir-design.md` | Modify | 状态改「已实现」（收尾任务） |
+| `docs/superpowers/specs/2026-10-11-session-history-project-dir-design.md` | Modify | 状态改「已实现」（收尾任务） |
 
 ---
 
@@ -423,7 +423,7 @@ git commit -m "feat(chat-ui): 拉历史/删会话带上 project 与 agent 作用
 
 **Files:**
 - Modify: `README.md`（聊天落盘段、单进程约束段）
-- Modify: `docs/superpowers/specs/2026-10-09-session-history-project-dir-design.md` 状态 → **已实现**
+- Modify: `docs/superpowers/specs/2026-10-11-session-history-project-dir-design.md` 状态 → **已实现**
 
 文案要点：
 - 会话落盘：`{项目本地文件目录}/session_history/<agent_id>/`
@@ -436,7 +436,7 @@ git commit -m "feat(chat-ui): 拉历史/删会话带上 project 与 agent 作用
 - [ ] **Step 2: Commit**
 
 ```bash
-git add README.md docs/superpowers/specs/2026-10-09-session-history-project-dir-design.md
+git add README.md docs/superpowers/specs/2026-10-11-session-history-project-dir-design.md
 git commit -m "docs(session): README 与 spec 同步项目 session_history 落盘"
 ```
 

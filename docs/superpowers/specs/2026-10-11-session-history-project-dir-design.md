@@ -12,7 +12,7 @@
 
 ## 用户裁定（2026-10-09，逐条确认）
 
-1. **整体迁移（A）**：`{项目.dir}/.AiTester/session_history/` 为唯一真相（见 `2026-10-10-aitester-project-runtime-dir-design.md`）；停止以 `backend/data/sessions` 为读写路径。
+1. **整体迁移（A）**：`{项目.dir}/.AiTester/session_history/` 为唯一真相（见 `2026-10-11-aitester-project-runtime-dir-design.md`）；停止以 `backend/data/sessions` 为读写路径。
 2. **不迁移旧数据（A）**：上线后旧目录会话不再被本系统读取；用户视为新开。
 3. **工具输出全量落盘（A）**：`steps[].result` 原样写入，不截断、不分文件。
 4. **按智能体分子目录（B）**：`session_history/<agent_id>/index.json` + `sess_*.jsonl`。
