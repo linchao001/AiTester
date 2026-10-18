@@ -5,9 +5,18 @@ import pytest
 from langchain_core.tools import ToolException
 
 from aitester.adapters.tools import build_default_registry
-from aitester.adapters.tools.kb_tools import PrepareKbWriteTool
+from aitester.adapters.tools.kb_tools import (
+    PrepareKbDeleteTool,
+    PrepareKbEditTool,
+    PrepareKbFrontmatterTool,
+    PrepareKbWriteTool,
+    RecallSessionHistoryTool,
+    filter_frontmatter_keys,
+    guard_knowledge_file_path,
+)
 from aitester.interaction.schemas import KbDraft
 from aitester.memory.reme.manager import RemeMemoryManager
+from aitester.services.session_store import SessionStore
 
 
 class _FakeKb:
@@ -173,3 +182,163 @@ def test_registry_registers_prepare_kb_write(tmp_path):
     reg = build_default_registry(cwd=".", kb=_StubRootKb(tmp_path), agent_id="kb_assistant")
     assert reg.get("prepare_kb_write") is not None
     assert reg.get("prepare_kb_write").kb_root == tmp_path
+
+
+# —— recall_session_history：默认上下文不含历史，智能体按需读回落盘 jsonl ——
+
+def _store_with(tmp_path, rows):
+    """建一个有真实会话正文的 SessionStore：只 append 的行会被 messages() 读回。"""
+    store = SessionStore(tmp_path / "hist", agent_id="kb_assistant")
+    sid = "sess_aaaaaaaa"
+    store.create(sid, "kb_assistant", "proj", rows[0][1] if rows else "hi")
+    for role, content in rows:
+        store.append(sid, role, content)
+    return store, sid
+
+
+def test_recall_without_store_or_sid_degrades():
+    """无存储或临时键：给模型一句可读降级，不抛。"""
+    assert "No persisted" in RecallSessionHistoryTool()._run()
+    assert "No persisted" in RecallSessionHistoryTool(store=None, session_id="")._run()
+
+
+def test_recall_reads_back_persisted_history(tmp_path):
+    store, sid = _store_with(tmp_path, [
+        ("user", "导出 P0 用例清单"),
+        ("assistant", "已导出到 test 目录"),
+        ("user", "再查一下热词"),
+        ("assistant", "热词命中 3 条"),
+    ])
+    out = RecallSessionHistoryTool(store=store, session_id=sid)._run()
+    assert "user: 导出 P0 用例清单" in out
+    assert "assistant: 热词命中 3 条" in out
+
+
+def test_recall_filters_by_query(tmp_path):
+    store, sid = _store_with(tmp_path, [
+        ("user", "热词是什么"),
+        ("assistant", "回答A"),
+        ("user", "另外一个话题"),
+    ])
+    out = RecallSessionHistoryTool(store=store, session_id=sid)._run(query="热词")
+    assert "热词是什么" in out
+    assert "另外一个话题" not in out
+    assert "回答A" not in out
+
+
+def test_recall_limit_truncates_to_most_recent(tmp_path):
+    rows = [("user" if i % 2 == 0 else "assistant", f"消息{i}") for i in range(10)]
+    store, sid = _store_with(tmp_path, rows)
+    out = RecallSessionHistoryTool(store=store, session_id=sid)._run(limit=2)
+    lines = [line for line in out.splitlines() if line]
+    assert lines == ["user: 消息8", "assistant: 消息9"]
+
+
+def test_recall_empty_session_reports_no_match(tmp_path):
+    store, sid = _store_with(tmp_path, [("user", "你好"), ("assistant", "在")])
+    out = RecallSessionHistoryTool(store=store, session_id=sid)._run(query="不存在的关键词")
+    assert "no matching" in out
+
+
+# —— KB 维护护栏：路径只允许 knowledge/ 子树内的一个具体文件（Blocker1 / High3） ——
+
+def test_guard_normalizes_both_path_spellings():
+    assert guard_knowledge_file_path("knowledge/business/wiki/a.md") == "knowledge/business/wiki/a.md"
+    # 检索结果展示口径 .AiTester/knowledge/... 必须归一到 job 口径 knowledge/...
+    assert guard_knowledge_file_path(".AiTester/knowledge/business/wiki/a.md") == "knowledge/business/wiki/a.md"
+    assert guard_knowledge_file_path("\\knowledge\\business\\wiki\\a.md") == "knowledge/business/wiki/a.md"
+    assert guard_knowledge_file_path("./knowledge/business/wiki/a.md") == "knowledge/business/wiki/a.md"
+
+
+@pytest.mark.parametrize("bad", [
+    "knowledge",                       # 整根
+    "knowledge/business",              # 顶层桶
+    "knowledge/business/wiki",         # 发布桶目录（无扩展名）
+    "knowledge/business/wiki/",        # 尾斜杠：叶子空
+])
+def test_guard_blocks_root_bucket_and_folder(bad):
+    with pytest.raises(ToolException):
+        guard_knowledge_file_path(bad)
+
+
+@pytest.mark.parametrize("bad", [
+    "", "   ",                                   # 空
+    "other/a.md",                                # 不在 knowledge/ 子树
+    "knowledge/../../etc/passwd",                # .. 越界
+    "/absolute/knowledge/a.md",                  # 绝对路径剥前导 / 后仍要求 knowledge 打头
+    "knowledge/business/wiki",                   # 目录（无扩展名）
+])
+def test_guard_rejects_traversal_and_outside(bad):
+    with pytest.raises(ToolException):
+        guard_knowledge_file_path(bad)
+
+
+def test_filter_frontmatter_keys_strips_dedups_and_drops_protected():
+    assert filter_frontmatter_keys([" tags ", "owner", "tags", ""]) == ["tags", "owner"]
+    # 结构性 key 被剔除；只剩受保护 key 时清洗后为空即拒
+    with pytest.raises(ToolException):
+        filter_frontmatter_keys(["name", "id", "type", "path", "source"])
+    with pytest.raises(ToolException):
+        filter_frontmatter_keys([])
+
+
+# —— 三个维护草案工具：零写盘、按 kind 出草案、护栏/参数校验前置 ——
+
+class _NoJobKb(_StubRootKb):
+    def run_job_sync(self, name, **kwargs):  # pragma: no cover
+        raise AssertionError("维护草案工具不应触发任何 job")
+
+
+def test_prepare_delete_zero_write(tmp_path):
+    out, art = PrepareKbDeleteTool()._run(path="knowledge/business/wiki/a.md", summary="删掉")
+    assert "NOT yet deleted" in out
+    assert art["kind"] == "delete" and art["path"] == "knowledge/business/wiki/a.md"
+    assert art["summary"] == "删掉"
+
+
+def test_prepare_delete_blocks_folder(tmp_path):
+    with pytest.raises(ToolException):
+        PrepareKbDeleteTool()._run(path="knowledge/business/wiki")
+
+
+def test_prepare_edit_zero_write_and_requires_old(tmp_path):
+    out, art = PrepareKbEditTool()._run(
+        path="knowledge/business/wiki/a.md", old="foo", new="bar", summary="改")
+    assert "NOT yet written" in out
+    assert art["kind"] == "edit" and art["old"] == "foo" and art["new"] == "bar"
+    # new='' 合法（删命中文本）；old 空即拒
+    _, art2 = PrepareKbEditTool()._run(path="knowledge/business/wiki/a.md", old="x", new="")
+    assert art2["new"] == ""
+    with pytest.raises(ToolException, match="old"):
+        PrepareKbEditTool()._run(path="knowledge/business/wiki/a.md", old="")
+
+
+def test_prepare_frontmatter_zero_write_and_protected_key(tmp_path):
+    out, art = PrepareKbFrontmatterTool()._run(
+        path="knowledge/business/wiki/a.md", keys=["tags", "owner"])
+    assert "NOT yet written" in out
+    assert art["kind"] == "frontmatter" and art["keys"] == ["tags", "owner"]
+    with pytest.raises(ToolException):
+        PrepareKbFrontmatterTool()._run(path="knowledge/business/wiki/a.md", keys=["name"])
+
+
+@pytest.mark.parametrize("art", [
+    PrepareKbDeleteTool()._run(path="knowledge/business/wiki/a.md")[1],
+    PrepareKbEditTool()._run(path="knowledge/business/wiki/a.md", old="x", new="y")[1],
+    PrepareKbFrontmatterTool()._run(path="knowledge/business/wiki/a.md", keys=["tags"])[1],
+])
+def test_maintenance_draft_conforms_to_kb_draft_contract(art):
+    # 草案经路由 _draft_frame 严格校验：维护类缺 title/content/bucket，靠 KbDraft 默认值兜住
+    d = KbDraft.model_validate(art)
+    assert d.kind == art["kind"]
+    assert d.title == "" and d.content == ""
+
+
+def test_registry_registers_prepare_maintenance_tools(tmp_path):
+    reg = build_default_registry(cwd=".", kb=_NoJobKb(tmp_path), agent_id="kb_assistant")
+    for tid in ("prepare_kb_delete", "prepare_kb_edit", "prepare_kb_frontmatter"):
+        assert reg.get(tid) is not None
+    # 旧直连落盘工具名彻底消失（结构上收回模型手里的写盘能力）
+    assert reg.get("delete_kb_file") is None
+    assert reg.get("edit_kb_file") is None
+    assert reg.get("delete_kb_frontmatter") is None

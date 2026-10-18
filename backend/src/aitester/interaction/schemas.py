@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class EchoRequest(BaseModel):
@@ -35,20 +35,43 @@ class StreamStopResponse(BaseModel):
 
 
 class KbDraft(BaseModel):
-    """助手写入草案：确认后走 Reme save_to_knowledge（title/content/bucket）。
+    """助手草案（写入/维护统一卡片），确认后走对应 /api/kb/* 端点→ Reme job。
 
-    path/abs_display 仅供卡片展示预期落点；base/mtime 保留兼容，Reme 确认路径不用。
+    kind 为判别子：“save”走 save_to_knowledge（title/content/bucket）；
+    “delete”看 path；“edit”看 path/old/new；“frontmatter”看 path/keys。
+    保存类以外的 kind 不使用 title/content/bucket（默认空），卡片按 kind 分支渲染。
+    path/abs_display 仅供展示预期落点；base/mtime 保留兼容，Reme 确认路径不用。
     """
 
-    title: str
-    content: str
-    bucket: str
+    kind: Literal["save", "delete", "edit", "frontmatter"] = "save"
+    title: str = ""
+    content: str = ""
+    bucket: str = ""
     summary: str = ""
     op: str = "create"
     path: str = ""
     abs_display: str = ""
     base: str | None = None
     mtime: int = 0
+    keys: list[str] = Field(default_factory=list)
+    old: str = ""
+    new: str = ""
+
+    @model_validator(mode="after")
+    def _require_per_kind(self) -> "KbDraft":
+        """按 kind 收口必填：在 SSE 序列化边界（router._draft_frame）拦下缺料草案，
+        不敿整条流；真正的落盘护栏在确认端点侧再验一层。"""
+        if self.kind == "save":
+            if not (self.title.strip() and self.content.strip() and self.bucket.strip()):
+                raise ValueError("save draft requires non-empty title/content/bucket")
+        else:
+            if not self.path.strip():
+                raise ValueError(f"{self.kind} draft requires a non-empty target path")
+        if self.kind == "edit" and not self.old:
+            raise ValueError("edit draft requires non-empty old text")
+        if self.kind == "frontmatter" and not self.keys:
+            raise ValueError("frontmatter draft requires at least one key")
+        return self
 
 
 class StepInfo(BaseModel):
@@ -221,6 +244,32 @@ class KbSaveRequest(BaseModel):
     title: str
     content: str
     bucket: str = "business/wiki"
+    # Reme 实例按项目 workspace 定位（{dir}/.AiTester），save 必须带项目，否则空 project_id 会触发「必须绑定项目」
+    project_id: str = ""
+
+
+class KbDeleteRequest(BaseModel):
+    """确认后执行硬删：path 为归一后、护栏复验的 knowledge/... 单文件。"""
+
+    path: str
+    project_id: str = ""
+
+
+class KbEditRequest(BaseModel):
+    """确认后执行正文替换：只动 body，护栏复验 path；new='' 即删命中文本。"""
+
+    path: str
+    old: str
+    new: str = ""
+    project_id: str = ""
+
+
+class KbFrontmatterDeleteRequest(BaseModel):
+    """确认后执行删 frontmatter 字段：keys 由端点侧 filter 复验（去受保护 key）。"""
+
+    path: str
+    keys: list[str] = Field(default_factory=list)
+    project_id: str = ""
 
 
 class KbInboxStemRequest(BaseModel):

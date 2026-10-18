@@ -1,6 +1,14 @@
 """编排 loop 层：LangGraph 状态图。"""
 
-from aitester.orchestration.agent_graph import AgentState, build_agent_graph, run_agent, run_graph, stream_graph
+from aitester.orchestration.agent_graph import (
+    AgentState,
+    build_agent_graph,
+    make_create_agent_builder,
+    run_agent,
+    run_graph,
+    stream_create_agent_graph,
+    stream_graph,
+)
 from aitester.orchestration.auth_rules import (
     face_can_suspend,
     needs_approval,
@@ -52,6 +60,7 @@ __all__ = [
     "face_can_suspend",
     "get_checkpointer",
     "get_graph_builder",
+    "make_create_agent_builder",
     "make_gate_node",
     "needs_approval",
     "new_thread_id",
@@ -61,6 +70,7 @@ __all__ = [
     "run_echo",
     "run_graph",
     "shape_task_batch",
+    "stream_create_agent_graph",
     "stream_graph",
     "validate_perm_mode",
 ]

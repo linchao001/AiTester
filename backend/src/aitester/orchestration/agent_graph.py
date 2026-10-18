@@ -18,6 +18,8 @@ from aitester.adapters.llm import LlmProvider
 from aitester.adapters.tools.base import AiTooler
 from aitester.case_design.constants import CASE_DESIGN_KEY
 from aitester.case_design.env import CaseDesignEnv
+from aitester.context import meter
+from aitester.context.usage import ContextUsage
 from aitester.orchestration.checkpoint import get_checkpointer, new_thread_id
 from aitester.orchestration.gate import GATE_KEY, GateContext, make_gate_node
 from aitester.orchestration.run_control import RUN_CONTROL_KEY, RunControl
@@ -331,3 +333,154 @@ def run_agent(
 ) -> dict[str, Any]:
     """默认 react 循环的便捷入口（等价于 run_graph(build_agent_graph, …)）。"""
     return run_graph(build_agent_graph, provider, tools, messages)
+
+
+def make_create_agent_builder() -> GraphBuilder:
+    """langchain create_agent 图工厂：返回 (provider, tools) → CompiledStateGraph 的闭包。
+
+    system_prompt 不在此烤入——会话原料已在 ChatService.prepare 里拼成含 SystemMessage
+    的 messages 并整体喂给图，create_agent 不再自加 system，避免双 system。
+    模型取 provider.base_chat_model（真 BaseChatModel）；工具由 create_agent 自己 bind。
+    """
+    def build(provider: LlmProvider, tools: list[AiTooler]) -> CompiledStateGraph:
+        from langchain.agents import create_agent
+
+        model = getattr(provider, "base_chat_model", None)
+        if model is None:
+            raise ValueError("provider 未暴露 base_chat_model，无法用 create_agent 装配")
+        return create_agent(model=model, tools=list(tools), checkpointer=get_checkpointer())
+
+    return build
+
+
+def stream_create_agent_graph(
+    build: GraphBuilder,
+    provider: LlmProvider,
+    tools: list[AiTooler],
+    messages: list[BaseMessage],
+    control: RunControl | None = None,
+    thread_id: str = "",
+    resume: Any = None,
+    gate: GateContext | None = None,
+    case_env: CaseDesignEnv | None = None,
+    usage: ContextUsage | None = None,
+) -> Iterator[dict[str, Any]]:
+    """create_agent 图的实时事件折流：产出与 stream_graph 同一套词表（delta/call/step/draft/finish）。
+
+    create_agent 基于 LangGraph，节点名是 model / tools；不吃自定义 stream_writer，所以改用
+    stream_mode=["messages", "updates"]：
+    - messages：逐 token 的 AIMessageChunk（node=model）→ delta；工具轮 ToolMessage 也在这一层但不用它；
+    - updates：model 结点的 AIMessage（含已解析 tool_calls）→ call；tools 结点的 ToolMessage → step/draft。
+    轮次与 react 同口径：round = 1 + 已落地 ToolMessage 数。reply 取最后一个无 tool_calls 的
+    model 轮正文（与 react「后写非工具轮 content 覆盖」同语义）。计量在这条流里补：
+    开流 note_request(估算)，收尾从块 usage_metadata note_response(真值)；未跑完（停止）则声明无真值。
+    kb_assistant 无 gate/resume/case_env：这三形参接住但不消费（与 stream_graph 签名对齐好分流）。
+    """
+    graph = build(provider, tools)
+    thread = thread_id or new_thread_id()
+    stream = graph.stream(
+        {"messages": messages},
+        config={"configurable": {"thread_id": thread}},
+        stream_mode=["messages", "updates"],
+    )
+
+    if usage is not None:
+        try:
+            usage.note_request(meter.estimate_messages(messages))
+        except Exception as exc:                    # 尺自己坏了也只许「这一轮没读数」，不许把回合打死
+            usage.note_request(0)
+            usage.error = f"计量失败：{type(exc).__name__}"
+
+    reply = ""
+    tool_traces: list[dict[str, Any]] = []
+    drafts: list[dict[str, Any]] = []
+    calls_by_id: dict[str, dict[str, Any]] = {}
+    current_tool_round = 1
+    real_in: int | None = None
+    real_out: int | None = None
+    stopped = False
+
+    for mode, payload in stream:
+        if control is not None and control.cancelled:
+            stopped = True
+            break
+        if mode == "messages":
+            msg, meta = payload
+            if not isinstance(msg, AIMessageChunk):
+                continue
+            if meta.get("langgraph_node") != "model":
+                continue
+            piece = str(msg.content or "")
+            if piece:
+                yield {"type": "delta", "round": 1 + len(tool_traces), "text": piece}
+            um = getattr(msg, "usage_metadata", None)
+            if um:
+                real_in = um.get("input_tokens") or real_in
+                real_out = um.get("output_tokens") or real_out
+            continue
+
+        if not isinstance(payload, dict):
+            continue
+        model_upd = payload.get("model")
+        if isinstance(model_upd, dict):
+            for msg in model_upd.get("messages") or []:
+                if not isinstance(msg, AIMessage):
+                    continue
+                if msg.tool_calls:
+                    current_tool_round = 1 + len(tool_traces)
+                    for call in msg.tool_calls:
+                        calls_by_id[str(call.get("id"))] = call
+                        yield {
+                            "type": "call",
+                            "tool": call["name"],
+                            "round": current_tool_round,
+                            "detail": detail_of(call),
+                        }
+                elif str(msg.content or ""):
+                    # 无工具轮正文即候选回复：后写的覆盖前面的（与 react 同口径）
+                    reply = str(msg.content)
+            continue
+
+        tools_upd = payload.get("tools")
+        if isinstance(tools_upd, dict):
+            for msg in tools_upd.get("messages") or []:
+                if not isinstance(msg, ToolMessage):
+                    continue
+                detail = detail_of(calls_by_id.get(str(msg.tool_call_id), {}))
+                trace = {
+                    "tool": msg.name or "",
+                    "result": str(msg.content),
+                    "ok": str(getattr(msg, "status", "success")) != "error",
+                    "round": current_tool_round,
+                    "detail": detail,
+                }
+                tool_traces.append(trace)
+                yield {
+                    "type": "step",
+                    "tool": trace["tool"],
+                    "ok": trace["ok"],
+                    "round": trace["round"],
+                    "detail": trace["detail"],
+                }
+                art = getattr(msg, "artifact", None)
+                # 知识库草案统一按 artifact 里的 kind 判别（save/delete/edit/frontmatter），
+                # 与 prepare_* 工具解耦：只有 KB 草案工具产带 kind 的 dict artifact。
+                if isinstance(art, dict) and art.get("kind") in ("save", "delete", "edit", "frontmatter"):
+                    drafts.append(art)
+                    yield {"type": "draft", "draft": art}
+
+    if usage is not None:
+        # 跑完整条流才拿真值：断开/取消时用量尚未发生完，一律声明「这轮没有真值」
+        if stopped:
+            usage.note_response(None, None)
+        else:
+            usage.note_response(real_in, real_out)
+
+    yield {
+        "type": "finish",
+        "reply": reply,
+        "tool_traces": tool_traces,
+        "drafts": drafts,
+        "stopped": stopped,
+        "pending": False,
+    }

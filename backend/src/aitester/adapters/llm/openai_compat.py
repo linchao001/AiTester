@@ -29,6 +29,15 @@ class OpenAICompatProvider:
             stream_usage=stream_usage,
         )
 
+    @property
+    def base_chat_model(self) -> ChatOpenAI:
+        """底层 LangChain BaseChatModel：create_agent 需要真正的聊天模型，自行 bind_tools。
+
+        返回未 bound 的实例（装配链上 provider_override 短路时也是这一份），
+        让 create_agent 在自己的 model 节点里绑工具，避免与适配器 bind_tools 双重绑定。
+        """
+        return self._client
+
     def complete(self, messages: list[dict[str, str]]) -> str:
         try:
             result = self._client.invoke(messages)

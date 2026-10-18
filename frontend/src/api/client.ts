@@ -215,11 +215,35 @@ export function kbSearch(query: string, limit: number, bucket: string): Promise<
   });
 }
 
-export function kbSave(title: string, content: string, bucket: string): Promise<KbResponse> {
+export function kbSave(title: string, content: string, bucket: string, projectId: string): Promise<KbResponse> {
   return apiFetch<KbResponse>("/api/kb/save", {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify({ title, content, bucket }),
+    body: JSON.stringify({ title, content, bucket, project_id: projectId }),
+  });
+}
+
+/** 草案确认后真正落盘：硬删/正文替换/删元数据字段（后端护栏复验，path 可带 knowledge/ 或 .AiTester/knowledge/）。 */
+export function kbDeleteFile(path: string, projectId: string): Promise<KbResponse> {
+  return apiFetch<KbResponse>("/api/kb/delete", {
+    method: "POST", headers: JSON_HEADERS,
+    body: JSON.stringify({ path, project_id: projectId }),
+  });
+}
+export function kbEditFile(
+  path: string, old: string, newVal: string, projectId: string,
+): Promise<KbResponse> {
+  return apiFetch<KbResponse>("/api/kb/edit", {
+    method: "POST", headers: JSON_HEADERS,
+    body: JSON.stringify({ path, old, new: newVal, project_id: projectId }),
+  });
+}
+export function kbFrontmatterDelete(
+  path: string, keys: string[], projectId: string,
+): Promise<KbResponse> {
+  return apiFetch<KbResponse>("/api/kb/frontmatter_delete", {
+    method: "POST", headers: JSON_HEADERS,
+    body: JSON.stringify({ path, keys, project_id: projectId }),
   });
 }
 
@@ -317,18 +341,24 @@ export function wsPutFile(pid: string, path: string, content: string, mtime: num
     method: "PUT", headers: JSON_HEADERS, body: JSON.stringify({ content }) });
 }
 
-/** 助手草案：确认后走 /api/kb/save → Reme save_to_knowledge（非 browse 直写）。 */
+/** 助手草案（写入/维护统一卡片）：kind 判别确认后走哪个端点。
+ *  save → /api/kb/save；delete → /api/kb/delete；edit → /api/kb/edit；frontmatter → /api/kb/frontmatter_delete。 */
 export interface KbDraft {
+  kind: "save" | "delete" | "edit" | "frontmatter";
   title: string;
   content: string;
   bucket: string;
   summary: string;
   op: "create" | "modify";
-  /** 展示用预期相对路径，最终落点以 Reme 为准。 */
+  /** save：展示用预期相对路径；delete/edit/frontmatter：目标文件相对路径（knowledge/... 或 .AiTester/knowledge/...）。 */
   path: string;
   abs_display: string;
   base: string | null;
   mtime: number;
+  /** frontmatter：待删字段；edit：old/new 预览。其余为空。 */
+  keys: string[];
+  old: string;
+  new: string;
 }
 
 export interface ChatStep {

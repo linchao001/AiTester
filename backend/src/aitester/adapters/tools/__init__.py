@@ -11,7 +11,14 @@ from aitester.adapters.tools.file_tools import (
     ReadTool,
     WriteTool,
 )
-from aitester.adapters.tools.kb_tools import KbSaveTool, KbSearchTool, PrepareKbWriteTool
+from aitester.adapters.tools.kb_tools import (
+    PrepareKbDeleteTool,
+    PrepareKbEditTool,
+    PrepareKbFrontmatterTool,
+    KbSaveTool,
+    KbSearchTool,
+    PrepareKbWriteTool,
+)
 from aitester.adapters.tools.registry import ToolRegistry
 from aitester.adapters.tools.web_tools import WebSearchTool
 
@@ -57,6 +64,11 @@ def build_default_registry(
             KbSaveTool(kb=kb, agent_id=agent_id, project_id=pid, usage=usage)
         )
         registry.register(PrepareKbWriteTool(kb_root=Path(kb.kb_root_dir), usage=usage))
+        # KB 文件维护：硬删/正文替换/删元数据字段——均为零写盘草案工具，
+        # 落盘只由用户确认后、前端调 /api/kb/{delete,edit,frontmatter_delete} 完成（模型不持执行工具）。
+        registry.register(PrepareKbDeleteTool(usage=usage))
+        registry.register(PrepareKbEditTool(usage=usage))
+        registry.register(PrepareKbFrontmatterTool(usage=usage))
     return registry
 
 
@@ -70,6 +82,9 @@ __all__ = [
     "GrepSearchTool",
     "KbSaveTool",
     "KbSearchTool",
+    "PrepareKbDeleteTool",
+    "PrepareKbEditTool",
+    "PrepareKbFrontmatterTool",
     "PwshTool",
     "PrepareKbWriteTool",
     "ReadTool",

@@ -94,9 +94,14 @@ KB_ASSISTANT_SPEC = AgentSpec(
     prompt=_load_prompt("kb_assistant"),
     # 工具面只接 Reme：检索 knowledge_search；写入经 prepare_kb_write 出草案，
     # 用户确认后走 /api/kb/save → save_to_knowledge（不绑 FS 读写、不直绑 save）。
+    # 维护面同样零写盘出草案：prepare_kb_delete 硬删、prepare_kb_edit 替换正文、
+    # prepare_kb_frontmatter 删元数据字段——落盘只在用户确认后由 /api/kb/* 端点执行（模型不持执行工具）。
     default_tool_ids=(
         "knowledge_search",
         "prepare_kb_write",
+        "prepare_kb_delete",
+        "prepare_kb_edit",
+        "prepare_kb_frontmatter",
     ),
 )
 

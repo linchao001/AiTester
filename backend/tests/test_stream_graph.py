@@ -86,7 +86,7 @@ def test_draft_event_arrives_before_finish(tmp_path: Path) -> None:
     (tmp_path / "_inbox").mkdir()
     provider = _Scripted([
         AIMessage(content="", tool_calls=[{"name": "prepare_kb_write", "args": {
-            "op": "create", "path": "_inbox/n.md", "content": "# N", "summary": "新建"},
+            "title": "N", "content": "# N", "bucket": "business/wiki", "summary": "新建"},
             "id": "c1", "type": "tool_call"}]),
         AIMessage(content="草案已生成，请点确认"),
     ])
@@ -95,7 +95,7 @@ def test_draft_event_arrives_before_finish(tmp_path: Path) -> None:
     kinds = [e["type"] for e in events]
     assert "draft" in kinds
     assert kinds.index("draft") < kinds.index("finish")
-    assert events[kinds.index("draft")]["draft"]["path"] == "_inbox/n.md"
+    assert events[kinds.index("draft")]["draft"]["path"] == "business/wiki/n.md"
 
 
 def test_control_hit_stops_deltas_and_marks_finish_stopped(tmp_path: Path) -> None:

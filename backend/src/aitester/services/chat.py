@@ -13,6 +13,7 @@ from aitester.context import ContextBuilder, PassthroughContextBuilder
 from aitester.context.usage import ContextUsage
 from aitester.memory import InMemoryMemoryStore, MemoryStore
 from aitester.orchestration import drop_thread, new_thread_id, run_echo, stream_graph
+from aitester.orchestration.agent_graph import stream_create_agent_graph
 from aitester.orchestration.auth_rules import DEFAULT_PERM_MODE, validate_perm_mode
 from aitester.orchestration.gate import GateContext, build_gate_context
 from aitester.orchestration.graph_registry import GraphBuilder
@@ -39,16 +40,10 @@ from aitester.storage import InMemoryRepository, Repository
 
 SYSTEM_PROMPT = "你是 AiTester 测试智能体（骨架占位）。"
 
-# 只截 prompt，磁盘保留全量：不截则真实模型下长会话每轮 token 线性上涨（spec 裁定 6）
-# 与 frontend/src/pages/chat/utils.ts 的 HISTORY_MAX 同一常数（第 4 片裁定 6）
+# 主聊天：只截 prompt，磁盘保留全量（spec 裁定 6），与 frontend HISTORY_MAX 同一常数。
+# 知识库助手不再截窗：默认不把历史注入 prompt，改由 recall_session_history 工具按需召回。
 HISTORY_MAX = 40
-# 知识库助手面向 QA：进模型只要短窗多轮（4 轮 ≈ 8 条 user/assistant），不必跟主聊天共用 40
-KB_HISTORY_MAX = 8
 KB_ASSISTANT_ID = "kb_assistant"
-
-
-def _history_max_for(agent_id: str) -> int:
-    return KB_HISTORY_MAX if agent_id == KB_ASSISTANT_ID else HISTORY_MAX
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +117,8 @@ class PreparedRun:
     # 本回合的上下文累加件（装配根造好、provider/工具共用同一本）：手工装配的挂具实例
     # 没有它 ⇒ None ⇒ 落盘与终帧的 context 键都是 null，界面显「—」
     usage: ContextUsage | None = None
+    # 事件折流走哪条实现："react"=stream_graph，"create_agent"=stream_create_agent_graph
+    stream_kind: str = "react"
 
 
 class ChatService:
@@ -215,7 +212,9 @@ class ChatService:
         pid = (project_id or "").strip()
         sid = (session_id or "").strip()
         store = None
-        if self.sessions is not None and not platform and pid:
+        # 会话落盘对所有智能体一视同仁（含 kb_assistant）：平台助手不再只走进程内短窗，
+        # 历史逐回合落 session_history/<agent>/，供列表与 recall_session_history 工具读回。
+        if self.sessions is not None and pid:
             store = self.sessions.for_agent(pid, agent_id)
         if not sid:
             if store is None:
@@ -243,9 +242,10 @@ class ChatService:
             # 落盘数据与 UI 仍是用户输入的原始形态，无迁移
             cwd=str(Path(project["dir"]).expanduser()),
             project_id=pid,
+            session_store=store,
         )
 
-        use_file = store is not None and is_session_id(sid) and not platform
+        use_file = store is not None and is_session_id(sid)
         memory: MemoryStore
         if use_file:
             # 延迟导入：避免顶层 memory.session.file_memory → services → chat 成环
@@ -258,8 +258,12 @@ class ChatService:
         # 判定与落点认同一个展开：dir 配成 ~/x 时两侧都看到家目录（第 2 片教训的对称面）
         project_dir = str(Path(project["dir"]).expanduser().resolve())
         key = f"{instance.agent_id}:{sid}"
-        # 只截进模型的 prompt；记忆/UI 仍可留全量。kb_assistant 用短窗，主聊天仍 HISTORY_MAX。
-        history = memory.recall(key)[-_history_max_for(instance.agent_id):]
+        # 上下文机制分层：平台助手（kb_assistant）默认零历史注入——既往对话只落盘，
+        # 需要时由智能体调 recall_session_history 按需召回填充；主聊天仍截最近 HISTORY_MAX。
+        if platform:
+            history: list[dict[str, str]] = []
+        else:
+            history = memory.recall(key)[-HISTORY_MAX:]
         messages = _to_langchain_messages(
             self.context.build(instance.system_prompt, history, message)
         )
@@ -295,6 +299,7 @@ class ChatService:
             gate=gate,
             case_env=instance.case_env,
             usage=instance.usage,
+            stream_kind=instance.stream_kind,
         )
 
     def _persist(
@@ -353,11 +358,17 @@ class ChatService:
         """
         control = control or RunControl()
         thread_id = run_id or new_thread_id()
-        events = stream_graph(
-            prepared.build, prepared.provider, prepared.tools, prepared.messages,
-            control=control, thread_id=thread_id, gate=prepared.gate,
-            case_env=prepared.case_env,
-        )
+        if prepared.stream_kind == "create_agent":
+            events = stream_create_agent_graph(
+                prepared.build, prepared.provider, prepared.tools, prepared.messages,
+                control=control, thread_id=thread_id, usage=prepared.usage,
+            )
+        else:
+            events = stream_graph(
+                prepared.build, prepared.provider, prepared.tools, prepared.messages,
+                control=control, thread_id=thread_id, gate=prepared.gate,
+                case_env=prepared.case_env,
+            )
         return self._fold_turn(events, prepared, control, thread_id)
 
     def _fold_turn(

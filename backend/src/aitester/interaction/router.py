@@ -7,9 +7,11 @@ from typing import Any, AsyncIterator, Iterator
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
+from langchain_core.tools import ToolException
 from pydantic import ValidationError
 
 from aitester.adapters.llm import ProviderConfigError, ProviderError
+from aitester.adapters.tools.kb_tools import filter_frontmatter_keys, guard_knowledge_file_path
 from aitester.interaction.schemas import (
     AgentDefaultUpdate,
     AgentToolsUpdate,
@@ -26,6 +28,9 @@ from aitester.interaction.schemas import (
     KbResponse,
     KbSaveRequest,
     KbSearchRequest,
+    KbDeleteRequest,
+    KbEditRequest,
+    KbFrontmatterDeleteRequest,
     KeyUpdate,
     ModelsResponse,
     PendingCallInfo,
@@ -444,14 +449,74 @@ async def kb_search(request: Request, body: KbSearchRequest):
 
 @router.post("/kb/save", response_model=KbResponse)
 async def kb_save(request: Request, body: KbSaveRequest):
+    pid = (body.project_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="请先选择项目")
     try:
         resp = await _kb(request).run_job(
-            "save_to_knowledge", title=body.title, content=body.content, bucket=body.bucket,
+            "save_to_knowledge", project_id=pid,
+            title=body.title, content=body.content, bucket=body.bucket,
         )
     except KbUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     # 控制端裁定：save 后不再同步补跑 reindex——写方实例由后台
     # index_update_loop 收敛，跨实例最终一致已有专项测试覆盖
+    return _kb_payload(resp)
+
+
+def _kb_pid(body_project_id: str) -> str:
+    pid = (body_project_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="请先选择项目")
+    return pid
+
+
+@router.post("/kb/delete", response_model=KbResponse)
+async def kb_delete(request: Request, body: KbDeleteRequest):
+    """确认后硬删 KB 单文件（端点侧护栏复验，不信前端草案）；metadata 透传入链清单供跟进。"""
+    pid = _kb_pid(body.project_id)
+    try:
+        rel = guard_knowledge_file_path(body.path)
+        resp = await _kb(request).run_job("delete", project_id=pid, path=rel)
+    except ToolException as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KbUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return _kb_payload(resp)
+
+
+@router.post("/kb/edit", response_model=KbResponse)
+async def kb_edit(request: Request, body: KbEditRequest):
+    """确认后替换 KB 正文（只动 body、护 frontmatter）；护栏复验 path，old 非空。"""
+    pid = _kb_pid(body.project_id)
+    try:
+        rel = guard_knowledge_file_path(body.path)
+        if not body.old:
+            raise ToolException("Invalid old: provide the non-empty text to replace.")
+        resp = await _kb(request).run_job(
+            "edit", project_id=pid, path=rel, old=body.old, new=body.new,
+        )
+    except ToolException as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KbUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return _kb_payload(resp)
+
+
+@router.post("/kb/frontmatter_delete", response_model=KbResponse)
+async def kb_frontmatter_delete(request: Request, body: KbFrontmatterDeleteRequest):
+    """确认后删 KB frontmatter 字段（不动正文）；keys 端点侧 filter 复验（去受保护 key）。"""
+    pid = _kb_pid(body.project_id)
+    try:
+        rel = guard_knowledge_file_path(body.path)
+        keys = filter_frontmatter_keys(body.keys)
+        resp = await _kb(request).run_job(
+            "frontmatter_delete", project_id=pid, path=rel, keys=keys,
+        )
+    except ToolException as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KbUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return _kb_payload(resp)
 
 

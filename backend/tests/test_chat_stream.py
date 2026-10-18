@@ -136,7 +136,7 @@ def test_disconnect_multi_round_persists_last_round_prefix(tmp_path, project) ->
             "file_path": "t.txt", "content": "v"}, "id": "c1", "type": "tool_call"}]),
         AIMessage(content="已完成清单"),
     ])
-    runtime = SimpleNamespace(build=lambda agent_id, session_id, provider_override=None, cwd=".":
+    runtime = SimpleNamespace(build=lambda agent_id, session_id, provider_override=None, cwd=".", **_:
                              AgentInstance(agent_id=agent_id,
                                            system_prompt=find_agent("case_design").prompt,
                                            provider=provider, tools=local_tools(root),
@@ -224,7 +224,7 @@ def test_send_fold_keeps_tool_trace_entries(tmp_path, project) -> None:
             "file_path": "t.txt", "content": "v"}, "id": "c1", "type": "tool_call"}]),
         AIMessage(content="已写入"),
     ])
-    runtime = SimpleNamespace(build=lambda agent_id, session_id, provider_override=None, cwd=".":
+    runtime = SimpleNamespace(build=lambda agent_id, session_id, provider_override=None, cwd=".", **_:
                              AgentInstance(agent_id=agent_id,
                                            system_prompt=find_agent("case_design").prompt,
                                            provider=provider, tools=local_tools(root),

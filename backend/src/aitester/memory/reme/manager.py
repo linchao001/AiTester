@@ -1,7 +1,7 @@
 """ReMe 进程内嵌管理器：专属事件循环线程 + 按 workspace 路径的实例池。
 
 记忆层生命周期中枢（个人记忆 + 知识库）。裁定依据：
-spec 2026-10-10-reme-workspace-project-dir-design.md（覆盖旧 (project, agent) 池）；
+spec 2026-10-11-reme-workspace-project-dir-design.md（覆盖旧 (project, agent) 池）；
 项目 workspace 落点见 project_runtime（``{dir}/.AiTester``）。
 """
 

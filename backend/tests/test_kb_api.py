@@ -12,6 +12,7 @@ from streaming_fakes import sse_frames
 class _RecordingKbManager:
     def __init__(self, exc=None, *, index_exc=None, index_delay=0.0):
         self.calls: list[tuple[str, dict]] = []
+        self.job_project_ids: list[tuple[str, str]] = []
         self.index_calls: list[tuple[str, str]] = []
         self.exc = exc
         self.index_exc = index_exc
@@ -27,6 +28,7 @@ class _RecordingKbManager:
         if self.exc is not None:
             raise self.exc
         self.calls.append((name, kwargs))
+        self.job_project_ids.append((name, project_id))
         return SimpleNamespace(success=True, answer="ok", metadata={"echo": name})
 
     async def run_index(self, job_name, *, project_id, timeout=120.0):
@@ -67,13 +69,76 @@ def test_kb_search_dispatches_job(tmp_path):
 def test_kb_save_and_inbox_routes(tmp_path):
     kb = _RecordingKbManager()
     with _client(tmp_path, kb) as client:
-        assert client.post("/api/kb/save", json={"title": "t", "content": "c"}).status_code == 200
+        assert client.post(
+            "/api/kb/save", json={"title": "t", "content": "c", "project_id": "p1"}
+        ).status_code == 200
         assert client.get("/api/kb/inbox").status_code == 200
         assert client.post("/api/kb/inbox/promote", json={"stem": "s"}).status_code == 200
     # 终审裁定：save 端点只派发 save job，不再同步补跑 reindex（后台环收敛）
     assert kb.calls[0] == ("save_to_knowledge", {"title": "t", "content": "c", "bucket": "business/wiki"})
+    # save 必须把项目透传给 Reme（实例按 {dir}/.AiTester 定位），否则空 project_id 触发「必须绑定项目」
+    assert kb.job_project_ids[0] == ("save_to_knowledge", "p1")
     assert kb.calls[1] == ("list_knowledge_inbox", {})
     assert kb.calls[2] == ("promote_knowledge_inbox", {"stem": "s"})
+
+
+def test_kb_save_requires_project(tmp_path):
+    # 未绑定项目（空 project_id）时 400 提示选项目，不再派发 job——避免后台误报 503「必须绑定项目」
+    kb = _RecordingKbManager()
+    with _client(tmp_path, kb) as client:
+        assert client.post("/api/kb/save", json={"title": "t", "content": "c"}).status_code == 400
+        assert client.post(
+            "/api/kb/save", json={"title": "t", "content": "c", "project_id": "  "}
+        ).status_code == 400
+    assert kb.calls == []
+
+
+def test_kb_maintenance_endpoints_require_project(tmp_path):
+    # 三个确认端点与 save 同口径：空 project_id 先 400，不派发 job
+    kb = _RecordingKbManager()
+    with _client(tmp_path, kb) as client:
+        assert client.post("/api/kb/delete", json={"path": "knowledge/a/b.md"}).status_code == 400
+        assert client.post("/api/kb/edit", json={"path": "knowledge/a/b.md", "old": "x"}).status_code == 400
+        assert client.post(
+            "/api/kb/frontmatter_delete", json={"path": "knowledge/a/b.md", "keys": ["t"]}
+        ).status_code == 400
+    assert kb.calls == []
+
+
+def test_kb_maintenance_endpoints_enforce_path_guard(tmp_path):
+    # 端点侧护栏复验（不信前端草案）：目录/整根目标 400，且不派发 job
+    kb = _RecordingKbManager()
+    with _client(tmp_path, kb) as client:
+        assert client.post(
+            "/api/kb/delete", json={"path": "knowledge/business/wiki", "project_id": "p1"}
+        ).status_code == 400
+        assert client.post(
+            "/api/kb/edit", json={"path": "knowledge", "old": "x", "project_id": "p1"}
+        ).status_code == 400
+    assert kb.calls == []
+
+
+def test_kb_maintenance_endpoints_dispatch_with_normalized_path(tmp_path):
+    # 成功：归一后的 path 透传 reme job，metadata 回投供前端跟进（delete 入链清单）
+    kb = _RecordingKbManager()
+    with _client(tmp_path, kb) as client:
+        r = client.post(
+            "/api/kb/delete", json={"path": ".AiTester/knowledge/business/wiki/a.md", "project_id": "p1"}
+        )
+        assert r.status_code == 200
+        assert r.json()["metadata"]["echo"] == "delete"
+        assert client.post(
+            "/api/kb/edit", json={"path": "knowledge/b/a.md", "old": "x", "new": "", "project_id": "p1"}
+        ).status_code == 200
+        assert client.post(
+            "/api/kb/frontmatter_delete",
+            json={"path": "knowledge/b/a.md", "keys": ["tags", "name"], "project_id": "p1"},
+        ).status_code == 200
+    assert kb.calls[0] == ("delete", {"path": "knowledge/business/wiki/a.md"})
+    assert kb.calls[1] == ("edit", {"path": "knowledge/b/a.md", "old": "x", "new": ""})
+    # 受保护 key name 被端点侧 filter 剔除，仅 tags 下发
+    assert kb.calls[2] == ("frontmatter_delete", {"path": "knowledge/b/a.md", "keys": ["tags"]})
+    assert kb.job_project_ids == [("delete", "p1"), ("edit", "p1"), ("frontmatter_delete", "p1")]
 
 
 def test_kb_inbox_merge_and_reject(tmp_path):

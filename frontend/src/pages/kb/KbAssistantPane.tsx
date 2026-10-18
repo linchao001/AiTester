@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import type { KbDraft } from "../../api/client";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import type { ChatStep, KbDraft } from "../../api/client";
 import { mdRender } from "./utils";
 import KbDraftCard, { type KbDraftState } from "./KbDraftCard";
 
@@ -11,7 +11,8 @@ export interface KbDraftEntry {
 }
 
 /** 一条聊天消息：me 纯文本；ai 为 markdown 源（pending=「思考中…」占位气泡，error=红色错误行），
-    drafts 内嵌该回复携带的草案卡。 */
+    drafts 内嵌该回复携带的草案卡（live-only：重开旧会话不重现草案卡）；
+    steps 为历史回合的工具过程（从落盘 jsonl 读回，live 回合不填）。 */
 export interface KbChatMsg {
   who: "me" | "ai";
   text: string;
@@ -20,6 +21,7 @@ export interface KbChatMsg {
   /** 被停止的回复：气泡尾部挂「（已停止）」，与聊天页 assistant 行同款标注。 */
   stopped?: boolean;
   drafts?: KbDraftEntry[];
+  steps?: ChatStep[];
 }
 
 export interface KbAssistantPaneProps {
@@ -29,6 +31,10 @@ export interface KbAssistantPaneProps {
   stopRequested: boolean;
   /** 右栏 scope 徽标：界面知识库根名（恒为别名，原型 :2381 处读 KB 根目录名）。 */
   root: string;
+  /** 助手为当前主栏（未打开文件）时，头部承载隐藏栏的「显示」chip（目录树/会话历史）。 */
+  headLeading?: ReactNode;
+  /** 未打开文件时助手是唯一主栏，收起钮无效（收起会无处复原）：此时不渲染 » 钮。 */
+  canHide?: boolean;
   onHide: () => void;
   onAsk: (text: string) => void;
   onStop: () => void;
@@ -46,10 +52,33 @@ const QUICK_COMMANDS = [
   "搜索 舍入",
 ];
 
+/** 已落终态的草案收成一行灰字（逐个展示：当前张落终态后下一张 pending 自动顶上来）。 */
+function DraftDoneRow({ entry }: { entry: KbDraftEntry }) {
+  const d = entry.draft;
+  const kind = d.kind ?? "save";
+  const badge =
+    kind === "delete" ? "删除" : kind === "edit" ? "改正文"
+      : kind === "frontmatter" ? "删元数据" : (d.op === "create" ? "新建" : "修改");
+  const doneVerb =
+    entry.state === "done" ? (kind === "delete" ? "✓ 已删除" : kind === "save" ? "✓ 已写入" : "✓ 已修改")
+      : entry.state === "canceled" ? "已取消"
+        : "✕ 失败";
+  // 主标题：save 用节点标题，维护类用目标文件名（title 对维护类为空）。
+  const subject = kind === "save" ? d.title : (d.path.split("/").pop() || d.path);
+  return (
+    <div className="kb-draft-done">
+      <span className="d-op">{badge}</span>
+      <span className="kb-draft-done-title">{subject}</span>
+      <span className="kb-draft-done-state">{doneVerb}</span>
+    </div>
+  );
+}
+
 /** 原型助手栏 :737-750 + kbAsk/kbSay（:2556-2563、:2675-2689、:2690-2701）的 React 转写。
     整列 aside.kb-chat 迁入本组件（与 KbEditorPane 同构）；消息状态由 KbPage 持有。 */
 export default function KbAssistantPane({
-  messages, busy, stopRequested, root, onHide, onAsk, onStop, onConfirmDraft, onCancelDraft,
+  messages, busy, stopRequested, root, headLeading, canHide = true,
+  onHide, onAsk, onStop, onConfirmDraft, onCancelDraft,
 }: KbAssistantPaneProps) {
   const [input, setInput] = useState("");
   const msgsRef = useRef<HTMLDivElement>(null);
@@ -77,9 +106,11 @@ export default function KbAssistantPane({
 
   return (
     <aside className="kb-chat">
-      <div className="kb-chat-head">🤖 知识库助手<div className="spacer"></div>
+      <div className="kb-chat-head">
+        {headLeading}
+        🤖 知识库助手<div className="spacer"></div>
         <span className="scope">{root}</span>
-        <button className="icon-btn" title="隐藏助手" onClick={onHide}>»</button>
+        {canHide && <button className="icon-btn" title="隐藏助手" onClick={onHide}>»</button>}
       </div>
       <div className="kb-msgs" ref={msgsRef}>
         {messages.map((m, mi) => m.who === "me" ? (
@@ -87,6 +118,18 @@ export default function KbAssistantPane({
           <div className="kb-msg me" key={mi}>{m.text}</div>
         ) : (
           <div className="kb-msg ai" key={mi}>
+            {m.steps && m.steps.length > 0 && (
+              <details className="thinking">
+                <summary>🔧 执行过程</summary>
+                {m.steps.map((s, i) => (
+                  <div className="t-step" key={`${s.round}-${s.tool}-${i}`}>
+                    <span className="n">{i + 1}.</span>
+                    <span>{s.tool} · {s.ok ? "成功" : "失败"}</span>
+                    <span className="args">{s.detail}</span>
+                  </div>
+                ))}
+              </details>
+            )}
             {m.pending ? (
               <span style={{ color: "var(--text-2)" }}>{m.text}</span>
             ) : m.error ? (
@@ -98,16 +141,33 @@ export default function KbAssistantPane({
             {m.stopped ? (
               <span style={{ color: "var(--text-2)" }}>（已停止）</span>
             ) : null}
-            {m.drafts?.map((e, di) => (
-              <KbDraftCard
-                key={di}
-                draft={e.draft}
-                state={e.state}
-                writtenAt={e.writtenAt}
-                onConfirm={() => onConfirmDraft(mi, di, e.draft)}
-                onCancel={() => onCancelDraft(mi, di)}
-              />
-            ))}
+            {/* 草案逐个展示：只渲染「首个 pending/writing」那张卡；已落终态的收成灰行，
+                尚未轮到（其后仍 pending）的隐藏——当前卡落终态后自动顶出下一张。 */}
+            {(() => {
+              const drafts = m.drafts ?? [];
+              let active = -1;
+              for (let i = 0; i < drafts.length; i++) {
+                if (drafts[i].state === "pending" || drafts[i].state === "writing") { active = i; break; }
+              }
+              return (
+                <>
+                  {drafts.map((e, di) => (
+                    di === active ? null
+                      : e.state === "pending" || e.state === "writing" ? null
+                        : <DraftDoneRow key={di} entry={e} />
+                  ))}
+                  {active >= 0 && (
+                    <KbDraftCard
+                      draft={drafts[active].draft}
+                      state={drafts[active].state}
+                      writtenAt={drafts[active].writtenAt}
+                      onConfirm={() => onConfirmDraft(mi, active, drafts[active].draft)}
+                      onCancel={() => onCancelDraft(mi, active)}
+                    />
+                  )}
+                </>
+              );
+            })()}
           </div>
         ))}
       </div>

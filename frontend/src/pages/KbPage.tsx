@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import {
-  ApiError, chatSendStream, chatStop, getProjects,
+  ApiError, chatSendStream, chatStop, deleteChatSession, getProjects, getSessionMessages, getSessions,
+  kbDeleteFile, kbEditFile, kbFrontmatterDelete,
   kbIndexRebuild, kbIndexSync, kbPostFile, kbPutFile, kbReadFile, kbSave, kbSearchFiles, kbTree,
-  type KbBrowseItem, type KbDraft, type KbIndexResponse, type KbSearchHit, type KbWriteResponse,
-  type Project,
+  type ChatMessage, type ChatSession, type ChatStep, type KbBrowseItem, type KbDraft, type KbIndexResponse,
+  type KbSearchHit, type KbWriteResponse, type Project,
 } from "../api/client";
 import { applyEvent, finalize, liveText, newStreamState } from "./chat/streamState";
 import { bindDragBar } from "../components/dragBar";
@@ -12,6 +13,7 @@ import PageState from "../components/PageState";
 import KbTreePane from "./kb/KbTreePane";
 import KbEditorPane from "./kb/KbEditorPane";
 import KbAssistantPane, { type KbChatMsg } from "./kb/KbAssistantPane";
+import KbSessionsPane from "./kb/KbSessionsPane";
 import { type KbDraftState } from "./kb/KbDraftCard";
 import { KB_ALIAS, KB_BUCKETS, kbDirOf, kbDisp, kbJoin, kbSlug } from "./kb/utils";
 
@@ -28,56 +30,42 @@ export interface KbDocState {
 
 /** 与聊天页共用：当前项目是视图上下文，刷新保留、换浏览器不带走。 */
 const PROJECT_STORAGE_KEY = "aitester.chat.projectId";
-/** 助手消息按项目落盘；宽度偏好全局一份。 */
-const msgsStorageKey = (pid: string) => `aitester.kb.msgs.${pid}`;
+/** 宽度偏好全局一份；助手会话改由后端落盘（session_history/kb_assistant），不再进 localStorage。 */
 const WIDTH_STORAGE_KEY = "aitester.kb.widths";
+/** 助手固定挂 kb_assistant：会话列表/正文/删除都按这一智能体取。 */
+const KB_AGENT_ID = "kb_assistant";
 
-/** 左栏夹持仍保留；助手栏只保留下限，上限随布局动态算（可盖住中栏阅读区）。 */
-const KBW_MIN = 180, KBW_MAX = 560, KBC_MIN = 260;
+/** 左栏/会话栏夹持仍保留；助手栏只保留下限，上限随布局动态算（可盖住中栏阅读区）。
+    未打开文件时助手也按 --kbc 定宽，剩余宽度归占位区，故 no-doc 下同样可拖。 */
+const KBW_MIN = 180, KBW_MAX = 560, KBS_MIN = 180, KBS_MAX = 420, KBC_MIN = 260;
 
-function loadKbMsgs(pid: string): KbChatMsg[] {
-  try {
-    const raw = window.localStorage.getItem(msgsStorageKey(pid));
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((m): m is KbChatMsg => !!m && (m.who === "me" || m.who === "ai") && typeof m.text === "string")
-      .filter((m) => !m.pending) // 刷新时丢掉「思考中…」半截气泡
-      .map((m) => ({
-        ...m,
-        drafts: m.drafts?.map((d) => ({
-          ...d,
-          // 写盘中断在半途：回落为可再确认，避免卡在 writing
-          state: d.state === "writing" ? "pending" as const : d.state,
-        })),
-      }));
-  } catch {
-    return [];
-  }
+/** 历史行转助手栏消息：user → me 纯文本；assistant → ai 正文 + 工具过程（steps）。
+    草案卡为 live-only：重开旧会话只恢复正文/步骤，不重现草案卡（确认状态不跨回话）。 */
+function toKbChatMsgs(messages: ChatMessage[]): KbChatMsg[] {
+  return messages.map((m) => (m.role === "user"
+    ? { who: "me" as const, text: m.content }
+    : {
+      who: "ai" as const,
+      text: m.content,
+      stopped: m.stopped || undefined,
+      steps: m.steps && m.steps.length ? m.steps : undefined,
+    }));
 }
 
-function saveKbMsgs(pid: string, msgs: KbChatMsg[]) {
-  try {
-    const slim = msgs.filter((m) => !m.pending);
-    window.localStorage.setItem(msgsStorageKey(pid), JSON.stringify(slim));
-  } catch { /* quota / 隐私模式：忽略 */ }
-}
-
-function loadKbWidths(): { kbw?: string; kbc?: string } {
+function loadKbWidths(): { kbw?: string; kbs?: string; kbc?: string } {
   try {
     const raw = window.localStorage.getItem(WIDTH_STORAGE_KEY);
     if (!raw) return {};
-    const j = JSON.parse(raw) as { kbw?: string; kbc?: string };
+    const j = JSON.parse(raw) as { kbw?: string; kbs?: string; kbc?: string };
     return j && typeof j === "object" ? j : {};
   } catch {
     return {};
   }
 }
 
-function saveKbWidths(kbw: string, kbc: string) {
+function saveKbWidths(kbw: string, kbs: string, kbc: string) {
   try {
-    window.localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify({ kbw, kbc }));
+    window.localStorage.setItem(WIDTH_STORAGE_KEY, JSON.stringify({ kbw, kbs, kbc }));
   } catch { /* ignore */ }
 }
 
@@ -106,6 +94,7 @@ export default function KbPage() {
   // —— 三栏布局状态（原型 viewKb classList + --kbw/--kbc）——
   const layoutRef = useRef<HTMLDivElement>(null);
   const [sideHidden, setSideHidden] = useState(false);
+  const [sessHidden, setSessHidden] = useState(false);
   const [chatHidden, setChatHidden] = useState(false);
 
   // —— toast（原型 :1512：2200ms 自动收起，重复触发重置计时）——
@@ -188,6 +177,15 @@ export default function KbPage() {
   const [stopRequested, setStopRequested] = useState(false);
   const kbAbortRef = useRef<AbortController | null>(null);
 
+  // —— 助手会话：真实落盘会话（kb_assistant × 项目），复用聊天页的会话链路与接口 ——
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState("");   // "" = 新会话（尚未落地）
+  const [sessionQuery, setSessionQuery] = useState("");
+  const activeSessionIdRef = useRef("");
+  const sessListSeq = useRef(0);      // 拉整表最新序号：慢响应不得把旧项目的列表覆盖回来
+  const openSeq = useRef(0);          // 开会话最新一次点击：迟到的正文不得盖过后点的会话
+  const loadingRef = useRef(false);   // 会话正文在途：此时发送会写进另一条会话，必须挡住
+
   const resetBrowse = useCallback(() => {
     kidsRef.current = {};
     expandedRef.current = { "": true };
@@ -203,24 +201,85 @@ export default function KbPage() {
     setSearching(false);
     setSearchErr(null);
     searchSeq.current++;
-    // 助手消息不在此清空：随 projectId 从 localStorage 换载，避免切项目时误抹旧项目缓存
+    // 切项目即切会话域：作废在途拉表/开正文，回新会话空态，列表由 reloadSessions 按新项目重取
+    sessListSeq.current++;
+    openSeq.current++;
+    loadingRef.current = false;
+    activeSessionIdRef.current = "";
+    setSessions([]);
+    setActiveSessionId("");
+    setSessionQuery("");
+    setMsgs([]);
   }, []);
 
-  // 助手会话：按项目读写 localStorage，刷新不丢；切项目换一份
-  const msgsPidRef = useRef("");
-  useEffect(() => {
-    if (!projectId) {
-      msgsPidRef.current = "";
+  // 项目落地后拉会话整表（固定 kb_assistant）
+  const reloadSessions = useCallback(async (): Promise<ChatSession[]> => {
+    const pid = projectIdRef.current;
+    const seq = ++sessListSeq.current;
+    if (!pid) { setSessions([]); return []; }
+    try {
+      const j = await getSessions(KB_AGENT_ID, pid);
+      if (seq !== sessListSeq.current) return j.sessions;
+      setSessions(j.sessions);
+      return j.sessions;
+    } catch (err) {
+      if (seq === sessListSeq.current) {
+        setSessions([]);
+        toast(err instanceof ApiError ? err.message : String(err));
+      }
+      return [];
+    }
+  }, [toast]);
+
+  useEffect(() => { if (projectId) void reloadSessions(); }, [projectId, reloadSessions]);
+
+  /** 打开一条会话：拉正文转助手栏消息；id 空即回到「新会话」空态。 */
+  const openSession = useCallback(async (id: string): Promise<void> => {
+    const pid = projectIdRef.current;
+    const seq = ++openSeq.current;
+    activeSessionIdRef.current = id;
+    setActiveSessionId(id);
+    loadingRef.current = !!id;
+    if (!id || !pid) { setMsgs([]); loadingRef.current = false; return; }
+    try {
+      const j = await getSessionMessages(id, KB_AGENT_ID, pid);
+      if (seq !== openSeq.current) return;
+      setMsgs(toKbChatMsgs(j.messages));
+    } catch (err) {
+      if (seq !== openSeq.current) return;
+      // 加载失败退回新会话：留着 activeId 会挂着那条会话名却显示空正文，发送等于悄悄续写
+      activeSessionIdRef.current = "";
+      setActiveSessionId("");
       setMsgs([]);
-      return;
+      toast(err instanceof ApiError ? err.message : String(err));
+    } finally {
+      if (seq === openSeq.current) loadingRef.current = false;
     }
-    if (msgsPidRef.current !== projectId) {
-      msgsPidRef.current = projectId;
-      setMsgs(loadKbMsgs(projectId));
-      return;
+  }, [toast]);
+
+  const newSession = useCallback(() => { void openSession(""); }, [openSession]);
+
+  const selectSession = useCallback((id: string) => {
+    if (busyRef.current || loadingRef.current) { toast("助手正忙，请稍候"); return; }
+    void openSession(id);
+  }, [openSession]);
+
+  const removeSession = useCallback(async (id: string) => {
+    const pid = projectIdRef.current;
+    if (!pid) return;
+    if (busyRef.current || loadingRef.current) { toast("助手正忙，请稍候"); return; }
+    const row = sessions.find((s) => s.id === id);
+    if (!window.confirm(`删除会话「${row?.title ?? id}」？删除后不可恢复。`)) return;
+    try {
+      await deleteChatSession(id, KB_AGENT_ID, pid);
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+      toast(`已删除会话「${row?.title ?? id}」`);
+      const rows = await reloadSessions();
+      if (activeSessionIdRef.current === id) void openSession(rows.length ? rows[0].id : "");
+    } catch (err) {
+      toast(err instanceof ApiError ? err.message : String(err));
     }
-    saveKbMsgs(projectId, msgs);
-  }, [projectId, msgs]);
+  }, [openSession, reloadSessions, sessions, toast]);
 
   /** 原型 kbLoadDir：kids 缺失才拉（懒加载=首次展开触发）。 */
   const loadKids = useCallback(async (rel: string): Promise<KbBrowseItem[]> => {
@@ -451,13 +510,15 @@ export default function KbPage() {
   }, []);
 
   // —— 助手栏（Task 10：原型 kbAsk/kbSay/kbDraftCard :2556-2596/:2675-2689 的接线迁进流式通道，
-  //     与聊天页同一条 /api/chat/send/stream；kb-console 是临时键 use_file=False，会话行不落 jsonl）——
+  //     与聊天页同一条 /api/chat/send/stream；kb_assistant 走真实会话落盘（session_history/kb_assistant），
+  //     新会话传空串，服务端建 sess_ 并回写，历史不再截窗、由 recall_session_history 按需召回）——
 
   /** 原型 :2682-2685 —— 用最新回复（+逐条草案卡 / 错误行）更新「思考中…」占位气泡。
       keepPending=true 时气泡仍是 pending 态（流式中的 live 更新），false 即终态替换。
       逆序找最后一条 pending ai 消息；终态却找不到占位（异常路径）则追加，不让已到手的回复消失。 */
   const setLastAi = useCallback((
     text: string, drafts: KbDraft[], keepPending: boolean, error = false, stopped = false,
+    steps?: ChatStep[],
   ) => {
     setMsgs((prev) => {
       const next = [...prev];
@@ -472,6 +533,7 @@ export default function KbPage() {
         pending: keepPending || undefined,
         error: error || undefined,
         stopped: stopped || undefined,
+        steps: steps && steps.length ? steps : undefined,
         drafts: drafts.length
           ? drafts.map((d, di) => {
             const e = carried?.[di];
@@ -485,14 +547,16 @@ export default function KbPage() {
     });
   }, []);
 
-  const replaceLastAi = useCallback((text: string, drafts: KbDraft[], error = false, stopped = false) => {
-    setLastAi(text, drafts, false, error, stopped);
+  const replaceLastAi = useCallback((
+    text: string, drafts: KbDraft[], error = false, stopped = false, steps?: ChatStep[],
+  ) => {
+    setLastAi(text, drafts, false, error, stopped, steps);
   }, [setLastAi]);
 
-  /** session_id/agent_id 固定；必须带当前项目，Reme 绑该项目 .AiTester。
-   *  kb-console 临时键不落 jsonl（进程内短窗 + 本页 localStorage）。 */
+  /** 当前会话 id + 固定 kb_assistant；必须带当前项目，Reme 绑该项目 .AiTester。
+   *  空串 session_id → 后端新建真实会话并在 done 回 session_id；随后补齐列表。 */
   const ask = useCallback(async (text: string) => {
-    if (busyRef.current) return;
+    if (busyRef.current || loadingRef.current) return;
     if (!projectIdRef.current) { toast("请先选择项目"); return; }
     if (treeErr) { toast(treeErr); return; }
     busyRef.current = true;
@@ -507,7 +571,7 @@ export default function KbPage() {
     let errMsg = "";
     try {
       await chatSendStream(
-        { session_id: "kb-console", message: text, agent_id: "kb_assistant", project_id: projectIdRef.current },
+        { session_id: activeSessionIdRef.current, message: text, agent_id: KB_AGENT_ID, project_id: projectIdRef.current },
         (ev) => {
           if (ev.type === "start") runIdRef.current = ev.run_id;
           Object.assign(st, applyEvent(st, ev));   // 折叠就地推进：本栏只需一份累加器
@@ -528,12 +592,22 @@ export default function KbPage() {
     const done = st.done;
     if (done) {
       const f = finalize(st, done);
-      replaceLastAi(f.content, f.drafts, false, f.stopped);
+      replaceLastAi(f.content, f.drafts, false, f.stopped, f.steps);
+      // 新会话首次落盘：后端在 done 里回真实 session_id，就地接管当前会话并补列表（不重拉正文，保住 live 草案卡）
+      if (f.sessionId && f.sessionId !== activeSessionIdRef.current) {
+        activeSessionIdRef.current = f.sessionId;
+        setActiveSessionId(f.sessionId);
+        const rows = await reloadSessions();
+        const mine = rows.find((r) => r.id === f.sessionId);
+        if (mine && f.title && mine.title !== f.title) {
+          setSessions((prev) => prev.map((r) => (r.id === mine.id ? { ...r, title: f.title } : r)));
+        }
+      }
       return;
     }
     // 失败进气泡（红色），不抢 toast；草案卡保留（draft 必在 prepare_kb_write 成功后才发，确认走独立 REST）
     replaceLastAi(errMsg || st.fail || "连接中断，助手未完成", st.drafts, true);
-  }, [replaceLastAi, setLastAi, toast, treeErr]);
+  }, [reloadSessions, replaceLastAi, setLastAi, toast, treeErr]);
 
   const stopAsk = useCallback(() => {
     if (stopRequestedRef.current) return;
@@ -555,31 +629,53 @@ export default function KbPage() {
     }));
   }, []);
 
-  /** 草案确认：走 Reme save_to_knowledge（/api/kb/save），不经 browse 直写。
+  /** 草案确认：按 kind 分派到对应端点（save→/kb/save；delete/edit/frontmatter→/kb/*）。
+      卡片本身即确认入口，点击后不再弹二次确认；后端护栏复验 path，前端只原样传 d.path。
       setDraftState("writing") 在 await 前同步迁移，避免双击重复提交。 */
   const confirmDraft = useCallback(async (mi: number, di: number, d: KbDraft) => {
-    const where = d.path ? kbDisp(d.path) : `${d.bucket} · ${d.title}`;
-    if (!window.confirm(`确认写入知识库（Reme）？\n${d.op === "create" ? "新建" : "合并/更新"}：${where}`)) return;
+    const pid = projectIdRef.current;
+    if (!pid) { toast("请先选择项目"); return; }
     setDraftState(mi, di, "writing");
+    const kind = d.kind ?? "save";
+    // 维护类草案的 path 形如 knowledge/...（或 .AiTester/knowledge/...）；browse 相对知识根，
+    // 去掉 knowledge/ 与 .AiTester/ 前缀后取父目录即为待刷新目录。
+    const browseRel = d.path.replace(/\\/g, "/").replace(/^(\.\/)?(\.AiTester\/)?(knowledge\/)?/, "");
     try {
-      const j = await kbSave(d.title, d.content, d.bucket);
+      const j = kind === "delete" ? await kbDeleteFile(d.path, pid)
+        : kind === "edit" ? await kbEditFile(d.path, d.old, d.new, pid)
+          : kind === "frontmatter" ? await kbFrontmatterDelete(d.path, d.keys || [], pid)
+            : await kbSave(d.title, d.content, d.bucket, pid);
       if (!j.success) {
-        toast(typeof j.answer === "string" && j.answer ? j.answer : "知识库写入失败");
+        toast(typeof j.answer === "string" && j.answer
+          ? j.answer : (kind === "delete" ? "删除失败" : "写入失败"));
         setDraftState(mi, di, "failed");
         return;
       }
-      // 写成功后刷新树缓存（桶目录），索引仍由 Reme watch 收敛
-      const dir = d.bucket;
+      // 写成功后刷新树缓存：save 落桶目录，维护类落目标文件的父目录（均 browse 相对）。
+      const dir = kind === "save" ? d.bucket : kbDirOf(browseRel);
       kidsRef.current = { ...kidsRef.current };
       delete kidsRef.current[dir];
       delete kidsRef.current[""];
       setKids(kidsRef.current);
       loadKids(dir).catch(() => {});
       loadKids("").catch(() => {});
-      const written = Array.isArray(j.metadata?.written) ? String(j.metadata.written[0] ?? "") : "";
-      toast(written
-        ? `已写入 ${kbDisp(written)} · 索引自动收敛后可被检索（约数十秒）`
-        : (typeof j.answer === "string" && j.answer) || "已写入知识库");
+      if (kind === "save") {
+        const written = Array.isArray(j.metadata?.written) ? String(j.metadata.written[0] ?? "") : "";
+        toast(written
+          ? `已写入 ${kbDisp(written)} · 索引自动收敛后可被检索（约数十秒）`
+          : (typeof j.answer === "string" && j.answer) || "已写入知识库");
+      } else if (kind === "delete") {
+        const meta = j.metadata || {};
+        const inbound = meta.inbound_links ?? meta.inbound ?? meta.inbound_wikilinks;
+        const n = Array.isArray(inbound) ? inbound.length : 0;
+        toast(n
+          ? `已删除 ${kbDisp(browseRel)}；有 ${n} 条入链，需跟进修悬空链接`
+          : `已删除 ${kbDisp(browseRel)} · 检索索引随之清理`);
+      } else if (kind === "edit") {
+        toast("已修改正文（frontmatter 未动）");
+      } else {
+        toast("已更新 frontmatter 元数据");
+      }
       setDraftState(mi, di, "done", Date.now());
     } catch (err) {
       toast(err instanceof Error ? err.message : String(err));
@@ -636,12 +732,12 @@ export default function KbPage() {
 
     const saved = loadKbWidths();
     if (saved.kbw) layout.style.setProperty("--kbw", saved.kbw);
+    if (saved.kbs) layout.style.setProperty("--kbs", saved.kbs);
     if (saved.kbc) layout.style.setProperty("--kbc", saved.kbc);
 
     const persist = () => {
-      const kbw = layout.style.getPropertyValue("--kbw") || getComputedStyle(layout).getPropertyValue("--kbw");
-      const kbc = layout.style.getPropertyValue("--kbc") || getComputedStyle(layout).getPropertyValue("--kbc");
-      saveKbWidths(kbw.trim(), kbc.trim());
+      const readVar = (v: string) => (layout.style.getPropertyValue(v) || getComputedStyle(layout).getPropertyValue(v)).trim();
+      saveKbWidths(readVar("--kbw"), readVar("--kbs"), readVar("--kbc"));
     };
 
     const specs: Array<[string, (x: number) => void]> = [
@@ -650,14 +746,22 @@ export default function KbPage() {
         layout.style.setProperty("--kbw", `${w}px`);
         persist();
       }],
+      ["kbSessResizer", (x) => {
+        // 会话栏拖拽：宽度 = 光标 x － 会话栏左缘（目录树隐藏时左缘自动前移，故实时取 DOM）
+        const sess = layout.querySelector(".kb-sess-col") as HTMLElement | null;
+        const left = sess?.getBoundingClientRect().left ?? layout.getBoundingClientRect().left;
+        const w = Math.min(Math.max(x - left, KBS_MIN), KBS_MAX);
+        layout.style.setProperty("--kbs", `${w}px`);
+        persist();
+      }],
       ["kbChatResizer", (x) => {
         const rect = layout.getBoundingClientRect();
         const side = layout.querySelector(".kb-side") as HTMLElement | null;
-        const sideW = layout.classList.contains("side-hidden")
-          ? 0
-          : (side?.getBoundingClientRect().width ?? 0);
-        // 左/右 resizer 各约 5px；中栏可压到 0，助手可完全占满剩余宽度
-        const max = Math.max(KBC_MIN, rect.width - sideW - 10);
+        const sess = layout.querySelector(".kb-sess-col") as HTMLElement | null;
+        const sideW = layout.classList.contains("side-hidden") ? 0 : (side?.getBoundingClientRect().width ?? 0);
+        const sessW = layout.classList.contains("sess-hidden") ? 0 : (sess?.getBoundingClientRect().width ?? 0);
+        // 三段 resizer 各约 5px；中栏可压到 0（no-doc 时为占位区），助手可完全占满剩余宽度
+        const max = Math.max(KBC_MIN, rect.width - sideW - sessW - 15);
         const w = Math.min(Math.max(rect.right - x, KBC_MIN), max);
         layout.style.setProperty("--kbc", `${w}px`);
         persist();
@@ -675,6 +779,14 @@ export default function KbPage() {
   const searchingView = query.trim() && (searching || searchErr !== null);
   const currentProject = projects.find((p) => p.id === projectId);
   const toastEl = toastMsg ? <div className="toast show">{toastMsg}</div> : null;
+
+  // 隐藏栏的「显示」chip：谁在当前主栏（编辑区开则编辑区，否则助手栏）就放谁的头部，不重复出现
+  const revealChips = (sideHidden || sessHidden) ? (
+    <>
+      {sideHidden && <button className="mini-btn" id="btnKbSideShow" title="显示目录树" onClick={() => setSideHidden(false)}>📁 目录</button>}
+      {sessHidden && <button className="mini-btn" id="btnKbSessShow" title="显示会话历史" onClick={() => setSessHidden(false)}>💬 会话</button>}
+    </>
+  ) : undefined;
 
   if (projectsLoaded && !projects.length) {
     return (
@@ -723,7 +835,7 @@ export default function KbPage() {
       {/* 原型 :696-751 三栏骨架；收起类名 side-hidden/chat-hidden（CSS 依赖 #kbResizer/#kbChatResizer id） */}
       <div
         ref={layoutRef}
-        className={`kb-layout${sideHidden ? " side-hidden" : ""}${chatHidden ? " chat-hidden" : ""}`}
+        className={`kb-layout${sideHidden ? " side-hidden" : ""}${sessHidden ? " sess-hidden" : ""}${doc ? "" : " no-doc"}${chatHidden && doc ? " chat-hidden" : ""}`}
       >
         <aside className="kb-side">
           <div className="kb-side-head">📚 目录<span className="num">{total === null ? "–" : `${total} 项`}</span><div className="spacer"></div>
@@ -793,21 +905,40 @@ export default function KbPage() {
         </aside>
         <div className="resizer" id="kbResizer" title="拖拽调整目录树宽度"></div>
 
-        {/* Task 9：中栏编辑组件接管 section.kb-main；恢复钮经插槽回传（原型 :709/:718 在同一 kb-head 内） */}
-        <KbEditorPane
-          doc={doc}
-          dirty={dirty}
-          root={root}
-          headLeading={sideHidden ? <button className="mini-btn" id="btnKbSideShow" title="显示目录树" onClick={() => setSideHidden(false)}>📁 目录</button> : undefined}
-          headTrailing={chatHidden ? <button className="mini-btn" id="btnKbChatShow" title="显示知识库助手" onClick={() => setChatHidden(false)}>💬 助手</button> : undefined}
-          onMode={onMode}
-          onEditContent={onEditContent}
-          onSave={onSave}
-          onDiscard={onDiscard}
-          onReload={onReload}
-          onNewNote={openNewNote}
+        {/* 会话历史独立左侧栏：可拖拽宽度 + » 收起；收起态由当前主栏头部 chip 复原 */}
+        <KbSessionsPane
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          busy={busy}
+          sessionQuery={sessionQuery}
+          onSessionQueryChange={setSessionQuery}
+          onNewSession={newSession}
+          onSelectSession={selectSession}
+          onDeleteSession={(id) => void removeSession(id)}
+          onHide={() => setSessHidden(true)}
         />
+        <div className="resizer" id="kbSessResizer" title="拖拽调整会话列表宽度"></div>
 
+        {/* 文件预览/编辑：默认不展示，仅当打开某文件（doc 非空）时切出这一中栏；
+            恢复钮经插槽回传（原型 :709/:718 在同一 kb-head 内） */}
+        {doc && (
+          <KbEditorPane
+            doc={doc}
+            dirty={dirty}
+            root={root}
+            headLeading={revealChips}
+            headTrailing={chatHidden ? <button className="mini-btn" id="btnKbChatShow" title="显示知识库助手" onClick={() => setChatHidden(false)}>💬 助手</button> : undefined}
+            onMode={onMode}
+            onEditContent={onEditContent}
+            onSave={onSave}
+            onDiscard={onDiscard}
+            onReload={onReload}
+            onNewNote={openNewNote}
+          />
+        )}
+
+        {/* 未打开文件时编辑区让位给占位区（同样可被助手挤压/腾挪），分隔条常驻，助手随时可拖 */}
+        {!doc && <div className="kb-reader-spacer" aria-hidden="true"></div>}
         <div className="resizer" id="kbChatResizer" title="拖拽调整助手宽度"></div>
         {/* Task 10：助手栏整列迁入 KbAssistantPane（head/消息流/快捷指令/输入区，原型 :737-750） */}
         <KbAssistantPane
@@ -815,6 +946,8 @@ export default function KbPage() {
           busy={busy}
           stopRequested={stopRequested}
           root={root}
+          headLeading={doc ? undefined : revealChips}
+          canHide={doc !== null}
           onHide={() => setChatHidden(true)}
           onAsk={(t) => void ask(t)}
           onStop={stopAsk}

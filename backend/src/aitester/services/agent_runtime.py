@@ -20,9 +20,11 @@ from aitester.case_design.env import CaseDesignEnv
 from aitester.context.usage import ContextUsage
 from aitester.orchestration.auth_rules import face_can_suspend
 from aitester.orchestration.graph_registry import GraphBuilder, get_graph_builder
+from aitester.orchestration.agent_graph import make_create_agent_builder
 from aitester.orchestration.subagent import ChildRuntime, drive_child
 from aitester.services.capability_config import CapabilityConfigService
 from aitester.services.model_config import ConfigNotFoundError, ModelConfigService
+from aitester.services.session_store import is_session_id
 
 logger = getLogger(__name__)
 
@@ -37,6 +39,8 @@ class AgentInstance:
     case_env: CaseDesignEnv | None = None     # 专属 loop 的落点与 KB；None=直通（A10）
     # 本回合的上下文累加件：provider 侧的计量与工具侧的闸门共用它（CM-6）
     usage: ContextUsage | None = None
+    # 事件折流走哪条实现："react"=自定义 stream_graph，"create_agent"=langchain 图折流
+    stream_kind: str = "react"
 
 
 class AgentRuntime:
@@ -72,6 +76,7 @@ class AgentRuntime:
         provider_override: LlmProvider | None = None,
         cwd: str = ".",
         project_id: str = "",
+        session_store: Any | None = None,
     ) -> AgentInstance:
         spec = find_agent(agent_id)
         if spec is None:
@@ -82,6 +87,7 @@ class AgentRuntime:
         if is_platform_agent(spec.id):
             return self._build_platform_agent(
                 spec, session_id, provider_override, cwd=cwd, project_id=project_id,
+                session_store=session_store,
             )
 
         provider: LlmProvider
@@ -197,6 +203,7 @@ class AgentRuntime:
         *,
         cwd: str = ".",
         project_id: str = "",
+        session_store: Any | None = None,
     ) -> AgentInstance:
         """平台功能智能体：强制绑定 spec.default_tool_ids，不读能力配置勾选状态。
 
@@ -234,11 +241,23 @@ class AgentRuntime:
             project_id=pid,
             usage=usage,
         )
+        tools: list[AiTooler] = registry.get_many(list(spec.default_tool_ids))
+        # 按需召回历史工具：只有拿到真实会话存储且 sid 为 sess_ 形态时才挂上——
+        # 它读的就是本项目本会话的 jsonl，临时键/无存储情形无从读盘，不注册（面自然收敛）。
+        if session_store is not None and is_session_id(session_id):
+            from aitester.adapters.tools.kb_tools import RecallSessionHistoryTool
+
+            tools.append(RecallSessionHistoryTool(
+                store=session_store, session_id=session_id, usage=usage,
+            ))
         return AgentInstance(
             agent_id=spec.id,
             system_prompt=spec.prompt,
             provider=provider,
-            tools=registry.get_many(list(spec.default_tool_ids)),
-            build_graph=get_graph_builder(spec.graph_builder),
+            tools=tools,
+            # 知识库助手改用 langchain create_agent（会话原料含 SystemMessage 整体入图，
+            # 不单独传 system_prompt）；事件折流走 stream_create_agent_graph。
+            build_graph=make_create_agent_builder(),
             usage=usage,
+            stream_kind="create_agent",
         )

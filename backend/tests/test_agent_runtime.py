@@ -258,14 +258,17 @@ def test_kb_assistant_forced_binding_ignores_capability(tmp_path: Path) -> None:
         "kb_assistant", "kb-console", provider_override=MockProvider(),
         cwd=str(proj), project_id="proj_1",
     )
-    assert [t.name for t in inst.tools] == ["knowledge_search", "prepare_kb_write"]
+    assert [t.name for t in inst.tools] == [
+        "knowledge_search", "prepare_kb_write",
+        "prepare_kb_delete", "prepare_kb_edit", "prepare_kb_frontmatter",
+    ]
     # 不受能力勾选管辖：case_design 工具集清空也不影响 kb_assistant
     cap.set_agent_tools("case_design", [])
     inst2 = runtime.build(
         "kb_assistant", "kb-console", provider_override=MockProvider(),
         cwd=str(proj), project_id="proj_1",
     )
-    assert len(inst2.tools) == 2
+    assert len(inst2.tools) == 5
 
 
 def test_kb_assistant_warms_kb_instance_on_build(tmp_path: Path) -> None:
@@ -297,7 +300,7 @@ def test_kb_assistant_warms_kb_instance_on_build(tmp_path: Path) -> None:
         cwd=str(proj), project_id="proj_1",
     )
     assert kb.calls == [("status", "proj_1", "kb_assistant")]  # 绑当前项目 Reme
-    assert len(inst.tools) == 2
+    assert len(inst.tools) == 5
 
 
 def test_kb_assistant_build_survives_warm_failure(tmp_path: Path) -> None:
@@ -329,7 +332,10 @@ def test_kb_assistant_build_survives_warm_failure(tmp_path: Path) -> None:
         cwd=str(proj), project_id="proj_1",
     )
     assert kb.calls == [("status", "proj_1", "kb_assistant")]
-    assert [t.name for t in inst.tools] == ["knowledge_search", "prepare_kb_write"]
+    assert [t.name for t in inst.tools] == [
+        "knowledge_search", "prepare_kb_write",
+        "prepare_kb_delete", "prepare_kb_edit", "prepare_kb_frontmatter",
+    ]
 
 
 def test_kb_assistant_requires_project_id(tmp_path: Path) -> None:

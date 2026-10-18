@@ -29,6 +29,15 @@ class MeteredProvider:
         return self._inner
 
     @property
+    def base_chat_model(self) -> Any:
+        """委托内层暴露底层 BaseChatModel（create_agent 专用缝）；内层不具备时回 None。
+
+        计量在 create_agent 路径下不经本类的 stream/invoke（那由图自己驱动），
+        所以这里只透传模型对象，不拆计量包装。
+        """
+        return getattr(self._inner, "base_chat_model", None)
+
+    @property
     def name(self) -> str:
         return str(getattr(self._inner, "name", ""))
 

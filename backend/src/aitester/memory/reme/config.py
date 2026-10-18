@@ -54,6 +54,21 @@ _KB_JOBS: dict[str, Any] = {
         "backend": "base",
         "steps": [{"backend": "save_to_knowledge_step"}],
     },
+    # KB 文件维护（封装 reme 内建 file_io step）：路径相对 workspace，落 knowledge/...。
+    # delete=硬删（watcher 自动清索引投影）；edit=只动 body 护 frontmatter（new='' 即删段）；
+    # frontmatter_delete=删元数据字段。
+    "delete": {
+        "backend": "base",
+        "steps": [{"backend": "delete_step"}],
+    },
+    "edit": {
+        "backend": "base",
+        "steps": [{"backend": "edit_step"}],
+    },
+    "frontmatter_delete": {
+        "backend": "base",
+        "steps": [{"backend": "frontmatter_delete_step"}],
+    },
     "reindex": {
         "backend": "base",
         "steps": [

@@ -360,10 +360,8 @@ def test_history_is_trimmed_to_last_history_max(tmp_path, project) -> None:
     assert len(open_session_store(root, "case_design").messages(sid)) == 92
 
 
-def test_kb_assistant_history_uses_short_window(tmp_path, project) -> None:
-    """知识库助手 QA 短窗：进模型最近 8 条（4 轮），记忆仍保留全量。"""
-    from aitester.services.chat import KB_HISTORY_MAX
-
+def test_kb_assistant_injects_no_history_by_default(tmp_path, project) -> None:
+    """知识库助手默认零历史注入：既往对话只落盘，需要时由 recall_session_history 按需召回。"""
     svc_proj, pid, _ = project
     seen: list[list] = []
 
@@ -390,13 +388,9 @@ def test_kb_assistant_history_uses_short_window(tmp_path, project) -> None:
         svc.memory.save(key, "assistant", f"答{i}")
     svc.send("kb-console", "新问题", "kb_assistant", pid)
     contents = [m.content for m in seen[0]]
-    # [system] + KB_HISTORY_MAX + [本轮 user]
-    assert len(contents) == 1 + KB_HISTORY_MAX + 1
-    assert contents[0] == "p"
-    assert contents[1] == "问6"          # 20 条里只取最近 8：问6..答9
-    assert contents[-2] == "答9"
-    assert contents[-1] == "新问题"
-    # 记忆不截：原 20 + 本轮 user/assistant
+    # 默认不把历史注入 prompt：进模型的只有 [system] + [本轮 user]
+    assert contents == ["p", "新问题"]
+    # 既往对话仍全量落盘（原 20 + 本轮 user/assistant），供按需召回
     assert len(svc.memory.recall(key)) == 22
 
 
